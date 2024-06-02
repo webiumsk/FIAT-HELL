@@ -67,6 +67,9 @@ char Buf[200];     // Buffer for the encrypted data
 #include "btcsmall.c"
 LV_IMG_DECLARE(btcSmallImg);
 
+#include "amityage.c"
+LV_IMG_DECLARE(amityImg);
+
 #include "blink.c"
 LV_IMG_DECLARE(blink);
 
@@ -1925,6 +1928,10 @@ void createMainScreen()
   lv_obj_t *zeroline = lv_label_create(screen_main);    // full screen as the parent
   lv_label_set_text(zeroline, LVGL_Zero_Title.c_str()); // set label text
   lv_obj_align(zeroline, LV_ALIGN_TOP_MID, 0, 45);      // Center but 20 from the top
+  if (atmsubtitle == "AMITY")
+  {
+    lv_label_set_text(zeroline, ""); // set label text
+  }
   if (atmsubtitle == "DVADSATJEDEN")
   {
     lv_obj_set_style_text_font(zeroline, &lv_font_the_bold_48, 0); // Assuming lv_font_montserrat_22 is a bold font.
@@ -1968,6 +1975,14 @@ void createMainScreen()
     lv_img_set_src(img1, &btcSmallImg);            // Set the image source to your converted image (my_image)
     lv_obj_align(img1, LV_ALIGN_TOP_MID, 180, 70); // Align the image to the center of the screen
     Serial.println("createMainScreen: btc logo added");
+  }
+
+  if (atmsubtitle == "AMITY")
+  {
+    lv_obj_t *img1 = lv_img_create(screen_main);   // Create an image object
+    lv_img_set_src(img1, &amityImg);            // Set the image source to your converted image (my_image)
+    lv_obj_align(img1, LV_ALIGN_TOP_MID, 0, 15); // Align the image to the center of the screen
+    Serial.println("createMainScreen: amity logo added");
   }
 
   lv_obj_t *labelBalance = lv_label_create(screen_main);     // full screen as the parent
