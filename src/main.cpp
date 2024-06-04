@@ -132,7 +132,7 @@ lv_style_t style_disconnected;
 String atmtitle = "FIAT HELL";
 String atmsubtitle;
 String atmdesc = "";
-String pincode = "1234";
+String pincode = "1111";
 String blinkapikey;
 String blinkwalletid;
 
@@ -1288,7 +1288,11 @@ void checkNetworkAndDeviceStatus()
       Serial.println("No network connection available. Checking again soon...");
       // Optionally, trigger a screen update or indicator that network is required but unavailable
       // displaySettingsScreen(); // Show or update no connection screen
-      // SerialPort1.write(185);
+      SerialPort1.write(185);
+    }
+    else 
+    {
+      SerialPort1.write(184);
     }
   }
   else if (strcmp(fundingSourceBuffer, "LNbits") == 0 && (currencyATM == "" || adminkey == "" || readkey == ""))
@@ -1296,7 +1300,7 @@ void checkNetworkAndDeviceStatus()
     if (!wifiStatus())
     {
       Serial.println("Network not needed, but missing data for LNbits...");
-      // SerialPort1.write(185);
+      //SerialPort1.write(184);
     }
   }
 }
@@ -1390,7 +1394,7 @@ void createThankYouScreen()
   lv_obj_set_style_text_font(thxTitle, &lv_font_montserrat_48, 0); // Use the large font
   lv_obj_set_style_text_color(thxTitle, LV_COLOR_GREEN, 0);
 
-  String LVGL_THX_DESC = "START OVER TO BURN MORE! \n TAP HERE";
+  String LVGL_THX_DESC = "START OVER TO BURN MORE!";
   lv_obj_t *thxDesc = lv_label_create(screen_thx);                // full screen as the parent
   lv_label_set_text(thxDesc, LVGL_THX_DESC.c_str());              // set label text
   lv_obj_align(thxDesc, LV_ALIGN_CENTER, 0, 60);                  // Center but 20 from the top
@@ -1500,30 +1504,21 @@ void setCurrency(const String &newCurrency)
  */
 void checkPrice()
 {
-  HTTPClient http;
+  // Check Wi-Fi status
+  // if (WiFi.status() == WL_CONNECTED)
+  //{
+  // Price API
+  http.begin(primaryConversionAPI + currencySelected); // Specify request destination
+  // http.begin("https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=" + currencySelected);              // Specify request destination
+  // http.addHeader("Authorization", "Apikey 6f51e60ff3bbd092aac649ada41fb685523e30ab782c2d05ff11ee2acb351ad4"); // Specify API key header
 
-  // Try primary API first
-  http.begin(primaryConversionAPI + currencySelected);
   int httpCode = http.GET(); // Send the request
 
-  if (httpCode != 200 && httpCode != 201)
-  {
-    // Primary service failed, try secondary service
-    Serial.println("Primary conversion (Coingecko) failed with code: " + String(httpCode));
-    Serial.println("Attempting to connect to secondary service (Cryptocompare)...");
-
-    http.end(); // End connection to primary service
-    http.begin(secondaryConversionAPI + currencySelected);
-    http.addHeader("Authorization", "Apikey 6f51e60ff3bbd092aac649ada41fb685523e30ab782c2d05ff11ee2acb351ad4"); // Specify API key header
-    httpCode = http.GET(); // Send the request to the secondary service
-  }
-
   if (httpCode == 200 || httpCode == 201)
-  {
+  {                                    // Check the returning code
     String payload = http.getString(); // Get the request response payload
     // Serial.println(payload);
-
-    // Parse JSON
+    //  Parse JSON
     DynamicJsonDocument doc(1024);
     deserializeJson(doc, payload);
 
@@ -1532,16 +1527,18 @@ void checkPrice()
 
     // Get EUR value from parsed JSON
     fiatValue = doc["bitcoin"][tempCurrency.c_str()];
+    Serial.print(F("HTTP (checkPrice): "));
+    Serial.println(httpCode);
   }
   else
   {
     Serial.print(F("Error (checkPrice): "));
     Serial.println(httpCode);
   }
-
   Serial.print("Free heap (checkPrice): ");
   Serial.println(ESP.getFreeHeap());
   http.end(); // Close connection
+  //}
 }
 
 /**
@@ -1622,8 +1619,7 @@ void checkBalance()
       Serial.println(fiatValue);
       Serial.print("Buffer: ");
       Serial.println(buffer);
-      Serial.print(F("HTTP (checkPrice): "));
-      Serial.println(httpCode);
+      
       Serial.print(F("baseURLATM: "));
       Serial.println(baseURLATM);
       Serial.print(F("MAX selected: "));
@@ -2881,11 +2877,24 @@ void showQRCodeLVGL(const char *data)
   lv_label_set_long_mode(labelLNURL, LV_LABEL_LONG_WRAP); // Break the long lines
   lv_label_set_text(labelLNURL, modifiedLnURLgen.c_str());
   lv_obj_set_style_text_font(labelLNURL, &lv_font_montserrat_16, 0); // Use the large font
+  lv_obj_set_style_text_color(labelLNURL, lv_color_hex(0xCCCCCC), 0);
   lv_obj_align(labelLNURL, LV_ALIGN_TOP_LEFT, 5, 5);
   // Get the display width
   uint32_t display_width = lv_disp_get_hor_res(NULL);
   // Set the label width to the display width
   lv_obj_set_size(labelLNURL, display_width - 5, LV_SIZE_CONTENT);
+
+  // Create an LVGL label to display the message Warning
+  lv_obj_t *labelWarning = lv_label_create(screen_qr);
+  if (labelWarning == nullptr)
+  {
+    Serial.println("Failed to create label object labelWarning.");
+    return;
+  }  
+  lv_label_set_text(labelWarning, "IN CASE OF PROBLEMS, MAKE A PHOTO AND CONTACT SUPPORT");
+  lv_obj_set_style_text_font(labelWarning, &lv_font_montserrat_14, 0); // Use the large font
+  lv_obj_set_style_text_color(labelWarning, lv_color_hex(0xCCCCCC), 0);
+  lv_obj_align(labelWarning, LV_ALIGN_BOTTOM_MID, 0, -5);
 
   // Create an LVGL label to display the message
   lv_obj_t *label = lv_label_create(screen_qr);
@@ -2894,9 +2903,18 @@ void showQRCodeLVGL(const char *data)
     Serial.println("Failed to create label object.");
     return;
   }
-  lv_label_set_text(label, "TAP ON SCREEN WHEN FINISHED");
+
+  if (strcmp(fundingSourceBuffer, "LNbits") == 0)
+  {
+    lv_label_set_text(label, "TAP ON \nSCREEN \nWHEN \nFINISHED");
+  }
+  else
+  {
+    lv_label_set_text(label, "SCAN \nAND \nWAIT \nFOR \nCONFIR-\nMATION");
+  }
   lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0); // Use the large font
-  lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -5);
+  lv_obj_set_style_text_color(label, lv_color_hex(0xFF9900), 0);
+  lv_obj_align(label, LV_ALIGN_LEFT_MID, 5, 0);
 
   lv_scr_load(screen_qr);
 

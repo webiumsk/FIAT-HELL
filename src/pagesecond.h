@@ -20,7 +20,7 @@ static const char PAGE_SECOND[] PROGMEM = R"(
     {
       "name": "billmech2",
       "type": "ACInput",      
-      "label": "Note values 5,10,20,50,100",
+      "label": "Note values 100,200,500,1000,2000,5000",
       "value": ""
     },
     {
