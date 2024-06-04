@@ -132,7 +132,7 @@ lv_style_t style_disconnected;
 String atmtitle = "FIAT HELL";
 String atmsubtitle;
 String atmdesc = "";
-String pincode = "1111";
+String pincode;
 String blinkapikey;
 String blinkwalletid;
 

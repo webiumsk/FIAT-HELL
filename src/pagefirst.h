@@ -66,7 +66,7 @@ static const char PAGE_FIRST[] PROGMEM = R"(
     {
       "name": "billmech",
       "type": "ACInput",      
-      "label": "Note values 5,10,20,50,100",
+      "label": "Note values 5,10,20,50,100,200",
       "value": ""
     },
     {
