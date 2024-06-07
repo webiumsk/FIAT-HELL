@@ -87,17 +87,6 @@ static const char PAGE_FIRST[] PROGMEM = R"(
       "name": "newline1",
       "type": "ACElement",
       "value": "<hr>"
-    },
-    {
-      "name": "fundingsource",
-      "type": "ACRadio",
-      "value": [
-        "Blink",
-        "LNbits"
-      ],
-      "label": "Funding source 'blink' or 'lnbits'",
-      "arrange": "horizontal",
-      "checked": 1
     },    
     {
       "name": "load",
