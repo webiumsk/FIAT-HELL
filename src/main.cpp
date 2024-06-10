@@ -1771,21 +1771,36 @@ void checkBalance()
     deserializeJson(respDoc, responsePayload);
     if (httpCode == 200)
     {
-      JsonObject me = respDoc["data"]["me"]["defaultAccount"]["wallets"][0]; // Assuming you want the first wallet
-      String blinkwalletid = me["id"].as<String>();
-      String walletCurrency = me["walletCurrency"].as<String>();
-      balanceSats = me["balance"];
+      JsonArray wallets = respDoc["data"]["me"]["defaultAccount"]["wallets"].as<JsonArray>();
+      bool walletFound = false;
+      for (JsonObject wallet : wallets)
+      {
+        String walletid = wallet["id"].as<String>();
+        if (walletid == blinkwalletid)
+        {
+          String walletCurrency = wallet["walletCurrency"].as<String>();
+          int balanceSats = wallet["balance"];
 
-      fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
+          double fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
 
-      Serial.print("Wallet ID: ");
-      Serial.println(blinkwalletid);
-      Serial.print("Currency: ");
-      Serial.println(walletCurrency);
-      Serial.print("Balance: ");
-      Serial.println(balanceSats);
-      Serial.print("Fiat balance: ");
-      Serial.println(fiatBalance);
+          Serial.print("Wallet ID: ");
+          Serial.println(walletid);
+          Serial.print("Currency: ");
+          Serial.println(walletCurrency);
+          Serial.print("Balance: ");
+          Serial.println(balanceSats);
+          Serial.print("Fiat balance: ");
+          Serial.println(fiatBalance);
+
+          walletFound = true;
+          break; // Exit the loop as the wallet is found
+        }
+      }
+
+      if (!walletFound)
+      {
+        Serial.println("Wallet with specified ID not found");
+      }
     }
     else
     {
