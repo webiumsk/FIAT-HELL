@@ -1710,7 +1710,7 @@ void checkBalance()
       Serial.println(fiatValue);
       Serial.print("Buffer: ");
       Serial.println(buffer);
-      
+
       Serial.print(F("baseURLATM: "));
       Serial.println(baseURLATM);
       Serial.print(F("MAX selected: "));
@@ -1771,36 +1771,21 @@ void checkBalance()
     deserializeJson(respDoc, responsePayload);
     if (httpCode == 200)
     {
-      JsonArray wallets = respDoc["data"]["me"]["defaultAccount"]["wallets"].as<JsonArray>();
-      bool walletFound = false;
-      for (JsonObject wallet : wallets)
-      {
-        String walletid = wallet["id"].as<String>();
-        if (walletid == blinkwalletid)
-        {
-          String walletCurrency = wallet["walletCurrency"].as<String>();
-          int balanceSats = wallet["balance"];
+      JsonObject me = respDoc["data"]["me"]["defaultAccount"]["wallets"][0]; // Assuming you want the first wallet
+      String blinkwalletid = me["id"].as<String>();
+      String walletCurrency = me["walletCurrency"].as<String>();
+      balanceSats = me["balance"];
 
-          double fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
+      fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
 
-          Serial.print("Wallet ID: ");
-          Serial.println(walletid);
-          Serial.print("Currency: ");
-          Serial.println(walletCurrency);
-          Serial.print("Balance: ");
-          Serial.println(balanceSats);
-          Serial.print("Fiat balance: ");
-          Serial.println(fiatBalance);
-
-          walletFound = true;
-          break; // Exit the loop as the wallet is found
-        }
-      }
-
-      if (!walletFound)
-      {
-        Serial.println("Wallet with specified ID not found");
-      }
+      Serial.print("Wallet ID: ");
+      Serial.println(blinkwalletid);
+      Serial.print("Currency: ");
+      Serial.println(walletCurrency);
+      Serial.print("Balance: ");
+      Serial.println(balanceSats);
+      Serial.print("Fiat balance: ");
+      Serial.println(fiatBalance);
     }
     else
     {
@@ -2969,28 +2954,28 @@ void showQRCodeLVGL(const char *data)
     Serial.println("Failed to update QR code.");
     return;
   }
-  lv_obj_align(qr, LV_ALIGN_CENTER, 0, 25);
+  lv_obj_center(qr);
 
   // Add a border with bg_color
   lv_obj_set_style_border_color(qr, bg_color, 0);
   lv_obj_set_style_border_width(qr, 5, 0);
 
   // Create an LVGL label to display the LNURL
-  lv_obj_t *labelLNURL = lv_label_create(screen_qr);
-  if (labelLNURL == nullptr)
-  {
-    Serial.println("Failed to create label object.");
-    return;
-  }
-  lv_label_set_long_mode(labelLNURL, LV_LABEL_LONG_WRAP); // Break the long lines
-  lv_label_set_text(labelLNURL, modifiedLnURLgen.c_str());
-  lv_obj_set_style_text_font(labelLNURL, &lv_font_montserrat_16, 0); // Use the large font
-  lv_obj_set_style_text_color(labelLNURL, lv_color_hex(0xCCCCCC), 0);
-  lv_obj_align(labelLNURL, LV_ALIGN_TOP_LEFT, 5, 5);
-  // Get the display width
-  uint32_t display_width = lv_disp_get_hor_res(NULL);
-  // Set the label width to the display width
-  lv_obj_set_size(labelLNURL, display_width - 5, LV_SIZE_CONTENT);
+  // lv_obj_t *labelLNURL = lv_label_create(screen_qr);
+  // if (labelLNURL == nullptr)
+  // {
+  //   Serial.println("Failed to create label object.");
+  //   return;
+  // }
+  // lv_label_set_long_mode(labelLNURL, LV_LABEL_LONG_WRAP); // Break the long lines
+  // lv_label_set_text(labelLNURL, modifiedLnURLgen.c_str());
+  // lv_obj_set_style_text_font(labelLNURL, &lv_font_montserrat_16, 0); // Use the large font
+  // lv_obj_set_style_text_color(labelLNURL, lv_color_hex(0xCCCCCC), 0);
+  // lv_obj_align(labelLNURL, LV_ALIGN_TOP_LEFT, 5, 5);
+  // // Get the display width
+  // uint32_t display_width = lv_disp_get_hor_res(NULL);
+  // // Set the label width to the display width
+  // lv_obj_set_size(labelLNURL, display_width - 5, LV_SIZE_CONTENT);
 
   // Create an LVGL label to display the message Warning
   lv_obj_t *labelWarning = lv_label_create(screen_qr);
@@ -3014,15 +2999,15 @@ void showQRCodeLVGL(const char *data)
 
   if (strcmp(fundingSourceBuffer, "LNbits") == 0)
   {
-    lv_label_set_text(label, "TAP ON \nSCREEN \nWHEN \nFINISHED");
+    lv_label_set_text(label, "TAP ON SCREEN WHEN FINISHED");
   }
   else
   {
-    lv_label_set_text(label, "SCAN \nAND \nWAIT \nFOR \nCONFIR-\nMATION");
+    lv_label_set_text(label, "SCAN AND WAIT FOR CONFIRMATION");
   }
   lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0); // Use the large font
   lv_obj_set_style_text_color(label, lv_color_hex(0xFF9900), 0);
-  lv_obj_align(label, LV_ALIGN_LEFT_MID, 5, 0);
+  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 10);
 
   lv_scr_load(screen_qr);
 
