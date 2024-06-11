@@ -2726,29 +2726,24 @@ void makeLNURL()
   }
 
   byte payload[51]; // 51 bytes is max one can get with xor-encryption
+
   size_t payload_len = xor_encrypt(payload, sizeof(payload), (uint8_t *)secretATM.c_str(), secretATM.length(), nonce, sizeof(nonce), randomPin, float(total));
   String preparedURL = baseURLATM + "?atm=1&p=";
   preparedURL += toBase64(payload, payload_len, BASE64_URLSAFE | BASE64_NOPADDING);
 
   Serial.println(preparedURL);
-
   char Buf[200];
   preparedURL.toCharArray(Buf, 200);
-  qrData = String(Buf);
-
-  modifiedLnURLgen = preparedURL;
-
+  char *url = Buf;
+  byte *data = (byte *)calloc(strlen(url) * 2, sizeof(byte));
+  size_t len = 0;
+  int res = convert_bits(data, &len, 5, (byte *)url, strlen(url), 8, 1);
+  char *charLnurl = (char *)calloc(strlen(url) * 2, sizeof(byte));
+  bech32_encode(charLnurl, "lnurl", data, len);
+  to_upper(charLnurl);
+  qrData = charLnurl;
   Serial.print("Buf: ");
   Serial.println(Buf);
-
-  // Clear Buf content
-  memset(Buf, 0, sizeof(Buf));
-
-  // Optional: Print Buf to confirm it's cleared
-  Serial.print("Cleared Buf: ");
-  Serial.println(Buf);
-
-  printHeapStatus(); // Print heap status for debugging
 }
 
 /**
