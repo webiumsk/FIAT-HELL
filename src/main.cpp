@@ -84,7 +84,6 @@ size_t originalSizeOne = 0;
 size_t originalSizeTwo = 0;
 size_t originalSizeThree = 0;
 
-// start old
 HTTPClient http; // Declare object of class HTTPClient
 
 #define PARAM_FILE "/elements.json"
@@ -93,7 +92,7 @@ HTTPClient http; // Declare object of class HTTPClient
 #define THIRD_FILE "/third.json"
 
 String qrData;
-String password = "vojdivon"; // default WiFi AP password
+String password = "changeme"; // default WiFi AP password
 String lnurl;
 String lnurl2;
 String lnurl3;
@@ -165,12 +164,12 @@ int charge1;
 int charge2;
 int charge3;
 int chargeSelected = charge1;
-float fiatBalance; // zoztatok v €
+float fiatBalance; // zostatok v €
 float fiatValue = 0;
 float tempCharge;
 long result;
 char buffer[32];
-lv_obj_t *balanceValueLabel = nullptr; // Make this global so you can update it later
+lv_obj_t *balanceValueLabel = nullptr; // Make this global so we can update it later
 lv_obj_t *fiatValueLabel = nullptr;    // initialize globally
 lv_obj_t *chargeValueLabel = nullptr;  // initialize globally
 bool isInsertingMoney = false;
@@ -198,7 +197,7 @@ const char *secondaryConversionAPI = "https://min-api.cryptocompare.com/data/pri
 HardwareSerial SerialPort1(1);
 HardwareSerial SerialPort2(2);
 
-// lv_timer_t *escrow_task = NULL; // Declare this at global scope so you can delete it later
+// lv_timer_t *escrow_task = NULL; // Declare this at global scope so we can delete it later
 
 Button BTNA(BTN1);
 
@@ -1027,7 +1026,7 @@ void createLogoScreen()
 {
   screen_logo = lv_obj_create(NULL); // Create a new screen
 
-  // Put your logo creation code here, but replace `lv_scr_act()` with `screen_logo`
+  // Put  logo creation code here, but replace `lv_scr_act()` with `screen_logo`
   String LVGL_ATMURL = "ATM.LNPAY.EU";
   lv_obj_t *atmurl = lv_label_create(screen_logo); // use screen_logo as the parent
   lv_label_set_text(atmurl, LVGL_ATMURL.c_str());
@@ -1054,7 +1053,7 @@ void createLogoScreen()
   lv_anim_start(&a);
 
   lv_obj_t *img1 = lv_img_create(screen_logo); // Create an image object
-  lv_img_set_src(img1, &btcSmallImg);          // Set the image source to your converted image (my_image)
+  lv_img_set_src(img1, &btcSmallImg);          // Set the image source to  converted image (my_image)
   lv_obj_align(img1, LV_ALIGN_CENTER, 0, 0);   // Align the image to the center of the screen
 
   lv_scr_load(screen_logo);
@@ -1149,7 +1148,6 @@ void createAPIScreen()
   lv_label_set_text(connecttowifi, LVGL_CONNECT_TO_WIFI.c_str());       // set label text
   lv_obj_align(connecttowifi, LV_ALIGN_TOP_MID, 0, 80);                 // Center but 20 from the top
   lv_obj_set_style_text_font(connecttowifi, &lv_font_montserrat_24, 0); // Use the large font
-  // lv_obj_set_style_text_color(atmurl, LV_COLOR_WHITE, 0);
 
   String LVGL_PORTAL_TEXT_ONE = "Find new Wi-Fi network 'LN ATM-xxxx' ";
   lv_obj_t *portaltextone = lv_label_create(screen_api);                // full screen as the parent
@@ -1680,7 +1678,7 @@ void checkBalance()
     deserializeJson(respDoc, responsePayload);
     if (httpCode == 200)
     {
-      JsonObject me = respDoc["data"]["me"]["defaultAccount"]["wallets"][0]; // Assuming you want the first wallet
+      JsonObject me = respDoc["data"]["me"]["defaultAccount"]["wallets"][0]; // Assuming we want the first wallet
       String blinkwalletid = me["id"].as<String>();
       String walletCurrency = me["walletCurrency"].as<String>();
       balanceSats = me["balance"];
@@ -1968,7 +1966,7 @@ void createMainScreen()
   if (atmsubtitle == "DVADSATJEDEN")
   {
     lv_obj_t *img1 = lv_img_create(screen_main);   // Create an image object
-    lv_img_set_src(img1, &btcSmallImg);            // Set the image source to your converted image (my_image)
+    lv_img_set_src(img1, &btcSmallImg);            // Set the image source to  converted image (my_image)
     lv_obj_align(img1, LV_ALIGN_TOP_MID, 180, 70); // Align the image to the center of the screen
     Serial.println("createMainScreen: btc logo added");
   }
@@ -1976,7 +1974,7 @@ void createMainScreen()
   if (atmsubtitle == "AMITY")
   {
     lv_obj_t *img1 = lv_img_create(screen_main);   // Create an image object
-    lv_img_set_src(img1, &amityImg);            // Set the image source to your converted image (my_image)
+    lv_img_set_src(img1, &amityImg);            // Set the image source to  converted image (my_image)
     lv_obj_align(img1, LV_ALIGN_TOP_MID, 0, 15); // Align the image to the center of the screen
     Serial.println("createMainScreen: amity logo added");
   }
@@ -2008,14 +2006,14 @@ void createMainScreen()
   Serial.println("createMainScreen: balanceValueLabel created");
 
   snprintf(buffer, sizeof(buffer), "%ld %s", (long)fiatValue, currencySelected.c_str()); // Display as whole number and append the currency
-  fiatValueLabel = lv_label_create(screen_main);                                         // Create it on your main screen
+  fiatValueLabel = lv_label_create(screen_main);                                         // Create it on  main screen
   lv_label_set_text(fiatValueLabel, buffer);                                             // Initial text
   lv_obj_align(fiatValueLabel, LV_ALIGN_BOTTOM_MID, 0, -20);                             // Position it as you like
   lv_obj_set_style_text_font(fiatValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: fiatValueLabel created");
 
   snprintf(buffer, sizeof(buffer), "%d %%", chargeSelected);       // Convert the int to a char array
-  chargeValueLabel = lv_label_create(screen_main);                 // Create it on your main screen
+  chargeValueLabel = lv_label_create(screen_main);                 // Create it on  main screen
   lv_label_set_text(chargeValueLabel, buffer);                     // Set the label text using the buffer
   lv_obj_align(chargeValueLabel, LV_ALIGN_BOTTOM_RIGHT, -30, -20); // Position it as you like
   lv_obj_set_style_text_font(chargeValueLabel, &lv_font_montserrat_16, 0);
@@ -2051,7 +2049,7 @@ void createMainScreen()
 
 /*void escrow_and_balance_task(lv_timer_t * t) {
   Serial.println("Inside escrow_and_balance_task");
-  // Your balance checking logic here
+  //  balance checking logic here
   //checkBalance();
   SerialPort1.write(170); // Enable escrow mode
 
@@ -2062,7 +2060,7 @@ void createMainScreen()
     Serial.print("Read data: ");
     Serial.println(channel);
     if (channel >= 1 && channel <= 16) {
-      double noteValue = billAmountIntOne[channel]; // Replace 'yourMap' with the actual map or array you have of channel-value mappings
+      double noteValue = billAmountIntOne[channel]; 
       Serial.print("Note value");
       Serial.println(noteValue);
 
@@ -3263,7 +3261,7 @@ void loop()
         //      // bills = 0;
         //      // total = 0;
         //      // isInsertingMoney = false;
-        //      // Load your main screen or perform any other desired action
+        //      // Load main screen or perform any other desired action
         //      getBoltInvoice();
         //      getBlinkLnURL(boltInvoice);
 
@@ -3310,7 +3308,7 @@ void loop()
         bills = 0;
         total = 0;
         isInsertingMoney = false;
-        // Load your main screen or perform any other desired action
+        // Load  main screen or perform any other desired action
         deleteQRCodeScreen();
         // createMainScreen();
         ESP.restart();
