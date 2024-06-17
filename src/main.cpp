@@ -295,6 +295,7 @@ void btn_back_event_handler(lv_event_t *e);
 void switchFundingSource();
 void update_settings_button_style();
 void settings_btn_event_cb(lv_event_t *e);
+static void saveSettingsToFile();
 void createResetButton(lv_obj_t *parent);
 void createBackButton(lv_obj_t *parent);
 static void reset_btn_event_cb(lv_event_t *e);
@@ -808,22 +809,22 @@ void setup()
 
   guiAux.load(FPSTR(PAGE_GUI));
   guiAux.on([](AutoConnectAux &aux, PageArgument &arg)
-               {
+            {
     File paramGui = FlashFS.open(GUI_FILE, "r");
     if (paramGui)
     {
-      aux.loadElement(paramGui, {"fundingsource", "enableswitch", "animated"});
-      paramGui.close();
+        aux.loadElement(paramGui, {"fundingsource", "enableswitch", "animated"});
+        paramGui.close();
     }
 
     if (portal.where() == "/gui")
     {
-      File paramGui = FlashFS.open(GUI_FILE, "r");
-      if (paramGui)
-      {
-        aux.loadElement(paramGui, {"fundingsource", "enableswitch", "animated"});
-        paramGui.close();
-      }
+        File paramGui = FlashFS.open(GUI_FILE, "r");
+        if (paramGui)
+        {
+            aux.loadElement(paramGui, {"fundingsource", "enableswitch", "animated"});
+            paramGui.close();
+        }
     }
     return String(); });
 
@@ -926,17 +927,17 @@ void setup()
     File paramGui = FlashFS.open(GUI_FILE, "w");
     if (paramGui)
     {
-      // save as a loadable set for parameters.
-      guiAux.saveElement(paramGui, {"fundingsource", "enableswitch", "animated"});
-      paramGui.close();
-      // read the saved elements again to display.
-      paramGui = FlashFS.open(GUI_FILE, "r");
-      aux["echo"].value = paramGui.readString();
-      paramGui.close();
+        // save as a loadable set for parameters.
+        guiAux.saveElement(paramGui, {"fundingsource", "enableswitch", "animated"});
+        paramGui.close();
+        // read the saved elements again to display.
+        paramGui = FlashFS.open(GUI_FILE, "r");
+        aux["echo"].value = paramGui.readString();
+        paramGui.close();
     }
     else
     {
-      aux["echo"].value = "Filesystem failed to open.";
+        aux["echo"].value = "Filesystem failed to open.";
     }
     return String(); });
 
@@ -2306,6 +2307,9 @@ void switch_event_handler(lv_event_t *e)
   updateBurnText();
   updateMainScreenLabel();
 
+  // Save the updated settings to the file
+  saveSettingsToFile();
+
   Serial.print(F("Switch: Funding source: "));
   Serial.println(fundingSourceBuffer);
 }
@@ -3057,6 +3061,65 @@ void printHeapStatus()
   Serial.println(ESP.getMaxAllocHeap());
   Serial.print("Heap fragmentation: ");
   Serial.println((float)(ESP.getHeapSize() - ESP.getFreeHeap()) / ESP.getHeapSize() * 100.0);
+}
+
+static void saveSettingsToFile()
+{
+  StaticJsonDocument<2500> docGui;
+
+  JsonObject docGui0 = docGui.createNestedObject();
+  docGui0["name"] = "fundingsource";
+  JsonArray valuesFundingSource = docGui0.createNestedArray("value");
+  valuesFundingSource.add("Blink");
+  valuesFundingSource.add("LNbits");
+  if (strcmp(fundingSourceBuffer, "Blink") == 0)
+  {
+    docGui0["checked"] = 1;
+  }
+  else
+  {
+    docGui0["checked"] = 2;
+  }
+
+  JsonObject docGui1 = docGui.createNestedObject();
+  docGui1["name"] = "enableswitch";
+  JsonArray valuesEnableSwitch = docGui1.createNestedArray("value");
+  valuesEnableSwitch.add("No");
+  valuesEnableSwitch.add("Yes");
+  if (strcmp(enableSwitchBuffer, "No") == 0)
+  {
+    docGui1["checked"] = 1;
+  }
+  else
+  {
+    docGui1["checked"] = 2;
+  }
+
+  JsonObject docGui2 = docGui.createNestedObject();
+  docGui2["name"] = "animated";
+  JsonArray valuesEnableAnim = docGui2.createNestedArray("value");
+  valuesEnableAnim.add("No");
+  valuesEnableAnim.add("Yes");
+  if (strcmp(enableAnimBuffer, "No") == 0)
+  {
+    docGui2["checked"] = 1;
+  }
+  else
+  {
+    docGui2["checked"] = 2;
+  }
+
+  File guiFile = FlashFS.open(GUI_FILE, "w");
+  if (guiFile)
+  {
+    serializeJson(docGui, guiFile);
+    guiFile.close();
+    Serial.println("Settings saved to file");
+  }
+  else
+  {
+    Serial.println("Failed to open file for writing");
+  }
 }
 
 void displaySettingsScreen()
