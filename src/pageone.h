@@ -15,7 +15,7 @@ static const char PAGE_ELEMENTS[] PROGMEM = R"(
       "name": "password",
       "type": "ACInput",
       "label": "Password",
-      "value": "vojdivon"
+      "value": "changeme"
     },        
     {
       "name": "textwifi",
