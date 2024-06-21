@@ -61,6 +61,8 @@ fs::SPIFFSFS &FlashFS = SPIFFS;
 #include <vector>
 #include <iostream>
 
+#include <ArduinoOTA.h>
+
 #include <cstring> // For memset
 char Buf[200];     // Buffer for the encrypted data
 
@@ -84,15 +86,17 @@ size_t originalSizeOne = 0;
 size_t originalSizeTwo = 0;
 size_t originalSizeThree = 0;
 
+// start old
 HTTPClient http; // Declare object of class HTTPClient
 
 #define PARAM_FILE "/elements.json"
 #define FIRST_FILE "/first.json"
 #define SECOND_FILE "/second.json"
 #define THIRD_FILE "/third.json"
+#define GUI_FILE "/gui.json"
 
 String qrData;
-String password = "changeme"; // default WiFi AP password
+String password = "vojdivon"; // default WiFi AP password
 String lnurl;
 String lnurl2;
 String lnurl3;
@@ -152,6 +156,10 @@ static char fundingSourceBuffer[100] = {0}; // Ensure this buffer is large enoug
 const char *fundingsource = fundingSourceBuffer;
 static char enableSwitchBuffer[100] = {0}; // Ensure this buffer is large enough for possible values
 const char *enableswitch = enableSwitchBuffer;
+static char enableAnimBuffer[100] = {0}; // Ensure this buffer is large enough for possible values
+const char *animated = enableAnimBuffer;
+// static char titleColorBuffer[100] = {0};
+// String titleColor = titleColorBuffer;
 
 int bills;
 float coins;
@@ -164,12 +172,12 @@ int charge1;
 int charge2;
 int charge3;
 int chargeSelected = charge1;
-float fiatBalance; // zostatok v €
+float fiatBalance; // zoztatok v €
 float fiatValue = 0;
 float tempCharge;
 long result;
 char buffer[32];
-lv_obj_t *balanceValueLabel = nullptr; // Make this global so we can update it later
+lv_obj_t *balanceValueLabel = nullptr; // Make this global so you can update it later
 lv_obj_t *fiatValueLabel = nullptr;    // initialize globally
 lv_obj_t *chargeValueLabel = nullptr;  // initialize globally
 bool isInsertingMoney = false;
@@ -197,7 +205,7 @@ const char *secondaryConversionAPI = "https://min-api.cryptocompare.com/data/pri
 HardwareSerial SerialPort1(1);
 HardwareSerial SerialPort2(2);
 
-// lv_timer_t *escrow_task = NULL; // Declare this at global scope so we can delete it later
+// lv_timer_t *escrow_task = NULL; // Declare this at global scope so you can delete it later
 
 Button BTNA(BTN1);
 
@@ -226,6 +234,7 @@ String content = "<h1>ATM Access-point</br>For easy variable setting</h1>";
 #include "pagefirst.h"
 #include "pagesecond.h"
 #include "pagethird.h"
+#include "pagegui.h"
 
 WebServerClass server;
 AutoConnect portal(server);
@@ -241,6 +250,9 @@ AutoConnectAux savesecondAux;
 AutoConnectConfig third;
 AutoConnectAux thirdAux;
 AutoConnectAux savethirdAux;
+AutoConnectConfig gui;
+AutoConnectAux guiAux;
+AutoConnectAux saveguiAux;
 // end old
 
 /*** Setup screen resolution for LVGL ***/
@@ -261,7 +273,7 @@ void createLogoScreen();
 void createPortalScreen();
 void createAPIScreen();
 void createMainScreen();
-void createSwitch();
+void createSwitch(lv_obj_t *parent);
 void escrow_and_balance_task(lv_timer_t *t);
 void createInsertMoneyScreen();
 void lv_button_currency();
@@ -290,6 +302,8 @@ void createBackButton(lv_obj_t *parent);
 static void reset_btn_event_cb(lv_event_t *e);
 void setupPinEntryComponents(lv_obj_t *parent);
 void printHeapStatus();
+void showCurrencyScreen(const String &currency, float rate, float balance);
+void enableAcceptor();
 
 /**
  * @brief A class representing a sequence of characters.
@@ -431,21 +445,6 @@ void setup()
     const char *conf6Char = conf6["value"];
     pincode = conf6Char;
 
-    const JsonObject conf7 = conf[7];
-    const char *conf7Char = conf7["name"];
-    JsonArray valuesEnableSwitch = conf7["value"];
-    int checkedIndex = conf7["checked"];
-
-    if (checkedIndex > 0 && checkedIndex <= valuesEnableSwitch.size())
-    {
-      // Copy the selected funding source to the global buffer
-      strlcpy(enableSwitchBuffer, valuesEnableSwitch[checkedIndex - 1], sizeof(enableSwitchBuffer));
-      enableswitch = enableSwitchBuffer; // Point fundingsource to the global buffer
-
-      Serial.print(conf7Char);
-      Serial.print(": ");
-      Serial.println(enableswitch);
-    }
   }
   else
   {
@@ -463,7 +462,7 @@ void setup()
     File param = FlashFS.open(PARAM_FILE, "r");
     if (param)
     {
-      aux.loadElement(param, {"password", "localssid", "localpass", "atmdesc", "atmsubtitle", "atmtitle", "pincode", "enableswitch"});
+      aux.loadElement(param, {"password", "localssid", "localpass", "atmdesc", "atmsubtitle", "atmtitle", "pincode"});
       param.close();
     }
 
@@ -472,7 +471,7 @@ void setup()
       File param = FlashFS.open(PARAM_FILE, "r");
       if (param)
       {
-        aux.loadElement(param, {"password", "localssid", "localpass", "atmdesc", "atmsubtitle", "atmtitle", "pincode", "enableswitch"});
+        aux.loadElement(param, {"password", "localssid", "localpass", "atmdesc", "atmsubtitle", "atmtitle", "pincode"});
         param.close();
       }
     }
@@ -544,22 +543,7 @@ void setup()
     const char *docFirst8Char = docFirst8["value"];
     const String chargestr = docFirst8Char;
     charge1 = chargestr.toInt();
-
-    const JsonObject docFirst9 = docFirst[9];
-    const char *docFirst9Char = docFirst9["name"];
-    JsonArray valuesFundingSource = docFirst9["value"];
-    int checkedIndex = docFirst9["checked"];
-
-    if (checkedIndex > 0 && checkedIndex <= valuesFundingSource.size())
-    {
-      // Copy the selected funding source to the global buffer
-      strlcpy(fundingSourceBuffer, valuesFundingSource[checkedIndex - 1], sizeof(fundingSourceBuffer));
-      fundingsource = fundingSourceBuffer; // Point fundingsource to the global buffer
-
-      Serial.print(docFirst9Char);
-      Serial.print(": ");
-      Serial.println(fundingSourceBuffer);
-    }
+    
   }
   else
   {
@@ -577,7 +561,7 @@ void setup()
     File paramFirst = FlashFS.open(FIRST_FILE, "r");
     if (paramFirst)
     {
-      aux.loadElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyone", "billmech", "maxamount", "charge1", "fundingsource"});
+      aux.loadElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyone", "billmech", "maxamount", "charge1"});
       paramFirst.close();
     }
 
@@ -586,7 +570,7 @@ void setup()
       File paramFirst = FlashFS.open(FIRST_FILE, "r");
       if (paramFirst)
       {
-        aux.loadElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyone", "billmech", "maxamount", "charge1", "fundingsource"});
+        aux.loadElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyone", "billmech", "maxamount", "charge1"});
         paramFirst.close();
       }
     }
@@ -760,6 +744,93 @@ void setup()
     }
     return String(); });
 
+  // Gui page start
+  // get the saved details and store in global variables
+  File guiFile = FlashFS.open(GUI_FILE, "r");
+  if (guiFile)
+  {
+    StaticJsonDocument<2500> docGui;
+    DeserializationError error = deserializeJson(docGui, guiFile.readString());
+
+    const JsonObject docGui0 = docGui[0];
+    const char *docGui0Char = docGui0["name"];
+    JsonArray valuesFundingSource = docGui0["value"];
+    int checkedIndex = docGui0["checked"];
+
+    if (checkedIndex > 0 && checkedIndex <= valuesFundingSource.size())
+    {
+      // Copy the selected funding source to the global buffer
+      strlcpy(fundingSourceBuffer, valuesFundingSource[checkedIndex - 1], sizeof(fundingSourceBuffer));
+      fundingsource = fundingSourceBuffer; // Point fundingsource to the global buffer
+
+      Serial.print(docGui0Char);
+      Serial.print(": ");
+      Serial.println(fundingSourceBuffer);
+    }
+
+    const JsonObject docGui1 = docGui[1];
+    const char *docGui1Char = docGui1["name"];
+    JsonArray valuesEnableSwitch = docGui1["value"];
+    int checkedIndexSwitch = docGui1["checked"];
+
+    if (checkedIndexSwitch > 0 && checkedIndexSwitch <= valuesEnableSwitch.size())
+    {
+      // Copy the selected funding source to the global buffer
+      strlcpy(enableSwitchBuffer, valuesEnableSwitch[checkedIndexSwitch - 1], sizeof(enableSwitchBuffer));
+      enableswitch = enableSwitchBuffer; // Point fundingsource to the global buffer
+
+      Serial.print(docGui1Char);
+      Serial.print(": ");
+      Serial.println(enableswitch);
+    }
+
+    const JsonObject docGui2 = docGui[2];
+    const char *docGui2Char = docGui2["name"];
+    JsonArray valuesEnableAnim = docGui2["value"];
+    int checkedIndexAnim = docGui2["checked"];
+
+    if (checkedIndexAnim > 0 && checkedIndexAnim <= valuesEnableAnim.size())
+    {
+      // Copy the selected funding source to the global buffer
+      strlcpy(enableAnimBuffer, valuesEnableAnim[checkedIndexAnim - 1], sizeof(enableAnimBuffer));
+      animated = enableAnimBuffer; // Point fundingsource to the global buffer
+
+      Serial.print(docGui2Char);
+      Serial.print(": ");
+      Serial.println(animated);
+    }
+  }
+  else
+  {
+    triggerAp = true;
+  }
+  guiFile.close();
+  server.on("/", []()
+            {
+    content += AUTOCONNECT_LINK(COG_24);
+    server.send(200, "text/html", content); });
+
+  guiAux.load(FPSTR(PAGE_GUI));
+  guiAux.on([](AutoConnectAux &aux, PageArgument &arg)
+               {
+    File paramGui = FlashFS.open(GUI_FILE, "r");
+    if (paramGui)
+    {
+      aux.loadElement(paramGui, {"fundingsource", "enableswitch", "animated"});
+      paramGui.close();
+    }
+
+    if (portal.where() == "/gui")
+    {
+      File paramGui = FlashFS.open(GUI_FILE, "r");
+      if (paramGui)
+      {
+        aux.loadElement(paramGui, {"fundingsource", "enableswitch", "animated"});
+        paramGui.close();
+      }
+    }
+    return String(); });
+
   //*
   //*
   //*
@@ -772,7 +843,7 @@ void setup()
     if (param)
     {
       // save as a loadable set for parameters.
-      elementsAux.saveElement(param, {"password", "localssid", "localpass", "atmdesc", "atmsubtitle", "atmtitle", "pincode", "enableswitch"});
+      elementsAux.saveElement(param, {"password", "localssid", "localpass", "atmdesc", "atmsubtitle", "atmtitle", "pincode"});
       param.close();
       // read the saved elements again to display.
       param = FlashFS.open(PARAM_FILE, "r");
@@ -794,7 +865,7 @@ void setup()
     if (paramFirst)
     {
       // save as a loadable set for parameters.
-      firstAux.saveElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyone", "billmech", "maxamount", "charge1", "fundingsource"});
+      firstAux.saveElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyone", "billmech", "maxamount", "charge1"});
       paramFirst.close();
       // read the saved elements again to display.
       paramFirst = FlashFS.open(FIRST_FILE, "r");
@@ -828,6 +899,7 @@ void setup()
       aux["echo"].value = "Filesystem failed to open.";
     }
     return String(); });
+
   // Save third page
   savethirdAux.load(FPSTR(THIRD_SAVE));
   savethirdAux.on([](AutoConnectAux &aux, PageArgument &arg)
@@ -843,6 +915,28 @@ void setup()
       paramThird = FlashFS.open(THIRD_FILE, "r");
       aux["echo"].value = paramThird.readString();
       paramThird.close();
+    }
+    else
+    {
+      aux["echo"].value = "Filesystem failed to open.";
+    }
+    return String(); });
+
+  // Save gui page
+  saveguiAux.load(FPSTR(GUI_SAVE));
+  saveguiAux.on([](AutoConnectAux &aux, PageArgument &arg)
+                {
+    aux["caption"].value = GUI_FILE;
+    File paramGui = FlashFS.open(GUI_FILE, "w");
+    if (paramGui)
+    {
+      // save as a loadable set for parameters.
+      guiAux.saveElement(paramGui, {"fundingsource", "enableswitch", "animated"});
+      paramGui.close();
+      // read the saved elements again to display.
+      paramGui = FlashFS.open(GUI_FILE, "r");
+      aux["echo"].value = paramGui.readString();
+      paramGui.close();
     }
     else
     {
@@ -881,6 +975,8 @@ void setup()
   WiFi.begin(localssid, localpass);
   checkPrice();
   checkBalance();
+  // Initialize OTA
+  ArduinoOTA.begin();
   // updateMainScreenLabel();
 
   Serial.print(F("APP PASSWORD: "));
@@ -901,6 +997,8 @@ void setup()
   Serial.println(fundingSourceBuffer);
   Serial.print(F("Switch enabled: "));
   Serial.println(enableswitch);
+  Serial.print(F("Animation enabled: "));
+  Serial.println(animated);
   Serial.print(F("Currency selected: "));
   Serial.println(currencySelected);
   Serial.print(F("Main currency: "));
@@ -1026,7 +1124,7 @@ void createLogoScreen()
 {
   screen_logo = lv_obj_create(NULL); // Create a new screen
 
-  // Put  logo creation code here, but replace `lv_scr_act()` with `screen_logo`
+  // Put your logo creation code here, but replace `lv_scr_act()` with `screen_logo`
   String LVGL_ATMURL = "ATM.LNPAY.EU";
   lv_obj_t *atmurl = lv_label_create(screen_logo); // use screen_logo as the parent
   lv_label_set_text(atmurl, LVGL_ATMURL.c_str());
@@ -1053,7 +1151,7 @@ void createLogoScreen()
   lv_anim_start(&a);
 
   lv_obj_t *img1 = lv_img_create(screen_logo); // Create an image object
-  lv_img_set_src(img1, &btcSmallImg);          // Set the image source to  converted image (my_image)
+  lv_img_set_src(img1, &btcSmallImg);          // Set the image source to your converted image (my_image)
   lv_obj_align(img1, LV_ALIGN_CENTER, 0, 0);   // Align the image to the center of the screen
 
   lv_scr_load(screen_logo);
@@ -1148,6 +1246,7 @@ void createAPIScreen()
   lv_label_set_text(connecttowifi, LVGL_CONNECT_TO_WIFI.c_str());       // set label text
   lv_obj_align(connecttowifi, LV_ALIGN_TOP_MID, 0, 80);                 // Center but 20 from the top
   lv_obj_set_style_text_font(connecttowifi, &lv_font_montserrat_24, 0); // Use the large font
+  // lv_obj_set_style_text_color(atmurl, LV_COLOR_WHITE, 0);
 
   String LVGL_PORTAL_TEXT_ONE = "Find new Wi-Fi network 'LN ATM-xxxx' ";
   lv_obj_t *portaltextone = lv_label_create(screen_api);                // full screen as the parent
@@ -1288,10 +1387,10 @@ void checkNetworkAndDeviceStatus()
       // displaySettingsScreen(); // Show or update no connection screen
       SerialPort1.write(185);
     }
-    else 
-    {
-      SerialPort1.write(184);
-    }
+    // else 
+    // {
+    //   SerialPort1.write(184);
+    // }
   }
   else if (strcmp(fundingSourceBuffer, "LNbits") == 0 && (currencyATM == "" || adminkey == "" || readkey == ""))
   {
@@ -1617,7 +1716,7 @@ void checkBalance()
       Serial.println(fiatValue);
       Serial.print("Buffer: ");
       Serial.println(buffer);
-      
+
       Serial.print(F("baseURLATM: "));
       Serial.println(baseURLATM);
       Serial.print(F("MAX selected: "));
@@ -1678,7 +1777,7 @@ void checkBalance()
     deserializeJson(respDoc, responsePayload);
     if (httpCode == 200)
     {
-      JsonObject me = respDoc["data"]["me"]["defaultAccount"]["wallets"][0]; // Assuming we want the first wallet
+      JsonObject me = respDoc["data"]["me"]["defaultAccount"]["wallets"][0]; // Assuming you want the first wallet
       String blinkwalletid = me["id"].as<String>();
       String walletCurrency = me["walletCurrency"].as<String>();
       balanceSats = me["balance"];
@@ -1730,6 +1829,7 @@ static void btn1_event_handler(lv_event_t *e)
     }
     chargeSelected = charge1;
     maxamountSelected = maxamount;
+    showCurrencyScreen(currencyone, fiatValue, fiatBalance); // Show the new screen
   }
 }
 
@@ -1748,6 +1848,7 @@ static void btn2_event_handler(lv_event_t *e)
     }
     chargeSelected = charge2;
     maxamountSelected = maxamount2;
+    showCurrencyScreen(currencytwo, fiatValue, fiatBalance); // Show the new screen
   }
 }
 
@@ -1766,6 +1867,7 @@ static void btn3_event_handler(lv_event_t *e)
     }
     chargeSelected = charge3;
     maxamountSelected = maxamount3;
+    showCurrencyScreen(currencythree, fiatValue, fiatBalance); // Show the new screen
   }
 }
 
@@ -1886,8 +1988,8 @@ void updateMainScreenLabel()
  */
 void createMainScreen()
 {
-  SerialPort1.write(184);
-  digitalWrite(INHIBITMECH, HIGH);
+  //SerialPort1.write(184);
+  //digitalWrite(INHIBITMECH, HIGH);
   // if ((!wifiStatus()) && (strcmp(fundingSourceBuffer, "Blink") == 0))
   //   {
   //     Serial.println("No network connection available. Checking again soon...");
@@ -1945,15 +2047,22 @@ void createMainScreen()
   lv_obj_align(fiathell, LV_ALIGN_TOP_MID, 0, 95);                      // Center but 20 from the top
   lv_obj_set_style_text_font(fiathell, &lv_font_montserrat_bold_60, 0); // Assuming lv_font_montserrat_22 is a bold font.
 
-  lv_anim_t a;
-  lv_anim_init(&a);
-  lv_anim_set_var(&a, fiathell);
-  lv_anim_set_values(&a, 0, 255);
-  lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-  lv_anim_set_time(&a, 500); // duration of one color change cycle
-  lv_anim_set_exec_cb(&a, color_anim_cb);
-  lv_anim_start(&a);
-  // lv_task_handler();
+  if (strcmp(animated, "Yes") == 0)
+  {
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, fiathell);
+    lv_anim_set_values(&a, 0, 255);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_time(&a, 500); // duration of one color change cycle
+    lv_anim_set_exec_cb(&a, color_anim_cb);
+    lv_anim_start(&a);
+    Serial.println("createMainScreen: Animation started");
+  }
+  else
+  {
+    lv_obj_set_style_text_color(fiathell, LV_COLOR_ORANGE, 0);
+  }
 
   /* Create a label with big text */
   burnTextLabel = lv_label_create(screen_main); // Assign it to global variable
@@ -1963,18 +2072,18 @@ void createMainScreen()
   lv_obj_align(burnTextLabel, LV_ALIGN_TOP_MID, 0, 163);                // Center but 20 from the top
   Serial.println("createMainScreen: burnTextLabel created");
 
-  if (atmsubtitle == "DVADSATJEDEN")
+  if (atmsubtitle == "DVADSATJEDEN" || atmsubtitle == "21")
   {
     lv_obj_t *img1 = lv_img_create(screen_main);   // Create an image object
-    lv_img_set_src(img1, &btcSmallImg);            // Set the image source to  converted image (my_image)
+    lv_img_set_src(img1, &btcSmallImg);            // Set the image source to your converted image (my_image)
     lv_obj_align(img1, LV_ALIGN_TOP_MID, 180, 70); // Align the image to the center of the screen
     Serial.println("createMainScreen: btc logo added");
   }
 
-  if (atmsubtitle == "AMITY")
+  if (atmsubtitle == "AMITY" || atmsubtitle == "Amity")
   {
     lv_obj_t *img1 = lv_img_create(screen_main);   // Create an image object
-    lv_img_set_src(img1, &amityImg);            // Set the image source to  converted image (my_image)
+    lv_img_set_src(img1, &amityImg);            // Set the image source to your converted image (my_image)
     lv_obj_align(img1, LV_ALIGN_TOP_MID, 0, 15); // Align the image to the center of the screen
     Serial.println("createMainScreen: amity logo added");
   }
@@ -2006,14 +2115,14 @@ void createMainScreen()
   Serial.println("createMainScreen: balanceValueLabel created");
 
   snprintf(buffer, sizeof(buffer), "%ld %s", (long)fiatValue, currencySelected.c_str()); // Display as whole number and append the currency
-  fiatValueLabel = lv_label_create(screen_main);                                         // Create it on  main screen
+  fiatValueLabel = lv_label_create(screen_main);                                         // Create it on your main screen
   lv_label_set_text(fiatValueLabel, buffer);                                             // Initial text
   lv_obj_align(fiatValueLabel, LV_ALIGN_BOTTOM_MID, 0, -20);                             // Position it as you like
   lv_obj_set_style_text_font(fiatValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: fiatValueLabel created");
 
   snprintf(buffer, sizeof(buffer), "%d %%", chargeSelected);       // Convert the int to a char array
-  chargeValueLabel = lv_label_create(screen_main);                 // Create it on  main screen
+  chargeValueLabel = lv_label_create(screen_main);                 // Create it on your main screen
   lv_label_set_text(chargeValueLabel, buffer);                     // Set the label text using the buffer
   lv_obj_align(chargeValueLabel, LV_ALIGN_BOTTOM_RIGHT, -30, -20); // Position it as you like
   lv_obj_set_style_text_font(chargeValueLabel, &lv_font_montserrat_16, 0);
@@ -2036,20 +2145,56 @@ void createMainScreen()
   create_settings_button(screen_main); // Add the WiFi button to the main screen
 
   // Switch fundingsource
-  // if (strcmp(enableswitch, "Yes") == 0 && (isBlink && isLNbits))
-  // {
-  //   createSwitch();
-  //   Serial.println("createMainScreen: createSwitch created");
-  // }
+  if (strcmp(enableswitch, "Yes") == 0 && (isBlink && isLNbits))
+   {
+     createSwitch(screen_main);
+     Serial.println("createMainScreen: createSwitch created");
+   }
   lv_scr_load(screen_main);
   Serial.println("createMainScreen: Screen loaded");
   Serial.print("Free heap (createMainScreen End): ");
   Serial.println(ESP.getFreeHeap());
 }
 
+void showCurrencyScreen(const String &currency, float rate, float balance)
+{
+  lv_obj_t *currency_screen = lv_obj_create(NULL);
+
+  String currency_text = "Selected Currency: " + currency;
+  lv_obj_t *currency_label = lv_label_create(currency_screen);
+  lv_label_set_text(currency_label, currency_text.c_str());
+  lv_obj_align(currency_label, LV_ALIGN_TOP_MID, 0, 20);
+
+  String rate_text = "Rate: " + String(rate);
+  lv_obj_t *rate_label = lv_label_create(currency_screen);
+  lv_label_set_text(rate_label, rate_text.c_str());
+  lv_obj_align(rate_label, LV_ALIGN_TOP_MID, 0, 40);
+
+  String balance_text = "Balance: " + String(balance);
+  lv_obj_t *balance_label = lv_label_create(currency_screen);
+  lv_label_set_text(balance_label, balance_text.c_str());
+  lv_obj_align(balance_label, LV_ALIGN_TOP_MID, 0, 60);
+
+  String insert_text = "INSERT " + currency + " SHITCOIN";
+  lv_obj_t *insert_label = lv_label_create(currency_screen);
+  lv_label_set_text(insert_label, insert_text.c_str());
+  lv_obj_align(insert_label, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_text_font(insert_label, &lv_font_montserrat_24, 0);
+
+  lv_scr_load(currency_screen);
+
+  enableAcceptor(); // Enable the acceptor and uninhibit currencies
+}
+
+void enableAcceptor()
+{
+  SerialPort1.write(184);          // Enable acceptor
+  digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
+}
+
 /*void escrow_and_balance_task(lv_timer_t * t) {
   Serial.println("Inside escrow_and_balance_task");
-  //  balance checking logic here
+  // Your balance checking logic here
   //checkBalance();
   SerialPort1.write(170); // Enable escrow mode
 
@@ -2060,7 +2205,7 @@ void createMainScreen()
     Serial.print("Read data: ");
     Serial.println(channel);
     if (channel >= 1 && channel <= 16) {
-      double noteValue = billAmountIntOne[channel]; 
+      double noteValue = billAmountIntOne[channel]; // Replace 'yourMap' with the actual map or array you have of channel-value mappings
       Serial.print("Note value");
       Serial.println(noteValue);
 
@@ -2854,28 +2999,28 @@ void showQRCodeLVGL(const char *data)
     Serial.println("Failed to update QR code.");
     return;
   }
-  lv_obj_align(qr, LV_ALIGN_CENTER, 0, 25);
+  lv_obj_center(qr);
 
   // Add a border with bg_color
   lv_obj_set_style_border_color(qr, bg_color, 0);
   lv_obj_set_style_border_width(qr, 5, 0);
 
   // Create an LVGL label to display the LNURL
-  lv_obj_t *labelLNURL = lv_label_create(screen_qr);
-  if (labelLNURL == nullptr)
-  {
-    Serial.println("Failed to create label object.");
-    return;
-  }
-  lv_label_set_long_mode(labelLNURL, LV_LABEL_LONG_WRAP); // Break the long lines
-  lv_label_set_text(labelLNURL, modifiedLnURLgen.c_str());
-  lv_obj_set_style_text_font(labelLNURL, &lv_font_montserrat_16, 0); // Use the large font
-  lv_obj_set_style_text_color(labelLNURL, lv_color_hex(0xCCCCCC), 0);
-  lv_obj_align(labelLNURL, LV_ALIGN_TOP_LEFT, 5, 5);
-  // Get the display width
-  uint32_t display_width = lv_disp_get_hor_res(NULL);
-  // Set the label width to the display width
-  lv_obj_set_size(labelLNURL, display_width - 5, LV_SIZE_CONTENT);
+  // lv_obj_t *labelLNURL = lv_label_create(screen_qr);
+  // if (labelLNURL == nullptr)
+  // {
+  //   Serial.println("Failed to create label object.");
+  //   return;
+  // }
+  // lv_label_set_long_mode(labelLNURL, LV_LABEL_LONG_WRAP); // Break the long lines
+  // lv_label_set_text(labelLNURL, modifiedLnURLgen.c_str());
+  // lv_obj_set_style_text_font(labelLNURL, &lv_font_montserrat_16, 0); // Use the large font
+  // lv_obj_set_style_text_color(labelLNURL, lv_color_hex(0xCCCCCC), 0);
+  // lv_obj_align(labelLNURL, LV_ALIGN_TOP_LEFT, 5, 5);
+  // // Get the display width
+  // uint32_t display_width = lv_disp_get_hor_res(NULL);
+  // // Set the label width to the display width
+  // lv_obj_set_size(labelLNURL, display_width - 5, LV_SIZE_CONTENT);
 
   // Create an LVGL label to display the message Warning
   lv_obj_t *labelWarning = lv_label_create(screen_qr);
@@ -2899,15 +3044,15 @@ void showQRCodeLVGL(const char *data)
 
   if (strcmp(fundingSourceBuffer, "LNbits") == 0)
   {
-    lv_label_set_text(label, "TAP ON \nSCREEN \nWHEN \nFINISHED");
+    lv_label_set_text(label, "TAP ON SCREEN WHEN FINISHED");
   }
   else
   {
-    lv_label_set_text(label, "SCAN \nAND \nWAIT \nFOR \nCONFIR-\nMATION");
+    lv_label_set_text(label, "SCAN AND WAIT FOR CONFIRMATION");
   }
   lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0); // Use the large font
   lv_obj_set_style_text_color(label, lv_color_hex(0xFF9900), 0);
-  lv_obj_align(label, LV_ALIGN_LEFT_MID, 5, 0);
+  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 10);
 
   lv_scr_load(screen_qr);
 
@@ -2958,23 +3103,6 @@ void printHeapStatus()
   Serial.print("Heap fragmentation: ");
   Serial.println((float)(ESP.getHeapSize() - ESP.getFreeHeap()) / ESP.getHeapSize() * 100.0);
 }
-
-// void checkNetworkAndDeviceStatus()
-// {
-//   bool wifiStatus = checkWiFiConnection(); // Implement this function to check WiFi status
-
-//   if (!wifiStatus && (strcmp(fundingSourceBuffer, "Blink") == 0))
-//   {
-//     Serial.println("No Internet Connection. Disabling acceptor and waiting for connection...");
-
-//     // Turn off machines
-//     SerialPort1.write(185);         // Assuming this is the correct code to disable the acceptor
-//     digitalWrite(INHIBITMECH, LOW); // Assuming this pin controls the acceptor's ability to operate
-
-//     // Optionally, load a different screen/message
-//     //displaySettingsScreen(); // Implement this to update the UI accordingly
-//   }
-// }
 
 void displaySettingsScreen()
 {
@@ -3069,7 +3197,7 @@ void startConfigPortal()
 
   // Assume config and portal are previously defined and configured appropriately
   config.immediateStart = true;
-  portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux, savesecondAux, thirdAux, savethirdAux});
+  portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux, savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux});
   portal.config(config);
   portal.begin();
   while (true)
@@ -3144,6 +3272,7 @@ volatile bool isLoopReading = false;
 void loop()
 {
   lv_timer_handler(); // Let the GUI do its work
+  ArduinoOTA.handle();
   // portal.handleClient();
   if (initialCheck)
   {
@@ -3160,6 +3289,7 @@ void loop()
     checkPrice();
     checkBalance();          // Check the balance every 5 minutes
     updateMainScreenLabel(); // Update the label on the main screen with the new balance
+    update_settings_button_style();
     lv_task_handler();
   }
 
@@ -3211,11 +3341,11 @@ void loop()
     {
       makeLNURL();
       printHeapStatus();
-      Serial.println("makeLNURL() - LNbits offline");
+      Serial.println("makeLNURL() - LNbits offline: ");
       deleteInsertMoneyScreen();
-      Serial.println("deleteInsertMoneyScreen() - LNbits offline");
+      Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
       showQRCodeLVGL(qrData.c_str());
-      Serial.print("showQRCodeLVGL() - LNbits offline");
+      Serial.print("showQRCodeLVGL() - LNbits offline: ");
       Serial.println(qrData);
       // Turn off machines
       SerialPort1.write(185);
@@ -3256,7 +3386,7 @@ void loop()
         //      // bills = 0;
         //      // total = 0;
         //      // isInsertingMoney = false;
-        //      // Load main screen or perform any other desired action
+        //      // Load your main screen or perform any other desired action
         //      getBoltInvoice();
         //      getBlinkLnURL(boltInvoice);
 
@@ -3303,7 +3433,7 @@ void loop()
         bills = 0;
         total = 0;
         isInsertingMoney = false;
-        // Load  main screen or perform any other desired action
+        // Load your main screen or perform any other desired action
         deleteQRCodeScreen();
         // createMainScreen();
         ESP.restart();

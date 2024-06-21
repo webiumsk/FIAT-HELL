@@ -75,17 +75,6 @@ static const char PAGE_ELEMENTS[] PROGMEM = R"(
       "apply": "number",
       "label": "PIN: 4 digits",      
       "value": "1111"
-    },
-    {
-      "name": "enableswitch",
-      "type": "ACRadio",
-      "value": [
-        "No",
-        "Yes"
-      ],
-      "label": "Enable funding source switcher",
-      "arrange": "horizontal",
-      "checked": 1
     },  
     {
       "name": "load",
