@@ -61,7 +61,7 @@ fs::SPIFFSFS &FlashFS = SPIFFS;
 #include <vector>
 #include <iostream>
 
-#include <ArduinoOTA.h>
+//#include <ArduinoOTA.h>
 
 #include <cstring> // For memset
 char Buf[200];     // Buffer for the encrypted data
@@ -111,10 +111,10 @@ String secretATM3;
 String currencyATM;
 String currencyATM2;
 String currencyATM3;
-String currencyone = "EUR";
-String currencytwo;
-String currencythree;
-String currencySelected = currencyone;
+String currencyOne = "EUR";
+String currencyTwo;
+String currencyThree;
+String currencySelected = currencyOne;
 
 lv_obj_t *btn1;
 lv_obj_t *btn2;
@@ -511,7 +511,7 @@ void setup()
 
     const JsonObject docFirst5 = docFirst[5];
     const char *docFirst5Char = docFirst5["value"];
-    currencyone = docFirst5Char;
+    currencyOne = docFirst5Char;
 
     const JsonObject docFirst6 = docFirst[6];
     const char *docFirst6Char = docFirst6["value"];
@@ -562,7 +562,7 @@ void setup()
     File paramFirst = FlashFS.open(FIRST_FILE, "r");
     if (paramFirst)
     {
-      aux.loadElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyone", "billmech", "maxamount", "charge1"});
+      aux.loadElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyOne", "billmech", "maxamount", "charge1"});
       paramFirst.close();
     }
 
@@ -571,7 +571,7 @@ void setup()
       File paramFirst = FlashFS.open(FIRST_FILE, "r");
       if (paramFirst)
       {
-        aux.loadElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyone", "billmech", "maxamount", "charge1"});
+        aux.loadElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyOne", "billmech", "maxamount", "charge1"});
         paramFirst.close();
       }
     }
@@ -587,7 +587,7 @@ void setup()
 
     const JsonObject docSecond0 = docSecond[0];
     const char *docSecond0Char = docSecond0["value"];
-    currencytwo = docSecond0Char;
+    currencyTwo = docSecond0Char;
 
     const JsonObject docSecond1 = docSecond[1];
     const char *docSecond1Char = docSecond1["value"];
@@ -645,7 +645,7 @@ void setup()
     File paramSecond = FlashFS.open(SECOND_FILE, "r");
     if (paramSecond)
     {
-      aux.loadElement(paramSecond, {"currencytwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
+      aux.loadElement(paramSecond, {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
       paramSecond.close();
     }
 
@@ -654,7 +654,7 @@ void setup()
       File paramSecond = FlashFS.open(SECOND_FILE, "r");
       if (paramSecond)
       {
-        aux.loadElement(paramSecond, {"currencytwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
+        aux.loadElement(paramSecond, {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
         paramSecond.close();
       }
     }
@@ -672,7 +672,7 @@ void setup()
 
     const JsonObject docThird0 = docThird[0];
     const char *docThird0Char = docThird0["value"];
-    currencythree = docThird0Char;
+    currencyThree = docThird0Char;
 
     const JsonObject docThird1 = docThird[1];
     const char *docThird1Char = docThird1["value"];
@@ -730,7 +730,7 @@ void setup()
     File paramThird = FlashFS.open(THIRD_FILE, "r");
     if (paramThird)
     {
-      aux.loadElement(paramThird, {"currencythree", "lnurl3", "billmech3", "maxamount3", "charge3"});
+      aux.loadElement(paramThird, {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
       paramThird.close();
     }
 
@@ -739,7 +739,7 @@ void setup()
       File paramThird = FlashFS.open(THIRD_FILE, "r");
       if (paramThird)
       {
-        aux.loadElement(paramThird, {"currencythree", "lnurl3", "billmech3", "maxamount3", "charge3"});
+        aux.loadElement(paramThird, {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
         paramThird.close();
       }
     }
@@ -873,7 +873,7 @@ void setup()
     if (paramFirst)
     {
       // save as a loadable set for parameters.
-      firstAux.saveElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyone", "billmech", "maxamount", "charge1"});
+      firstAux.saveElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyOne", "billmech", "maxamount", "charge1"});
       paramFirst.close();
       // read the saved elements again to display.
       paramFirst = FlashFS.open(FIRST_FILE, "r");
@@ -895,7 +895,7 @@ void setup()
     if (paramSecond)
     {
       // save as a loadable set for parameters.
-      secondAux.saveElement(paramSecond, {"currencytwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
+      secondAux.saveElement(paramSecond, {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
       paramSecond.close();
       // read the saved elements again to display.
       paramSecond = FlashFS.open(SECOND_FILE, "r");
@@ -917,7 +917,7 @@ void setup()
     if (paramThird)
     {
       // save as a loadable set for parameters.
-      thirdAux.saveElement(paramThird, {"currencythree", "lnurl3", "billmech3", "maxamount3", "charge3"});
+      thirdAux.saveElement(paramThird, {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
       paramThird.close();
       // read the saved elements again to display.
       paramThird = FlashFS.open(THIRD_FILE, "r");
@@ -957,12 +957,12 @@ void setup()
   originalSizeThree = billAmountIntThree.size();
 
   // First merge billAmountIntOne and billAmountIntTwo
-  if (currencyATM2 != "" || currencytwo != "")
+  if (currencyATM2 != "" || currencyTwo != "")
   {
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntTwo.begin(), billAmountIntTwo.end());
   }
   // Check if currencyATM3 is not empty
-  if (currencyATM3 != "" || currencythree != "")
+  if (currencyATM3 != "" || currencyThree != "")
   {
     // Then merge billAmountIntThree into the now-extended billAmountIntOne
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntThree.begin(), billAmountIntThree.end());
@@ -984,7 +984,7 @@ void setup()
   checkPrice();
   checkBalance();
   // Initialize OTA
-  ArduinoOTA.begin();
+  //ArduinoOTA.begin();
   // updateMainScreenLabel();
 
   Serial.print(F("APP PASSWORD: "));
@@ -1010,11 +1010,11 @@ void setup()
   Serial.print(F("Currency selected: "));
   Serial.println(currencySelected);
   Serial.print(F("Main currency: "));
-  Serial.println(currencyone);
+  Serial.println(currencyOne);
   Serial.print(F("Second currency: "));
-  Serial.println(currencytwo);
+  Serial.println(currencyTwo);
   Serial.print(F("Third currency: "));
-  Serial.println(currencythree);
+  Serial.println(currencyThree);
   Serial.print(F("ATM currency: "));
   Serial.println(currencyATM);
   Serial.print(F("ATM2 currency: "));
@@ -1038,7 +1038,7 @@ void setup()
     startConfigPortal();
     timer = 2000;
   }
-  else if ((fundingSourceBuffer == "LNbits" && (currencyATM == "" || adminkey == "" || readkey == "")) || (fundingSourceBuffer == "Blink" && (blinkapikey == "" || blinkwalletid == "") || currencyone == ""))
+  else if ((fundingSourceBuffer == "LNbits" && (currencyATM == "" || adminkey == "" || readkey == "")) || (fundingSourceBuffer == "Blink" && (blinkapikey == "" || blinkwalletid == "") || currencyOne == ""))
   {
     createAPIScreen();
     lv_task_handler(); // Process LVGL tasks to refresh the screen.
@@ -1392,13 +1392,8 @@ void checkNetworkAndDeviceStatus()
     {
       Serial.println("No network connection available. Checking again soon...");
       // Optionally, trigger a screen update or indicator that network is required but unavailable
-      // displaySettingsScreen(); // Show or update no connection screen
       SerialPort1.write(185);
     }
-    // else 
-    // {
-    //   SerialPort1.write(184);
-    // }
   }
   else if (strcmp(fundingSourceBuffer, "LNbits") == 0 && (currencyATM == "" || adminkey == "" || readkey == ""))
   {
@@ -1476,6 +1471,8 @@ bool isBlink()
   {
     return false;
   }
+  Serial.print("isBlink: ");
+  Serial.println(isBlink());
 }
 bool isLNbits()
 {
@@ -1487,6 +1484,8 @@ bool isLNbits()
   {
     return false;
   }
+  Serial.print("isLNbits: ");
+  Serial.println(isLNbits());
 }
 void createThankYouScreen()
 {
@@ -1554,38 +1553,38 @@ void setCurrency(const String &newCurrency)
   int startChannel = 0;
   int currencySize = 0;
 
-  if (currencySelected == currencyone)
+  if (currencySelected == currencyOne)
   {
     startChannel = 0;
     currencySize = originalSizeOne;
-    lv_obj_add_state(btn1, LV_STATE_CHECKED);
-    if (currencytwo != "")
-    {
-      lv_obj_clear_state(btn2, LV_STATE_CHECKED);
-    }
-    if (currencythree != "")
-    {
-      lv_obj_clear_state(btn3, LV_STATE_CHECKED);
-    }
+    //lv_obj_add_state(btn1, LV_STATE_PRESSED);
+    // if (currencyTwo != "")
+    // {
+    //   lv_obj_clear_state(btn2, LV_STATE_CHECKED);
+    // }
+    // if (currencyThree != "")
+    // {
+    //   lv_obj_clear_state(btn3, LV_STATE_CHECKED);
+    // }
   }
-  else if (currencySelected == currencytwo)
+  else if (currencySelected == currencyTwo)
   {
     startChannel = originalSizeOne;
     currencySize = originalSizeTwo;
-    lv_obj_clear_state(btn1, LV_STATE_CHECKED);
-    lv_obj_add_state(btn2, LV_STATE_CHECKED);
-    if (currencythree != "")
-    {
-      lv_obj_clear_state(btn3, LV_STATE_CHECKED);
-    }
+    // lv_obj_clear_state(btn1, LV_STATE_CHECKED);
+    // lv_obj_add_state(btn2, LV_STATE_CHECKED);
+    // if (currencyThree != "")
+    // {
+    //   lv_obj_clear_state(btn3, LV_STATE_CHECKED);
+    // }
   }
-  else if (currencySelected == currencythree)
+  else if (currencySelected == currencyThree)
   {
     startChannel = originalSizeOne + originalSizeTwo;
     currencySize = originalSizeThree;
-    lv_obj_clear_state(btn1, LV_STATE_CHECKED);
-    lv_obj_clear_state(btn2, LV_STATE_CHECKED);
-    lv_obj_add_state(btn3, LV_STATE_CHECKED);
+    // lv_obj_clear_state(btn1, LV_STATE_CHECKED);
+    // lv_obj_clear_state(btn2, LV_STATE_CHECKED);
+    // lv_obj_add_state(btn3, LV_STATE_CHECKED);
   }
 
   // Uninhibit channels for the selected currency
@@ -1663,7 +1662,7 @@ void checkPrice()
  */
 void checkBalance()
 {
-  if (currencySelected == currencyATM || currencySelected == currencyone)
+  if (currencySelected == currencyATM || currencySelected == currencyOne)
   {
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
@@ -1673,7 +1672,7 @@ void checkBalance()
     chargeSelected = charge1;
     maxamountSelected = maxamount;
   }
-  else if (currencySelected == currencyATM2 || currencySelected == currencytwo)
+  else if (currencySelected == currencyATM2 || currencySelected == currencyTwo)
   {
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
@@ -1683,7 +1682,7 @@ void checkBalance()
     chargeSelected = charge2;
     maxamountSelected = maxamount2;
   }
-  else if (currencySelected == currencyATM3 || currencySelected == currencythree)
+  else if (currencySelected == currencyATM3 || currencySelected == currencyThree)
   {
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
@@ -1815,9 +1814,9 @@ static void update_button_states(lv_obj_t *active_btn)
 {
   if (active_btn != btn1)
     lv_obj_clear_state(btn1, LV_STATE_CHECKED);
-  if (active_btn != btn2 && currencytwo != "")
+  if (active_btn != btn2 && currencyTwo != "")
     lv_obj_clear_state(btn2, LV_STATE_CHECKED);
-  if (active_btn != btn3 && currencythree != "")
+  if (active_btn != btn3 && currencyThree != "")
     lv_obj_clear_state(btn3, LV_STATE_CHECKED);
   lv_obj_add_state(active_btn, LV_STATE_CHECKED);
 }
@@ -1827,9 +1826,9 @@ static void btn1_event_handler(lv_event_t *e)
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_CLICKED)
   {
-    setCurrency(currencyone);
+    setCurrency(currencyOne);
     update_button_states(lv_event_get_target(e));
-    Serial.println("Currency set to " + currencyone);
+    Serial.println("Currency set to " + currencyOne);
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
       baseURLATM = baseURLATM1;
@@ -1837,7 +1836,7 @@ static void btn1_event_handler(lv_event_t *e)
     }
     chargeSelected = charge1;
     maxamountSelected = maxamount;
-    showCurrencyScreen(currencyone, fiatValue, fiatBalance); // Show the new screen
+    showCurrencyScreen(currencyOne, fiatValue, fiatBalance); // Show the new screen
   }
 }
 
@@ -1846,9 +1845,9 @@ static void btn2_event_handler(lv_event_t *e)
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_CLICKED)
   {
-    setCurrency(currencytwo);
+    setCurrency(currencyTwo);
     update_button_states(lv_event_get_target(e));
-    Serial.println("Currency set to " + currencytwo);
+    Serial.println("Currency set to " + currencyTwo);
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
       baseURLATM = baseURLATM2;
@@ -1856,7 +1855,7 @@ static void btn2_event_handler(lv_event_t *e)
     }
     chargeSelected = charge2;
     maxamountSelected = maxamount2;
-    showCurrencyScreen(currencytwo, fiatValue, fiatBalance); // Show the new screen
+    showCurrencyScreen(currencyTwo, fiatValue, fiatBalance); // Show the new screen
   }
 }
 
@@ -1865,9 +1864,9 @@ static void btn3_event_handler(lv_event_t *e)
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_CLICKED)
   {
-    setCurrency(currencythree);
+    setCurrency(currencyThree);
     update_button_states(lv_event_get_target(e));
-    Serial.println("Currency set to " + currencythree);
+    Serial.println("Currency set to " + currencyThree);
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
       baseURLATM = baseURLATM3;
@@ -1875,7 +1874,7 @@ static void btn3_event_handler(lv_event_t *e)
     }
     chargeSelected = charge3;
     maxamountSelected = maxamount3;
-    showCurrencyScreen(currencythree, fiatValue, fiatBalance); // Show the new screen
+    showCurrencyScreen(currencyThree, fiatValue, fiatBalance); // Show the new screen
   }
 }
 
@@ -2034,7 +2033,7 @@ void createMainScreen()
   lv_obj_t *zeroline = lv_label_create(screen_main);    // full screen as the parent
   lv_label_set_text(zeroline, LVGL_Zero_Title.c_str()); // set label text
   lv_obj_align(zeroline, LV_ALIGN_TOP_MID, 0, 45);      // Center but 20 from the top
-  if (atmsubtitle == "AMITY")
+  if (atmsubtitle == "AMITY" || atmsubtitle == "Amity")
   {
     lv_label_set_text(zeroline, ""); // set label text
   }
@@ -2138,14 +2137,14 @@ void createMainScreen()
   lv_obj_set_style_text_font(chargeValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: chargeValueLabel created");
 
-  // if ((currencyATM2 != "" || currencyATM3 != "") || (currencytwo != "" || currencythree != ""))
+  // if ((currencyATM2 != "" || currencyATM3 != "") || (currencyTwo != "" || currencyThree != ""))
   // {
   lv_button_currency();
   Serial.println("createMainScreen: lv_button_currency created");
   // }
   // else
   // {
-  //   currencySelected = currencyone;
+  //   currencySelected = currencyOne;
   //   //setCurrency(currencySelected);
   //   //updateBurnText();
   //   //Serial.println("createMainScreen: updateBurnText created");
@@ -2174,6 +2173,7 @@ void showCurrencyScreen(const String &currency, float rate, float balance)
   lv_obj_t *currency_label = lv_label_create(currency_screen);
   lv_label_set_text(currency_label, currency_text.c_str());
   lv_obj_align(currency_label, LV_ALIGN_TOP_MID, 0, 20);
+  lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
 
   String rate_text = "Rate: " + String(rate);
   lv_obj_t *rate_label = lv_label_create(currency_screen);
@@ -2260,7 +2260,8 @@ void createInsertMoneyScreen()
   Serial.println(ESP.getFreeHeap());
 
   // Create a new screen
-  lv_obj_t *screen_insert_money = lv_obj_create(NULL);
+  //lv_obj_t *screen_insert_money = lv_obj_create(NULL);
+  screen_insert_money = lv_obj_create(NULL); // Create a new screen
   if (!screen_insert_money)
   {
     Serial.println("Failed to create a new screen!");
@@ -2395,23 +2396,23 @@ void createSwitch(lv_obj_t *parent)
   }
 }
 
-void set_initial_checked_button()
-{
-  // Example condition to decide which button should be checked
-  if (currencySelected == currencyone)
-  {
-    lv_obj_add_state(btn1, LV_STATE_CHECKED);
-  }
-  if (currencySelected == currencytwo)
-  {
-    lv_obj_add_state(btn2, LV_STATE_CHECKED);
-  }
-  if (currencySelected == currencythree)
-  {
-    lv_obj_add_state(btn3, LV_STATE_CHECKED);
-  }
-  // updateBurnText();
-}
+// void set_initial_checked_button()
+// {
+//   // Example condition to decide which button should be checked
+//   if (currencySelected == currencyOne)
+//   {
+//     lv_obj_add_state(btn1, LV_STATE_PRESSED);
+//   }
+//   if (currencySelected == currencyTwo)
+//   {
+//     lv_obj_add_state(btn2, LV_STATE_PRESSED);
+//   }
+//   if (currencySelected == currencyThree)
+//   {
+//     lv_obj_add_state(btn3, LV_STATE_CHECKED);
+//   }
+//   // updateBurnText();
+// }
 
 /**
  * @brief Function to create and initialize currency buttons.
@@ -2420,74 +2421,80 @@ void set_initial_checked_button()
  * It sets the position, size, and text of each button based on the currency values.
  * It also sets the button style for the checked state and sets the initial currency.
  *
- * @note This function assumes that the variables currencyATM3, currencythree, currencyone, currencytwo, and currencySelected are defined and accessible.
+ * @note This function assumes that the variables currencyATM3, currencyThree, currencyOne, currencyTwo, and currencySelected are defined and accessible.
  */
 void lv_button_currency()
 {
   lv_obj_t *labelbtn;
 
   // Initialize styles
-  static lv_style_t style_btn_default, style_btn_checked;
+  static lv_style_t style_btn_default, style_btn_pressed, style_btn_checked;
   lv_style_init(&style_btn_default);
-  lv_style_init(&style_btn_checked);
+  lv_style_init(&style_btn_pressed);
 
   // Default style properties
-  lv_style_set_bg_color(&style_btn_default, lv_color_make(0, 0, 0)); // Black background
-  lv_style_set_bg_opa(&style_btn_default, LV_OPA_COVER);
+  // lv_style_set_bg_color(&style_btn_default, lv_color_make(0, 0, 0)); // Black background
+  // lv_style_set_bg_opa(&style_btn_default, LV_OPA_COVER);
+  lv_style_set_bg_color(&style_btn_default, lv_color_black());
+  lv_style_set_border_color(&style_btn_default, LV_COLOR_ORANGE);
+  lv_style_set_border_width(&style_btn_default, 2);
 
   // Checked style properties
-  lv_style_set_bg_color(&style_btn_checked, lv_color_make(255, 165, 0)); // Orange color
-  lv_style_set_bg_opa(&style_btn_checked, LV_OPA_COVER);
+  // lv_style_set_bg_color(&style_btn_pressed, lv_color_make(255, 165, 0)); // Orange color
+  // lv_style_set_bg_opa(&style_btn_pressed, LV_OPA_COVER);
+  lv_style_set_bg_color(&style_btn_pressed, LV_COLOR_PURPLE);
+  lv_style_set_border_color(&style_btn_pressed, LV_COLOR_PURPLE);
+  lv_style_set_border_width(&style_btn_pressed, 2);
 
   // Create buttons and apply styles
   btn1 = lv_btn_create(screen_main);
   lv_obj_add_style(btn1, &style_btn_default, 0);                // Apply default style
-  lv_obj_add_style(btn1, &style_btn_checked, LV_STATE_CHECKED); // Apply checked style
+  lv_obj_add_style(btn1, &style_btn_pressed, LV_STATE_PRESSED); // Apply checked style
   lv_obj_add_event_cb(btn1, btn1_event_handler, LV_EVENT_ALL, NULL);
-  lv_obj_set_pos(btn1, currencyATM3 == "" || currencythree == "" ? 110 : 30, 200);
+  lv_obj_set_pos(btn1, currencyATM3 == "" || currencyThree == "" ? 110 : 30, 200);
   lv_obj_set_size(btn1, 120, 50);
   labelbtn = lv_label_create(btn1);
-  lv_label_set_text(labelbtn, currencyone.c_str());
+  lv_label_set_text(labelbtn, currencyOne.c_str());
   lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
   lv_obj_center(labelbtn);
 
   // Repeat for other buttons with respective modifications for btn2 and optionally btn3
-  if (currencyATM2 != "" || currencytwo != "")
+  if (currencyATM2 != "" || currencyTwo != "")
   {
     btn2 = lv_btn_create(screen_main);
     lv_obj_add_style(btn2, &style_btn_default, 0);
-    lv_obj_add_style(btn2, &style_btn_checked, LV_STATE_CHECKED);
+    lv_obj_add_style(btn2, &style_btn_pressed, LV_STATE_PRESSED);
     lv_obj_add_event_cb(btn2, btn2_event_handler, LV_EVENT_ALL, NULL);
-    lv_obj_set_pos(btn2, currencyATM3 == "" || currencythree == "" ? 260 : 180, 200);
+    lv_obj_set_pos(btn2, currencyATM3 == "" || currencyThree == "" ? 260 : 180, 200);
     lv_obj_set_size(btn2, 120, 50);
     labelbtn = lv_label_create(btn2);
-    lv_label_set_text(labelbtn, currencytwo.c_str());
+    lv_label_set_text(labelbtn, currencyTwo.c_str());
     lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
     lv_obj_center(labelbtn);
   }
 
-  if (currencyATM3 != "" || currencythree != "")
+  if (currencyATM3 != "" || currencyThree != "")
   {
     btn3 = lv_btn_create(screen_main);
     lv_obj_add_style(btn3, &style_btn_default, 0);
-    lv_obj_add_style(btn3, &style_btn_checked, LV_STATE_CHECKED);
+    lv_obj_add_style(btn3, &style_btn_pressed, LV_STATE_PRESSED);
     lv_obj_add_event_cb(btn3, btn3_event_handler, LV_EVENT_ALL, NULL);
     lv_obj_set_pos(btn3, 330, 200);
     lv_obj_set_size(btn3, 120, 50);
     labelbtn = lv_label_create(btn3);
-    lv_label_set_text(labelbtn, currencythree.c_str());
+    lv_label_set_text(labelbtn, currencyThree.c_str());
     lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
     lv_obj_center(labelbtn);
   }
 
   // Set initial currency
-  setCurrency(currencyone);
+  setCurrency(currencyOne);
   // Serial.print(F("Set initial Currency: "));
   // Serial.println(currencySelected);
 
   // Set initial checked state after all buttons are created
   // Switch fundingsource
-  set_initial_checked_button();
+  //set_initial_checked_button();
 }
 
 /*** Display callback to flush the buffer to screen ***/
@@ -2978,21 +2985,21 @@ void showMessageLVGL(String message)
 
 void showQRCodeLVGL(const char *data)
 {
-  static lv_obj_t *screen_qr = nullptr;
+  //static lv_obj_t *screen_qr = nullptr;
 
-  if (screen_qr != nullptr)
-  {
-    lv_obj_del(screen_qr); // Delete the previous screen
-    screen_qr = nullptr;
-    Serial.println("Previous screen deleted");
-  }
-
+  // if (screen_qr != nullptr)
+  // {
+  //   lv_obj_del(screen_qr); // Delete the previous screen
+  //   screen_qr = nullptr;
+  //   Serial.println("Previous screen deleted");
+  // }
+  
   screen_qr = lv_obj_create(NULL); // Create a new screen
-  if (screen_qr == nullptr)
-  {
-    Serial.println("Failed to create screen object.");
-    return;
-  }
+  // if (screen_qr == nullptr)
+  // {
+  //   Serial.println("Failed to create screen object.");
+  //   return;
+  // }
   Serial.println("showQRCodeLVGL: Screen created");
 
   lv_color_t bg_color = lv_color_white();
@@ -3102,6 +3109,16 @@ void deleteQRCodeScreen()
     lv_obj_del(screen_qr);
     screen_qr = NULL; // Set the pointer to NULL to avoid "dangling pointers"
     Serial.println(F("Delete: screen_qr"));
+  }
+}
+
+void deleteThankYouScreen()
+{
+  if (screen_thx != NULL)
+  { // Check if screen_qr actually points to an object
+    lv_obj_del(screen_thx);
+    screen_thx = NULL; // Set the pointer to NULL to avoid "dangling pointers"
+    Serial.println(F("Delete: screen_thx"));
   }
 }
 
@@ -3344,7 +3361,7 @@ volatile bool isLoopReading = false;
 void loop()
 {
   lv_timer_handler(); // Let the GUI do its work
-  ArduinoOTA.handle();
+  //ArduinoOTA.handle();
   // portal.handleClient();
   if (initialCheck)
   {
@@ -3414,8 +3431,8 @@ void loop()
       makeLNURL();
       printHeapStatus();
       Serial.println("makeLNURL() - LNbits offline: ");
-      deleteInsertMoneyScreen();
-      Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
+      //deleteInsertMoneyScreen();
+      //Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
       showQRCodeLVGL(qrData.c_str());
       Serial.print("showQRCodeLVGL() - LNbits offline: ");
       Serial.println(qrData);
@@ -3434,8 +3451,8 @@ void loop()
       {
         createLNURLWithdraw();
         Serial.println("createLNURLWithdraw() - Blink online");
-        deleteInsertMoneyScreen();
-        Serial.println("deleteInsertMoneyScreen() - Blink online");
+        //deleteInsertMoneyScreen();
+        //Serial.println("deleteInsertMoneyScreen() - Blink online");
         // Display the QR code for online
         showQRCodeLVGL(lnURLgen.c_str());
         Serial.println("showQRCodeLVGL() - Blink online");
@@ -3469,15 +3486,18 @@ void loop()
         deleteQRCodeScreen();
         createThankYouScreen();
         lv_task_handler();
-        delay(3000);
+        delay(1200);
+        //deleteThankYouScreen();
+        //createMainScreen();
         ESP.restart();
       }
       if (strcmp(fundingSourceBuffer, "LNbits") == 0)
       {
         getLNURL();
         Serial.println("getLNURL()");
+        delay(1000);
         deleteInsertMoneyScreen();
-        Serial.println("deleteInsertMoneyScreen() - LNbits online");
+        //Serial.println("deleteInsertMoneyScreen() - LNbits online");
         // Display the QR code for online
         showQRCodeLVGL(lnURLgen.c_str());
         Serial.println("showQRCodeLVGL() - LNbits online");
@@ -3507,7 +3527,7 @@ void loop()
         isInsertingMoney = false;
         // Load your main screen or perform any other desired action
         deleteQRCodeScreen();
-        // createMainScreen();
+        //createMainScreen();
         ESP.restart();
       }
     }

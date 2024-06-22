@@ -58,7 +58,7 @@ static const char PAGE_FIRST[] PROGMEM = R"(
       "value": "<hr>"
     },
     {
-      "name": "currencyone",
+      "name": "currencyOne",
       "type": "ACInput",
       "label": "Main Currency",
       "value": ""
