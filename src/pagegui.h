@@ -36,7 +36,7 @@ static const char PAGE_GUI[] PROGMEM = R"(
       ],
       "label": "Enable animated main title",
       "arrange": "horizontal",
-      "checked": 1
+      "checked": 2
     },  
     {
       "name": "load",

@@ -216,6 +216,8 @@ lv_obj_t *labelLastInserted = nullptr;
 lv_obj_t *labelTotalAmount = nullptr;
 lv_obj_t *labelMaxAmount = nullptr;
 
+lv_obj_t *loadingLabel;
+
 // Switch fundingsource
 lv_obj_t *switch_label;
 lv_obj_t *switch_fund;
@@ -303,7 +305,10 @@ void createBackButton(lv_obj_t *parent);
 static void reset_btn_event_cb(lv_event_t *e);
 void setupPinEntryComponents(lv_obj_t *parent);
 void printHeapStatus();
-void showCurrencyScreen(const String &currency, float rate, float balance);
+void showCurrencyScreen(const String &currency, float rate, float balance, float charge);
+void createLoadingIndicator();
+void showLoadingIndicator();
+void hideLoadingIndicator();
 void enableAcceptor();
 
 /**
@@ -987,6 +992,10 @@ void setup()
   //ArduinoOTA.begin();
   // updateMainScreenLabel();
 
+  // Create the loading indicator
+  createLoadingIndicator();
+  lv_task_handler();
+
   Serial.print(F("APP PASSWORD: "));
   Serial.println(password);
   Serial.print(F("SSID: "));
@@ -1594,7 +1603,7 @@ void setCurrency(const String &newCurrency)
     Serial.print("Sending value allow " + currencySelected + ": ");
     Serial.println(channelCode);
     SerialPort1.write(channelCode);
-    delay(200);
+    delay(20);
   }
 }
 
@@ -1810,15 +1819,40 @@ void checkBalance()
 }
 
 // Generic function to manage button states
-static void update_button_states(lv_obj_t *active_btn)
+// static void update_button_states(lv_obj_t *active_btn)
+// {
+//   if (active_btn != btn1)
+//     lv_obj_clear_state(btn1, LV_STATE_CHECKED);
+//   if (active_btn != btn2 && currencyTwo != "")
+//     lv_obj_clear_state(btn2, LV_STATE_CHECKED);
+//   if (active_btn != btn3 && currencyThree != "")
+//     lv_obj_clear_state(btn3, LV_STATE_CHECKED);
+//   lv_obj_add_state(active_btn, LV_STATE_CHECKED);
+// }
+
+void createLoadingIndicator()
 {
-  if (active_btn != btn1)
-    lv_obj_clear_state(btn1, LV_STATE_CHECKED);
-  if (active_btn != btn2 && currencyTwo != "")
-    lv_obj_clear_state(btn2, LV_STATE_CHECKED);
-  if (active_btn != btn3 && currencyThree != "")
-    lv_obj_clear_state(btn3, LV_STATE_CHECKED);
-  lv_obj_add_state(active_btn, LV_STATE_CHECKED);
+  loadingLabel = lv_label_create(lv_scr_act());
+  lv_label_set_text(loadingLabel, "Loading...");
+  lv_obj_center(loadingLabel);
+  lv_obj_set_style_text_font(loadingLabel, &lv_font_montserrat_22, 0); // Optional: set font size
+  lv_obj_add_flag(loadingLabel, LV_OBJ_FLAG_HIDDEN); // Initially hidden
+  Serial.println("Loading indicator created");
+}
+
+void showLoadingIndicator()
+{
+  lv_obj_clear_flag(loadingLabel, LV_OBJ_FLAG_HIDDEN); // Show loading indicator
+  lv_refr_now(NULL);                                   // Force immediate refresh of LVGL
+  //delay(100);                                          // Small delay to ensure the display updates
+  Serial.println("Loading indicator shown");
+}
+
+void hideLoadingIndicator()
+{
+  lv_obj_add_flag(loadingLabel, LV_OBJ_FLAG_HIDDEN); // Hide loading indicator
+  lv_refr_now(NULL);                                 // Force immediate refresh of LVGL
+  Serial.println("Loading indicator hidden");
 }
 
 static void btn1_event_handler(lv_event_t *e)
@@ -1826,8 +1860,10 @@ static void btn1_event_handler(lv_event_t *e)
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_CLICKED)
   {
+    showLoadingIndicator();
+
     setCurrency(currencyOne);
-    update_button_states(lv_event_get_target(e));
+    //update_button_states(lv_event_get_target(e));
     Serial.println("Currency set to " + currencyOne);
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
@@ -1836,7 +1872,9 @@ static void btn1_event_handler(lv_event_t *e)
     }
     chargeSelected = charge1;
     maxamountSelected = maxamount;
-    showCurrencyScreen(currencyOne, fiatValue, fiatBalance); // Show the new screen
+    showCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected); // Show the new screen
+
+    hideLoadingIndicator();
   }
 }
 
@@ -1845,8 +1883,10 @@ static void btn2_event_handler(lv_event_t *e)
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_CLICKED)
   {
+    showLoadingIndicator();
+
     setCurrency(currencyTwo);
-    update_button_states(lv_event_get_target(e));
+    //update_button_states(lv_event_get_target(e));
     Serial.println("Currency set to " + currencyTwo);
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
@@ -1855,7 +1895,9 @@ static void btn2_event_handler(lv_event_t *e)
     }
     chargeSelected = charge2;
     maxamountSelected = maxamount2;
-    showCurrencyScreen(currencyTwo, fiatValue, fiatBalance); // Show the new screen
+    showCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected); // Show the new screen
+
+    hideLoadingIndicator();
   }
 }
 
@@ -1864,8 +1906,10 @@ static void btn3_event_handler(lv_event_t *e)
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_CLICKED)
   {
+    showLoadingIndicator();
+
     setCurrency(currencyThree);
-    update_button_states(lv_event_get_target(e));
+    //update_button_states(lv_event_get_target(e));
     Serial.println("Currency set to " + currencyThree);
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
@@ -1874,7 +1918,9 @@ static void btn3_event_handler(lv_event_t *e)
     }
     chargeSelected = charge3;
     maxamountSelected = maxamount3;
-    showCurrencyScreen(currencyThree, fiatValue, fiatBalance); // Show the new screen
+    showCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected); // Show the new screen
+
+    hideLoadingIndicator();
   }
 }
 
@@ -2165,7 +2211,7 @@ void createMainScreen()
   Serial.println(ESP.getFreeHeap());
 }
 
-void showCurrencyScreen(const String &currency, float rate, float balance)
+void showCurrencyScreen(const String &currency, float rate, float balance, float charge)
 {
   lv_obj_t *currency_screen = lv_obj_create(NULL);
 
@@ -2175,15 +2221,23 @@ void showCurrencyScreen(const String &currency, float rate, float balance)
   lv_obj_align(currency_label, LV_ALIGN_TOP_MID, 0, 20);
   lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
 
-  String rate_text = "Rate: " + String(rate);
+  String rate_text = "Rate: " + String(rate) + currency + "/BTC";
   lv_obj_t *rate_label = lv_label_create(currency_screen);
   lv_label_set_text(rate_label, rate_text.c_str());
-  lv_obj_align(rate_label, LV_ALIGN_TOP_MID, 0, 40);
+  lv_obj_align(rate_label, LV_ALIGN_TOP_MID, 0, 50);
+  lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
 
-  String balance_text = "Balance: " + String(balance);
+  String balance_text = "Balance: " + String(balance) + currency;
   lv_obj_t *balance_label = lv_label_create(currency_screen);
   lv_label_set_text(balance_label, balance_text.c_str());
-  lv_obj_align(balance_label, LV_ALIGN_TOP_MID, 0, 60);
+  lv_obj_align(balance_label, LV_ALIGN_TOP_MID, 0, 80);
+  lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
+
+  String charge_text = "Fee: " + String(charge) + "%";
+  lv_obj_t *charge_label = lv_label_create(currency_screen);
+  lv_label_set_text(charge_label, charge_text.c_str());
+  lv_obj_align(charge_label, LV_ALIGN_TOP_MID, 0, 110);
+  lv_obj_set_style_text_font(charge_label, &lv_font_montserrat_16, 0);
 
   String insert_text = "INSERT " + currency + " SHITCOIN";
   lv_obj_t *insert_label = lv_label_create(currency_screen);
@@ -2369,6 +2423,27 @@ void switch_event_handler(lv_event_t *e)
   Serial.println(fundingSourceBuffer);
 }
 
+static void switch_animation_event_handler(lv_event_t *e)
+{
+  lv_event_code_t code = lv_event_get_code(e);
+  lv_obj_t *switch_obj = lv_event_get_target(e);
+  if (code == LV_EVENT_VALUE_CHANGED)
+  {
+    if (lv_obj_has_state(switch_obj, LV_STATE_CHECKED))
+    {
+      strcpy(enableAnimBuffer, "Yes");
+    }
+    else
+    {
+      strcpy(enableAnimBuffer, "No");
+    }
+    Serial.print("Animation enabled: ");
+    Serial.println(enableAnimBuffer);
+    // Save the updated setting to JSON
+    saveSettingsToFile();
+  }
+}
+
 void createSwitch(lv_obj_t *parent)
 {
   // Create a switch and add it to the screen
@@ -2428,59 +2503,86 @@ void lv_button_currency()
   lv_obj_t *labelbtn;
 
   // Initialize styles
-  static lv_style_t style_btn_default, style_btn_pressed, style_btn_checked;
+  static lv_style_t style_btn_default, style_btn_pressed;
   lv_style_init(&style_btn_default);
   lv_style_init(&style_btn_pressed);
 
   // Default style properties
-  // lv_style_set_bg_color(&style_btn_default, lv_color_make(0, 0, 0)); // Black background
-  // lv_style_set_bg_opa(&style_btn_default, LV_OPA_COVER);
   lv_style_set_bg_color(&style_btn_default, lv_color_black());
   lv_style_set_border_color(&style_btn_default, LV_COLOR_ORANGE);
   lv_style_set_border_width(&style_btn_default, 2);
 
   // Checked style properties
-  // lv_style_set_bg_color(&style_btn_pressed, lv_color_make(255, 165, 0)); // Orange color
-  // lv_style_set_bg_opa(&style_btn_pressed, LV_OPA_COVER);
   lv_style_set_bg_color(&style_btn_pressed, LV_COLOR_PURPLE);
   lv_style_set_border_color(&style_btn_pressed, LV_COLOR_PURPLE);
   lv_style_set_border_width(&style_btn_pressed, 2);
 
-  // Create buttons and apply styles
-  btn1 = lv_btn_create(screen_main);
-  lv_obj_add_style(btn1, &style_btn_default, 0);                // Apply default style
-  lv_obj_add_style(btn1, &style_btn_pressed, LV_STATE_PRESSED); // Apply checked style
-  lv_obj_add_event_cb(btn1, btn1_event_handler, LV_EVENT_ALL, NULL);
-  lv_obj_set_pos(btn1, currencyATM3 == "" || currencyThree == "" ? 110 : 30, 200);
-  lv_obj_set_size(btn1, 120, 50);
-  labelbtn = lv_label_create(btn1);
-  lv_label_set_text(labelbtn, currencyOne.c_str());
-  lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
-  lv_obj_center(labelbtn);
+  // Calculate positions based on the number of buttons
+  int num_buttons = 0;
+  if (!currencyOne.isEmpty())
+    num_buttons++;
+  if (!currencyTwo.isEmpty())
+    num_buttons++;
+  if (!currencyThree.isEmpty())
+    num_buttons++;
 
-  // Repeat for other buttons with respective modifications for btn2 and optionally btn3
-  if (currencyATM2 != "" || currencyTwo != "")
+  int screen_width = 480;
+  int btn_width = 120;
+  int btn_height = 50;
+  int spacing = 20;
+
+  int start_x = (screen_width - (num_buttons * btn_width + (num_buttons - 1) * spacing)) / 2;
+
+  // Create buttons and apply styles
+  if (!currencyOne.isEmpty())
+  {
+    btn1 = lv_btn_create(screen_main);
+    lv_obj_add_style(btn1, &style_btn_default, 0);                // Apply default style
+    lv_obj_add_style(btn1, &style_btn_pressed, LV_STATE_PRESSED); // Apply checked style
+    lv_obj_add_event_cb(btn1, btn1_event_handler, LV_EVENT_ALL, NULL);
+    lv_obj_set_pos(btn1, start_x, 200);
+    lv_obj_set_size(btn1, btn_width, btn_height);
+    labelbtn = lv_label_create(btn1);
+
+    if (currencyTwo.isEmpty() && currencyThree.isEmpty())
+    {
+      lv_label_set_text(labelbtn, "START");
+    }
+    else
+    {
+      lv_label_set_text(labelbtn, currencyOne.c_str());
+    }
+
+    lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
+    lv_obj_center(labelbtn);
+
+    start_x += btn_width + spacing;
+  }
+
+  if (!currencyTwo.isEmpty())
   {
     btn2 = lv_btn_create(screen_main);
     lv_obj_add_style(btn2, &style_btn_default, 0);
     lv_obj_add_style(btn2, &style_btn_pressed, LV_STATE_PRESSED);
     lv_obj_add_event_cb(btn2, btn2_event_handler, LV_EVENT_ALL, NULL);
-    lv_obj_set_pos(btn2, currencyATM3 == "" || currencyThree == "" ? 260 : 180, 200);
-    lv_obj_set_size(btn2, 120, 50);
+    lv_obj_set_pos(btn2, start_x, 200);
+    lv_obj_set_size(btn2, btn_width, btn_height);
     labelbtn = lv_label_create(btn2);
     lv_label_set_text(labelbtn, currencyTwo.c_str());
     lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
     lv_obj_center(labelbtn);
+
+    start_x += btn_width + spacing;
   }
 
-  if (currencyATM3 != "" || currencyThree != "")
+  if (!currencyThree.isEmpty())
   {
     btn3 = lv_btn_create(screen_main);
     lv_obj_add_style(btn3, &style_btn_default, 0);
     lv_obj_add_style(btn3, &style_btn_pressed, LV_STATE_PRESSED);
     lv_obj_add_event_cb(btn3, btn3_event_handler, LV_EVENT_ALL, NULL);
-    lv_obj_set_pos(btn3, 330, 200);
-    lv_obj_set_size(btn3, 120, 50);
+    lv_obj_set_pos(btn3, start_x, 200);
+    lv_obj_set_size(btn3, btn_width, btn_height);
     labelbtn = lv_label_create(btn3);
     lv_label_set_text(labelbtn, currencyThree.c_str());
     lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
@@ -2489,12 +2591,6 @@ void lv_button_currency()
 
   // Set initial currency
   setCurrency(currencyOne);
-  // Serial.print(F("Set initial Currency: "));
-  // Serial.println(currencySelected);
-
-  // Set initial checked state after all buttons are created
-  // Switch fundingsource
-  //set_initial_checked_button();
 }
 
 /*** Display callback to flush the buffer to screen ***/
@@ -3215,7 +3311,7 @@ void displaySettingsScreen()
   lv_obj_center(btn_label_config);
   lv_obj_add_event_cb(btn_config, btn_config_portal_event_handler, LV_EVENT_CLICKED, NULL);
 
-  // Create a label for switch
+  // Create a label for funding source switch
   lv_obj_t *label_switch = lv_label_create(screen_settings);
   lv_label_set_text(label_switch, "Funding source: \n(LNbits or Blink)");
   lv_obj_align(label_switch, LV_ALIGN_TOP_LEFT, 30, 30); // Position the label
@@ -3242,6 +3338,29 @@ void displaySettingsScreen()
     lv_obj_clear_state(switch_fund, LV_STATE_CHECKED); // Ensure switch is off if fundingsource is "blink"
     lv_label_set_text(switch_label, "Blink");
   }
+
+  // Create a label for animation switch
+  lv_obj_t *label_switch_animation = lv_label_create(screen_settings);
+  lv_label_set_text(label_switch_animation, "Enable Animation");
+  lv_obj_align(label_switch_animation, LV_ALIGN_TOP_LEFT, 30, 130); // Position the label
+
+  // Create a switch and add it to the screen
+  lv_obj_t *switch_animation = lv_switch_create(screen_settings);
+  lv_obj_set_pos(switch_animation, 30, 170); // Set the position of the switch
+
+  // Assign an event handler to the switch
+  lv_obj_add_event_cb(switch_animation, switch_animation_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Set the initial state from enableAnimBuffer
+  if (strcmp(enableAnimBuffer, "Yes") == 0)
+  {
+    lv_obj_add_state(switch_animation, LV_STATE_CHECKED); // Turn switch on if animation is enabled
+  }
+  else
+  {
+    lv_obj_clear_state(switch_animation, LV_STATE_CHECKED); // Ensure switch is off if animation is disabled
+  }
+
   lv_scr_load(screen_settings);
 }
 
