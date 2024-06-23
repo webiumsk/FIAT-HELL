@@ -111,7 +111,7 @@ String secretATM3;
 String currencyATM;
 String currencyATM2;
 String currencyATM3;
-String currencyOne = "EUR";
+String currencyOne;
 String currencyTwo;
 String currencyThree;
 String currencySelected = currencyOne;
@@ -153,8 +153,8 @@ String payload;
 
 static char fundingSourceBuffer[100] = {0}; // Ensure this buffer is large enough for possible values
 const char *fundingsource = fundingSourceBuffer;
-static char enableSwitchBuffer[100] = {0}; // Ensure this buffer is large enough for possible values
-const char *enableswitch = enableSwitchBuffer;
+static char rateSourceBuffer[100] = {0}; // Ensure this buffer is large enough for possible values
+const char *ratesource = rateSourceBuffer;
 static char enableAnimBuffer[100] = {0}; // Ensure this buffer is large enough for possible values
 const char *animated = enableAnimBuffer;
 
@@ -184,7 +184,7 @@ bool billBool = true;
 
 int moneyTimer = 0;
 
-const long interval = 300000; // 3 minutes in milliseconds
+const long interval = 300000; // 5 minutes in milliseconds
 unsigned long previousMillis = 0;
 long balanceSats = 0; // Assuming it's a long or an appropriate type
 bool initialCheck = true;
@@ -192,8 +192,11 @@ bool initialCheck = true;
 const char *graphqlEndpoint = "https://api.blink.sv/graphql";
 const char *primaryApiEndpoint = "https://api.lnbc.sk/v1/lnurl";
 const char *secondaryApiEndpoint = "https://api.lnurlproxy.me/v1/lnurl";
-const char *primaryConversionAPI = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=";
-const char *secondaryConversionAPI = "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=";
+const String coingeckoConversionAPI = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=";
+const String exchangeapiConversionAPI = "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/btc.json"; // https://github.com/fawazahmed0/exchange-api
+const String cuexConversionAPI = "https://api.cuex.com/v1/exchanges/btc";
+const String cuexApiKey = "3b71e5d431b2331acb65f2d484d423e5"; // Replace with your actual API key
+const String alternativeConversionAPI = "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=";
 
 // float coinAmountFloat[6] = {0.05, 0.1, 0.2, 0.5, 1, 2};
 // int billAmountSize = sizeof(billAmountIntOne) / sizeof(int);
@@ -216,6 +219,9 @@ lv_obj_t *loadingLabel;
 // Switch fundingsource
 lv_obj_t *switch_label;
 lv_obj_t *switch_fund;
+lv_obj_t *rate_label;
+lv_obj_t *switch_rate;
+lv_obj_t *anim_label;
 lv_obj_t *img_blink;
 lv_obj_t *img_lnbits;
 
@@ -276,6 +282,8 @@ void lv_button_currency();
 void updateBurnText();
 void updateMainScreenLabel();
 void checkPrice();
+void checkPriceCoinGecko();
+void checkPriceExchangeApi();
 void checkBalance();
 bool isBlink();
 bool isLNbits();
@@ -284,7 +292,7 @@ void showQRCodeLVGL(const char *data);
 int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen, uint8_t *nonce, size_t nonce_len, uint64_t pin, uint64_t amount_in_cents);
 void deleteMainScreen();
 void deleteInsertMoneyScreen();
-void displaySettingsScreen();
+void createSettingsScreen();
 void checkNetworkAndDeviceStatus();
 void btn_config_portal_event_handler(lv_event_t *e);
 void startConfigPortal();
@@ -304,14 +312,15 @@ void showLoadingIndicator();
 void hideLoadingIndicator();
 void enableAcceptor();
 
+
 /**
- * @brief A class representing a sequence of characters.
- *
- * The String class provides methods for manipulating and accessing strings.
- * It is commonly used in C++ to handle text data.
+ * @brief The String class provides a way to manipulate and store strings of text in Arduino.
+ * 
+ * The String class enables you to work with strings of text in Arduino sketches. It provides various methods
+ * for manipulating and accessing string data. The String class is based on the C++ `String` class and provides
+ * similar functionality.
  */
-String
-getValue(String data, char separator, int index)
+String getValue(String data, char separator, int index)
 {
   int found = 0;
   int strIndex[] = {0, -1};
@@ -776,18 +785,18 @@ void setup()
 
     const JsonObject docGui1 = docGui[1];
     const char *docGui1Char = docGui1["name"];
-    JsonArray valuesEnableSwitch = docGui1["value"];
+    JsonArray valuesRateSource = docGui1["value"];
     int checkedIndexSwitch = docGui1["checked"];
 
-    if (checkedIndexSwitch > 0 && checkedIndexSwitch <= valuesEnableSwitch.size())
+    if (checkedIndexSwitch > 0 && checkedIndexSwitch <= valuesRateSource.size())
     {
       // Copy the selected funding source to the global buffer
-      strlcpy(enableSwitchBuffer, valuesEnableSwitch[checkedIndexSwitch - 1], sizeof(enableSwitchBuffer));
-      enableswitch = enableSwitchBuffer; // Point fundingsource to the global buffer
+      strlcpy(rateSourceBuffer, valuesRateSource[checkedIndexSwitch - 1], sizeof(rateSourceBuffer));
+      ratesource = rateSourceBuffer; // Point fundingsource to the global buffer
 
       Serial.print(docGui1Char);
       Serial.print(": ");
-      Serial.println(enableswitch);
+      Serial.println(ratesource);
     }
 
     const JsonObject docGui2 = docGui[2];
@@ -822,7 +831,7 @@ void setup()
     File paramGui = FlashFS.open(GUI_FILE, "r");
     if (paramGui)
     {
-        aux.loadElement(paramGui, {"fundingsource", "enableswitch", "animated"});
+        aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
         paramGui.close();
     }
 
@@ -831,7 +840,7 @@ void setup()
         File paramGui = FlashFS.open(GUI_FILE, "r");
         if (paramGui)
         {
-            aux.loadElement(paramGui, {"fundingsource", "enableswitch", "animated"});
+            aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
             paramGui.close();
         }
     }
@@ -937,7 +946,7 @@ void setup()
     if (paramGui)
     {
         // save as a loadable set for parameters.
-        guiAux.saveElement(paramGui, {"fundingsource", "enableswitch", "animated"});
+        guiAux.saveElement(paramGui, {"fundingsource", "ratesource", "animated"});
         paramGui.close();
         // read the saved elements again to display.
         paramGui = FlashFS.open(GUI_FILE, "r");
@@ -1003,7 +1012,7 @@ void setup()
   Serial.print(F("Funding source: "));
   Serial.println(fundingSourceBuffer);
   Serial.print(F("Switch enabled: "));
-  Serial.println(enableswitch);
+  Serial.println(ratesource);
   Serial.print(F("Animation enabled: "));
   Serial.println(animated);
   Serial.print(F("Currency selected: "));
@@ -1312,7 +1321,7 @@ static void btn_event_cb(lv_event_t *e)
     if (strcmp(pin_code, pincode.c_str()) == 0)
     { // Assuming '1234' is the correct PIN
       // Trigger access to the settings screen
-      displaySettingsScreen();
+      createSettingsScreen();
     }
     else
     {
@@ -1663,18 +1672,22 @@ void setCurrency(const String &newCurrency)
   }
 }
 
-/**
- * @brief Checks the price of Bitcoin in the selected currency.
- *
- * This function sends a request to the CoinGecko API to get the current price of Bitcoin in the selected currency.
- * If the request is successful, the function parses the JSON response and retrieves the value of Bitcoin in the selected currency.
- *
- * @note This function requires an active Wi-Fi connection.
- */
 void checkPrice()
 {
+  if (strcmp(rateSourceBuffer, "ExchangeApi") == 0)
+  {
+    checkPriceExchangeApi();
+  }
+  else if (strcmp(rateSourceBuffer, "CoinGecko") == 0)
+  {
+    checkPriceCoinGecko();
+  }
+}
+
+void checkPriceCoinGecko()
+{
   // Price API
-  http.begin(primaryConversionAPI + currencySelected); // Specify request destination
+  http.begin(coingeckoConversionAPI + currencySelected); // Specify request destination
 
   int httpCode = http.GET(); // Send the request
 
@@ -1686,11 +1699,11 @@ void checkPrice()
     DynamicJsonDocument doc(1024);
     deserializeJson(doc, payload);
 
-    String tempCurrency = currencySelected;
-    tempCurrency.toLowerCase();
+    //String tempCurrency = currencySelected;
+    currencySelected.toLowerCase();
 
     // Get EUR value from parsed JSON
-    fiatValue = doc["bitcoin"][tempCurrency.c_str()];
+    fiatValue = doc["bitcoin"][currencySelected.c_str()];
     Serial.print(F("HTTP (checkPrice): "));
     Serial.println(httpCode);
   }
@@ -1702,6 +1715,51 @@ void checkPrice()
   Serial.print("Free heap (checkPrice): ");
   Serial.println(ESP.getFreeHeap());
   http.end(); // Close connection
+}
+
+void checkPriceExchangeApi()
+{
+  http.begin(exchangeapiConversionAPI);
+  int httpResponseCode = http.GET();
+
+  if (httpResponseCode == 200 || httpResponseCode == 201)
+  {
+    String payload = http.getString();
+    Serial.println(payload);
+
+    DynamicJsonDocument doc(16384); // Increased buffer size for large JSON response
+    DeserializationError error = deserializeJson(doc, payload);
+
+    currencySelected.toLowerCase();
+
+    if (!error)
+    {
+      String date = doc["date"];
+      fiatValue = doc["btc"][currencySelected];
+
+      if (!fiatValue)
+      {
+        Serial.println("Error: Rate not found for the specified currency" + currencySelected);
+      }
+      else
+      {
+        Serial.println("Date: " + date);
+        Serial.println("Exchange Rate for BTC to " + currencySelected + ": " + String(fiatValue, 6));
+      }
+    }
+    else
+    {
+      Serial.print("deserializeJson() failed: ");
+      Serial.println(error.c_str());
+    }
+  }
+  else
+  {
+    Serial.print("Error in HTTP request: ");
+    Serial.println(httpResponseCode);
+  }
+
+  http.end();
 }
 
 /**
@@ -2256,12 +2314,6 @@ void createMainScreen()
   createImages(screen_main);
   create_settings_button(screen_main); // Add the WiFi button to the main screen
 
-  // Switch fundingsource
-  if (strcmp(enableswitch, "Yes") == 0 && (isBlink && isLNbits))
-   {
-     createSwitch(screen_main);
-     Serial.println("createMainScreen: createSwitch created");
-   }
   lv_scr_load(screen_main);
   Serial.println("createMainScreen: Screen loaded");
   Serial.print("Free heap (createMainScreen End): ");
@@ -2432,32 +2484,49 @@ void switch_event_handler(lv_event_t *e)
     return;
   }
 
-  if (lv_obj_has_state(obj, LV_STATE_CHECKED))
+  if (obj == switch_fund)
   {
-    strcpy(fundingSourceBuffer, "LNbits");
-    lv_label_set_text(switch_label, "LNbits");
-    lv_obj_clear_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
+    if (lv_obj_has_state(obj, LV_STATE_CHECKED))
+    {
+      strcpy(fundingSourceBuffer, "LNbits");
+      lv_label_set_text(switch_label, "LNbits");
+      lv_obj_clear_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
+    }
+    else
+    {
+      strcpy(fundingSourceBuffer, "Blink");
+      lv_label_set_text(switch_label, "Blink");
+      lv_obj_clear_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
+    }
   }
-  else
+  else if (obj == switch_rate)
   {
-    strcpy(fundingSourceBuffer, "Blink");
-    lv_label_set_text(switch_label, "Blink");
-    lv_obj_clear_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
+    if (lv_obj_has_state(obj, LV_STATE_CHECKED))
+    {
+      strcpy(rateSourceBuffer, "ExchangeApi");
+      lv_label_set_text(rate_label, "ExchangeApi");
+    }
+    else
+    {
+      strcpy(rateSourceBuffer, "Coingecko");
+      lv_label_set_text(rate_label, "Coingecko");
+    }
   }
-
-  // Since the fundingsource should already point to fundingSourceBuffer, no need to update it here
-  checkNetworkAndDeviceStatus();
-  checkBalance();
-  updateBurnText();
-  updateMainScreenLabel();
 
   // Save the updated settings to the file
   saveSettingsToFile();
 
   Serial.print(F("Switch: Funding source: "));
   Serial.println(fundingSourceBuffer);
+  Serial.print(F("Switch: Rate source: "));
+  Serial.println(rateSourceBuffer);
+
+  checkNetworkAndDeviceStatus();
+  checkBalance();
+  updateBurnText();
+  updateMainScreenLabel();
 }
 
 /**
@@ -3303,11 +3372,11 @@ static void saveSettingsToFile()
   }
 
   JsonObject docGui1 = docGui.createNestedObject();
-  docGui1["name"] = "enableswitch";
-  JsonArray valuesEnableSwitch = docGui1.createNestedArray("value");
-  valuesEnableSwitch.add("No");
-  valuesEnableSwitch.add("Yes");
-  if (strcmp(enableSwitchBuffer, "No") == 0)
+  docGui1["name"] = "ratesource";
+  JsonArray valuesRateSource = docGui1.createNestedArray("value");
+  valuesRateSource.add("Coingecko");
+  valuesRateSource.add("ExchangeApi");
+  if (strcmp(rateSourceBuffer, "Coingecko") == 0)
   {
     docGui1["checked"] = 1;
   }
@@ -3352,7 +3421,7 @@ static void saveSettingsToFile()
  * 
  * @note This function assumes that the LVGL library is properly initialized and configured.
  */
-void displaySettingsScreen()
+void createSettingsScreen()
 {
   lv_obj_t *screen_settings = lv_obj_create(NULL); // Get the current active screen or create a new one
   lv_scr_load(screen_settings);                    // Load the new screen as active
@@ -3376,11 +3445,11 @@ void displaySettingsScreen()
 
   // Create a label for funding source switch
   lv_obj_t *label_switch = lv_label_create(screen_settings);
-  lv_label_set_text(label_switch, "Funding source: \n(LNbits or Blink)");
-  lv_obj_align(label_switch, LV_ALIGN_TOP_LEFT, 30, 30); // Position the label
+  lv_label_set_text(label_switch, "Funding source: \n(Blink or LNbits)");
+  lv_obj_align(label_switch, LV_ALIGN_TOP_LEFT, 30, 55); // Position the label
   // Create a switch and add it to the screen
   switch_fund = lv_switch_create(screen_settings);
-  lv_obj_set_pos(switch_fund, 30, 80); // Set the position of the switch
+  lv_obj_set_pos(switch_fund, 30, 100); // Set the position of the switch
 
   // Create a label for the switch
   switch_label = lv_label_create(screen_settings);
@@ -3402,14 +3471,48 @@ void displaySettingsScreen()
     lv_label_set_text(switch_label, "Blink");
   }
 
+  // Create a label for rate source switch
+  lv_obj_t *label_rate = lv_label_create(screen_settings);
+  lv_label_set_text(label_rate, "Rate: (Coingecko \nor ExchangeApi)");
+  lv_obj_align(label_rate, LV_ALIGN_TOP_LEFT, 200, 55); // Position the label
+  // Create a switch and add it to the screen
+  switch_rate = lv_switch_create(screen_settings);
+  lv_obj_set_pos(switch_rate, 200, 100); // Set the position of the switch
+
+  // Create a label for the switch
+  rate_label = lv_label_create(screen_settings);
+  lv_label_set_text(rate_label, rateSourceBuffer);                         // Use rateSourceBuffer to set initial text
+  lv_obj_align_to(rate_label, switch_rate, LV_ALIGN_OUT_RIGHT_MID, 10, 0); // Align label to the right of the switch
+
+  // Assign an event handler to the switch
+  lv_obj_add_event_cb(switch_rate, switch_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Set the initial state from rateSourceBuffer
+  if (strcmp(rateSourceBuffer, "ExchangeApi") == 0)
+  {
+    lv_obj_add_state(switch_rate, LV_STATE_CHECKED); // Turn switch on if rate source is "ExchangeApi"
+    lv_label_set_text(rate_label, "ExchangeApi");
+  }
+  else
+  {
+    lv_obj_clear_state(switch_rate, LV_STATE_CHECKED); // Ensure switch is off if rate source is "Coingecko"
+    lv_label_set_text(rate_label, "Coingecko");
+  }
+
+  // Animation Switch
   // Create a label for animation switch
   lv_obj_t *label_switch_animation = lv_label_create(screen_settings);
-  lv_label_set_text(label_switch_animation, "Enable Animation");
-  lv_obj_align(label_switch_animation, LV_ALIGN_TOP_LEFT, 30, 130); // Position the label
+  lv_label_set_text(label_switch_animation, "\nAnimation");
+  lv_obj_align(label_switch_animation, LV_ALIGN_TOP_LEFT, 370, 55); // Position the label
 
   // Create a switch and add it to the screen
   lv_obj_t *switch_animation = lv_switch_create(screen_settings);
-  lv_obj_set_pos(switch_animation, 30, 170); // Set the position of the switch
+  lv_obj_set_pos(switch_animation, 370, 100); // Set the position of the switch
+
+  // Create a label for the switch
+  anim_label = lv_label_create(screen_settings);
+  lv_label_set_text(anim_label, enableAnimBuffer);                           // Use fundingSourceBuffer to set initial text
+  lv_obj_align_to(anim_label, switch_animation, LV_ALIGN_OUT_RIGHT_MID, 10, 0);   // Align label to the right of the switch
 
   // Assign an event handler to the switch
   lv_obj_add_event_cb(switch_animation, switch_animation_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
@@ -3418,10 +3521,12 @@ void displaySettingsScreen()
   if (strcmp(enableAnimBuffer, "Yes") == 0)
   {
     lv_obj_add_state(switch_animation, LV_STATE_CHECKED); // Turn switch on if animation is enabled
+    lv_label_set_text(anim_label, "On");
   }
   else
   {
     lv_obj_clear_state(switch_animation, LV_STATE_CHECKED); // Ensure switch is off if animation is disabled
+    lv_label_set_text(anim_label, "Off");
   }
 
   lv_scr_load(screen_settings);
@@ -3433,6 +3538,7 @@ void btn_config_portal_event_handler(lv_event_t *e)
   {
     Serial.println("Button Clicked - Starting Config Portal");
     createPortalScreen();
+    lv_task_handler(); // Process LVGL tasks to refresh the screen.
     startConfigPortal();
   }
 }

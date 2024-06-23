@@ -17,15 +17,15 @@ static const char PAGE_GUI[] PROGMEM = R"(
       "checked": 1
     },
     {
-      "name": "enableswitch",
+      "name": "ratesource",
       "type": "ACRadio",
       "value": [
-        "No",
-        "Yes"
+        "Coingecko",
+        "ExchangeApi"
       ],
-      "label": "Enable funding source switcher",
+      "label": "Rate source 'Coingecko' or 'ExchangeApi'",
       "arrange": "horizontal",
-      "checked": 2
+      "checked": 1
     },
     {
       "name": "animated",
