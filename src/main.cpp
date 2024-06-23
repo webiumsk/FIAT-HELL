@@ -96,7 +96,7 @@ HTTPClient http; // Declare object of class HTTPClient
 #define GUI_FILE "/gui.json"
 
 String qrData;
-String password = "vojdivon"; // default WiFi AP password
+String password = "changeme"; // default WiFi AP password
 String lnurl;
 String lnurl2;
 String lnurl3;
@@ -124,7 +124,6 @@ lv_obj_t *burnTextLabel; // This will hold the reference to the label created in
 
 char localSSIDBuffer[100] = {0};
 char localPassBuffer[100] = {0};
-
 const char *localssid = localSSIDBuffer;
 const char *localpass = localPassBuffer;
 
@@ -158,8 +157,6 @@ static char enableSwitchBuffer[100] = {0}; // Ensure this buffer is large enough
 const char *enableswitch = enableSwitchBuffer;
 static char enableAnimBuffer[100] = {0}; // Ensure this buffer is large enough for possible values
 const char *animated = enableAnimBuffer;
-// static char titleColorBuffer[100] = {0};
-// String titleColor = titleColorBuffer;
 
 int bills;
 float coins;
@@ -172,7 +169,7 @@ int charge1;
 int charge2;
 int charge3;
 int chargeSelected = charge1;
-float fiatBalance; // zoztatok v €
+float fiatBalance; // balance in €
 float fiatValue = 0;
 float tempCharge;
 long result;
@@ -187,7 +184,7 @@ bool billBool = true;
 
 int moneyTimer = 0;
 
-const long interval = 300000; // 5 minutes in milliseconds
+const long interval = 300000; // 3 minutes in milliseconds
 unsigned long previousMillis = 0;
 long balanceSats = 0; // Assuming it's a long or an appropriate type
 bool initialCheck = true;
@@ -199,17 +196,15 @@ const char *primaryConversionAPI = "https://api.coingecko.com/api/v3/simple/pric
 const char *secondaryConversionAPI = "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=";
 
 // float coinAmountFloat[6] = {0.05, 0.1, 0.2, 0.5, 1, 2};
-//  int billAmountSize = sizeof(billAmountIntOne) / sizeof(int);
+// int billAmountSize = sizeof(billAmountIntOne) / sizeof(int);
 // float coinAmountSize = sizeof(coinAmountFloat) / sizeof(float);
 
 HardwareSerial SerialPort1(1);
 HardwareSerial SerialPort2(2);
 
-// lv_timer_t *escrow_task = NULL; // Declare this at global scope so you can delete it later
-
 Button BTNA(BTN1);
 
-lv_obj_t *screen_logo, *screen_portal, *screen_api, *screen_thx, *screen_main, *screen_insert_money, *screen_qr, *screen_settings;
+lv_obj_t *screen_logo, *screen_portal, *screen_api, *screen_thx, *screen_main, *screen_insert_money, *screen_qr, *screen_settings, *screen_currency;
 lv_obj_t *labelbtn;
 lv_obj_t *fiathell;
 lv_obj_t *labelLastInserted = nullptr;
@@ -276,14 +271,12 @@ void createPortalScreen();
 void createAPIScreen();
 void createMainScreen();
 void createSwitch(lv_obj_t *parent);
-void escrow_and_balance_task(lv_timer_t *t);
 void createInsertMoneyScreen();
 void lv_button_currency();
 void updateBurnText();
 void updateMainScreenLabel();
 void checkPrice();
 void checkBalance();
-void checkSerialPort1();
 bool isBlink();
 bool isLNbits();
 bool wifiStatus();
@@ -988,9 +981,6 @@ void setup()
   WiFi.begin(localssid, localpass);
   checkPrice();
   checkBalance();
-  // Initialize OTA
-  //ArduinoOTA.begin();
-  // updateMainScreenLabel();
 
   // Create the loading indicator
   createLoadingIndicator();
@@ -1297,6 +1287,13 @@ static lv_obj_t *pin_code_label;
 static char pin_code[5] = ""; // Assuming a 4-digit PIN
 
 // Function to handle button clicks
+/**
+ * @brief Callback function for button events.
+ * 
+ * This function is called when a button event occurs. It handles the logic for entering and checking a PIN code.
+ * 
+ * @param e Pointer to the event object.
+ */
 static void btn_event_cb(lv_event_t *e)
 {
   lv_obj_t *btn = lv_event_get_target(e);
@@ -1325,6 +1322,18 @@ static void btn_event_cb(lv_event_t *e)
   }
 }
 
+/**
+ * @brief Creates a pin entry screen.
+ * 
+ * This function creates a pin entry screen by performing the following steps:
+ * 1. Resets the `pin_code` array to all zeros.
+ * 2. Creates a new screen using the `lv_obj_create` function.
+ * 3. Loads the new screen using the `lv_scr_load` function.
+ * 4. Sets up the pin entry components using the `setupPinEntryComponents` function.
+ * 5. Creates a back button using the `createBackButton` function.
+ * 6. Prints a message to the serial monitor indicating that the pin entry screen has been created.
+ * 7. Prints the loaded pin code to the serial monitor.
+ */
 void createPinEntryScreen()
 {
   memset(pin_code, 0, sizeof(pin_code));      // Reset the pin_code every time screen is created
@@ -1337,6 +1346,18 @@ void createPinEntryScreen()
   Serial.println(pincode);
 }
 
+/**
+ * @brief Sets up the pin entry components on the screen.
+ * 
+ * This function creates a pin code label and a keypad with buttons for entering the pin code.
+ * The pin code label is aligned at the top center of the parent object.
+ * The keypad is centered on the parent object.
+ * The buttons are created with labels from "1" to "9" and "0".
+ * Each button is positioned in a grid layout with the specified button width, height, and spacing.
+ * The button event callback function is added to each button to handle the click event.
+ * 
+ * @param parent The parent object on which the pin entry components will be created.
+ */
 void setupPinEntryComponents(lv_obj_t *parent)
 {
   const int btn_width = 50;
@@ -1393,6 +1414,11 @@ void accessSettings()
 }
 /*PIN END*/
 
+/**
+ * Checks the network and device status based on the funding source and other conditions.
+ * If the funding source is "Blink" and there is no network connection available, it prints a message and optionally triggers a screen update or indicator.
+ * If the funding source is "LNbits" and any of the required data (currencyATM, adminkey, readkey) is missing, it prints a message.
+ */
 void checkNetworkAndDeviceStatus()
 {
   if (strcmp(fundingSourceBuffer, "Blink") == 0)
@@ -1402,6 +1428,7 @@ void checkNetworkAndDeviceStatus()
       Serial.println("No network connection available. Checking again soon...");
       // Optionally, trigger a screen update or indicator that network is required but unavailable
       SerialPort1.write(185);
+      digitalWrite(INHIBITMECH, LOW);
     }
   }
   else if (strcmp(fundingSourceBuffer, "LNbits") == 0 && (currencyATM == "" || adminkey == "" || readkey == ""))
@@ -1424,6 +1451,17 @@ void reconnectWiFi()
   }
 }
 
+/**
+ * @brief Creates a settings button.
+ * 
+ * This function creates a settings button with a specified parent object. 
+ * The button is initialized with two styles: style_connected and style_disconnected.
+ * The button size is set to 20x20 pixels and positioned at the top right corner with an offset of (-10, 10).
+ * The initial style is applied to the button.
+ * An event handler, settings_btn_event_cb, is attached to the button for the LV_EVENT_CLICKED event.
+ * 
+ * @param parent The parent object to which the button will be attached.
+ */
 void create_settings_button(lv_obj_t *parent)
 {
   // Initialize styles
@@ -1445,6 +1483,12 @@ void create_settings_button(lv_obj_t *parent)
   lv_obj_add_event_cb(btn_wifi, settings_btn_event_cb, LV_EVENT_CLICKED, NULL);
 }
 
+/**
+ * @brief Updates the style of the settings button based on the WiFi status.
+ * 
+ * If the WiFi is disconnected, the button will be styled with the "disconnected" style.
+ * If the WiFi is connected, the button will be styled with the "connected" style.
+ */
 void update_settings_button_style()
 {
   if (!wifiStatus())
@@ -1457,19 +1501,25 @@ void update_settings_button_style()
   }
 }
 
+/**
+ * Callback function for the settings button event.
+ * 
+ * @param e The event object.
+ */
 void settings_btn_event_cb(lv_event_t *e)
 {
   lv_event_code_t code = lv_event_get_code(e);
   if (code == LV_EVENT_CLICKED)
   {
     accessSettings(); // Show or update no connection screen
-    // Attempt to reconnect and update the button style accordingly
-    // reconnectWiFi();
-    // update_settings_button_style();
-    // updateMainScreenLabel();
   }
 }
 
+/**
+ * Checks if the device is configured for Blink payments.
+ * 
+ * @return true if the device is configured for Blink payments, false otherwise.
+ */
 bool isBlink()
 {
   if (blinkapikey != "" || blinkwalletid != "" && (strcmp(fundingSourceBuffer, "Blink") == 0))
@@ -1483,6 +1533,12 @@ bool isBlink()
   Serial.print("isBlink: ");
   Serial.println(isBlink());
 }
+
+/**
+ * Checks if the funding source is LNbits.
+ * 
+ * @return true if the funding source is LNbits, false otherwise.
+ */
 bool isLNbits()
 {
   if (currencyATM != "" || adminkey != "" || readkey != "" && (strcmp(fundingSourceBuffer, "LNbits") == 0))
@@ -1496,6 +1552,17 @@ bool isLNbits()
   Serial.print("isLNbits: ");
   Serial.println(isLNbits());
 }
+
+/**
+ * @brief Creates a thank you screen.
+ * 
+ * This function creates a new screen with a thank you message and description.
+ * The screen includes a title and a description label, both centered on the screen.
+ * The title label uses a large font and green text color.
+ * The description label uses a smaller font and green text color.
+ * 
+ * @note The screen_thx global variable must be defined before calling this function.
+ */
 void createThankYouScreen()
 {
   screen_thx = lv_obj_create(NULL); // Create a new screen
@@ -1518,11 +1585,13 @@ void createThankYouScreen()
 }
 
 /**
- * @brief Updates the burn text label with the selected currency.
- *
- * This function updates the burn text label with the selected currency and performs additional operations such as checking the price, balance, and updating the main screen label.
- *
- * @note The label must be created before calling this function.
+ * @brief Updates the burn text label with the combined text of "BURN YOUR {currencySelected} FOR SATS".
+ *        It also checks the network and device status, price, balance, and updates the main screen label.
+ * 
+ * @note This function assumes that the burnTextLabel has been created.
+ * 
+ * @param None
+ * @return None
  */
 void updateBurnText()
 {
@@ -1545,9 +1614,14 @@ void updateBurnText()
 const int INHIBIT_START = 131;
 const int UNINHIBIT_START = 151;
 
+/**
+ * Sets the currency to the specified value.
+ * 
+ * @param newCurrency The new currency to set.
+ */
 void setCurrency(const String &newCurrency)
 {
-  Serial.println("Currency set to " + newCurrency);
+  Serial.println("setCurrency Currency set to " + newCurrency);
   currencySelected = newCurrency;
   updateBurnText(); // Update the label text when the currency changes
 
@@ -1566,34 +1640,16 @@ void setCurrency(const String &newCurrency)
   {
     startChannel = 0;
     currencySize = originalSizeOne;
-    //lv_obj_add_state(btn1, LV_STATE_PRESSED);
-    // if (currencyTwo != "")
-    // {
-    //   lv_obj_clear_state(btn2, LV_STATE_CHECKED);
-    // }
-    // if (currencyThree != "")
-    // {
-    //   lv_obj_clear_state(btn3, LV_STATE_CHECKED);
-    // }
   }
   else if (currencySelected == currencyTwo)
   {
     startChannel = originalSizeOne;
     currencySize = originalSizeTwo;
-    // lv_obj_clear_state(btn1, LV_STATE_CHECKED);
-    // lv_obj_add_state(btn2, LV_STATE_CHECKED);
-    // if (currencyThree != "")
-    // {
-    //   lv_obj_clear_state(btn3, LV_STATE_CHECKED);
-    // }
   }
   else if (currencySelected == currencyThree)
   {
     startChannel = originalSizeOne + originalSizeTwo;
     currencySize = originalSizeThree;
-    // lv_obj_clear_state(btn1, LV_STATE_CHECKED);
-    // lv_obj_clear_state(btn2, LV_STATE_CHECKED);
-    // lv_obj_add_state(btn3, LV_STATE_CHECKED);
   }
 
   // Uninhibit channels for the selected currency
@@ -1617,18 +1673,13 @@ void setCurrency(const String &newCurrency)
  */
 void checkPrice()
 {
-  // Check Wi-Fi status
-  // if (WiFi.status() == WL_CONNECTED)
-  //{
   // Price API
   http.begin(primaryConversionAPI + currencySelected); // Specify request destination
-  // http.begin("https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=" + currencySelected);              // Specify request destination
-  // http.addHeader("Authorization", "Apikey 6f51e60ff3bbd092aac649ada41fb685523e30ab782c2d05ff11ee2acb351ad4"); // Specify API key header
 
   int httpCode = http.GET(); // Send the request
 
-  if (httpCode == 200 || httpCode == 201)
-  {                                    // Check the returning code
+  if (httpCode == 200 || httpCode == 201) // Check the returning code
+  {                                    
     String payload = http.getString(); // Get the request response payload
     // Serial.println(payload);
     //  Parse JSON
@@ -1651,23 +1702,15 @@ void checkPrice()
   Serial.print("Free heap (checkPrice): ");
   Serial.println(ESP.getFreeHeap());
   http.end(); // Close connection
-  //}
 }
 
 /**
- * @brief Checks the balance of the selected currency using the specified funding source.
- *
- * This function retrieves the balance of the selected currency by making an HTTP request to the corresponding API endpoint.
- * The balance is then parsed from the response and converted to the corresponding fiat value.
- * The function also prints various debug information to the serial monitor.
- *
- * @note This function assumes that the necessary variables (currencySelected, fundingsource, baseURLATM, secretATM, chargeSelected, maxamountSelected, lnbitsURL, readkey, fiatValue, buffer, balanceSats, fiatBalance, http) have been properly initialized before calling this function.
- *
- * @note This function uses the HTTPClient library for making HTTP requests.
- *
- * @note This function should be called after selecting the currency and funding source.
- *
- * @note This function should be called within the loop function or any other appropriate place in the code.
+ * Checks the balance of the selected currency from the specified funding source.
+ * If the funding source is "LNbits", it sends an HTTP GET request to the LNbits API
+ * to retrieve the wallet balance. If the funding source is "Blink", it sends a
+ * GraphQL query to the Blink API to fetch the wallet information.
+ * The balance is then parsed from the response and converted to the corresponding
+ * fiat currency value.
  */
 void checkBalance()
 {
@@ -1802,9 +1845,9 @@ void checkBalance()
 
       Serial.print("Wallet ID: ");
       Serial.println(blinkwalletid);
-      Serial.print("Currency: ");
+      Serial.print("Wallet Currency: ");
       Serial.println(walletCurrency);
-      Serial.print("Balance: ");
+      Serial.print("Wallet Balance: ");
       Serial.println(balanceSats);
       Serial.print("Fiat balance: ");
       Serial.println(fiatBalance);
@@ -1817,18 +1860,6 @@ void checkBalance()
 
   http.end(); // Close connection
 }
-
-// Generic function to manage button states
-// static void update_button_states(lv_obj_t *active_btn)
-// {
-//   if (active_btn != btn1)
-//     lv_obj_clear_state(btn1, LV_STATE_CHECKED);
-//   if (active_btn != btn2 && currencyTwo != "")
-//     lv_obj_clear_state(btn2, LV_STATE_CHECKED);
-//   if (active_btn != btn3 && currencyThree != "")
-//     lv_obj_clear_state(btn3, LV_STATE_CHECKED);
-//   lv_obj_add_state(active_btn, LV_STATE_CHECKED);
-// }
 
 void createLoadingIndicator()
 {
@@ -1855,6 +1886,15 @@ void hideLoadingIndicator()
   Serial.println("Loading indicator hidden");
 }
 
+/**
+ * @brief Event handler for button 1.
+ * 
+ * This function is called when button 1 is clicked. It sets the currency to currencyOne,
+ * updates the base URL and secret if the funding source is "LNbits", and updates the charge
+ * and max amount variables. It then shows the currency screen with the updated values.
+ * 
+ * @param e The event object.
+ */
 static void btn1_event_handler(lv_event_t *e)
 {
   lv_event_code_t code = lv_event_get_code(e);
@@ -1878,6 +1918,21 @@ static void btn1_event_handler(lv_event_t *e)
   }
 }
 
+/**
+ * @brief Event handler for button 2.
+ * 
+ * This function is called when button 2 is clicked. It performs the following actions:
+ * 1. Shows a loading indicator.
+ * 2. Sets the currency to currencyTwo.
+ * 3. Prints a message to the serial monitor indicating the currency set.
+ * 4. Updates the baseURLATM and secretATM variables based on the funding source buffer.
+ * 5. Sets the chargeSelected variable to charge2.
+ * 6. Sets the maxamountSelected variable to maxamount2.
+ * 7. Shows the currency screen with the updated values.
+ * 8. Hides the loading indicator.
+ * 
+ * @param e The event object.
+ */
 static void btn2_event_handler(lv_event_t *e)
 {
   lv_event_code_t code = lv_event_get_code(e);
@@ -1901,6 +1956,12 @@ static void btn2_event_handler(lv_event_t *e)
   }
 }
 
+/**
+ * Event handler for button 3.
+ * This function is called when button 3 is clicked.
+ * It sets the currency to currencyThree, updates the base URL and secret if the funding source is LNbits,
+ * sets the chargeSelected and maxamountSelected variables, and shows the currency screen with the new values.
+ */
 static void btn3_event_handler(lv_event_t *e)
 {
   lv_event_code_t code = lv_event_get_code(e);
@@ -1948,6 +2009,18 @@ void color_anim_cb(void *var, int32_t v)
   lv_obj_set_style_text_color(obj, color, 0);
 }
 
+/**
+ * @brief Creates and configures LVGL image objects based on the selected funding source.
+ * 
+ * This function creates LVGL image objects for displaying images related to the funding source.
+ * The images are aligned to the top left corner of the parent object with an offset of 10 pixels.
+ * The images are initially hidden using the LV_OBJ_FLAG_HIDDEN flag.
+ * The visibility of the images is determined by the value of the fundingSourceBuffer variable.
+ * If the funding source is "LNbits", the LNbits image is shown and the Blink image is hidden.
+ * If the funding source is "Blink", the Blink image is shown and the LNbits image is hidden.
+ * 
+ * @param parent The parent object to which the images will be added.
+ */
 void createImages(lv_obj_t *parent)
 {
   img_blink = lv_img_create(screen_main);
@@ -2032,27 +2105,21 @@ void updateMainScreenLabel()
 }
 
 /**
- * @brief Creates the main screen of the application.
- *
- * This function initializes and configures various UI elements on the main screen, such as labels, images, and buttons.
- * It sets the text and alignment of each element based on the provided parameters or default values.
- * The function also starts an animation for a specific label.
- * Finally, it loads the main screen and displays it on the screen.
+ * @brief Creates the main screen of the ATM.
+ * 
+ * This function initializes and configures various UI elements such as labels, images, and buttons
+ * to create the main screen of the ATM. It sets the text, alignment, and font styles of the labels,
+ * and loads the screen onto the display. It also handles the creation of additional UI elements
+ * based on certain conditions, such as the presence of animated text or specific subtitle values.
+ * 
+ * @note This function assumes that the necessary LVGL library and display configurations have been
+ * properly set up beforehand.
  */
 void createMainScreen()
 {
   SerialPort1.write(185);         // Command to turn off the acceptor
   digitalWrite(INHIBITMECH, LOW); 
-  // SerialPort1.write(184);
-  //digitalWrite(INHIBITMECH, HIGH);
-  // if ((!wifiStatus()) && (strcmp(fundingSourceBuffer, "Blink") == 0))
-  //   {
-  //     Serial.println("No network connection available. Checking again soon...");
-  //     SerialPort1.write(185);
-  //     digitalWrite(INHIBITMECH, LOW);
-  //     // Optionally, trigger a screen update or indicator that network is required but unavailable
-  //     // displaySettingsScreen(); // Show or update no connection screen
-  //   }
+
   Serial.println("createMainScreen: Start machine");
   Serial.println("createMainScreen: Start");
   Serial.print("Free heap (createMainScreen Start): ");
@@ -2099,7 +2166,7 @@ void createMainScreen()
   };
   lv_obj_t *fiathell = lv_label_create(screen_main);                    // full screen as the parent
   lv_label_set_text(fiathell, LVGL_Fiat_Hell.c_str());                  // set label text
-  lv_obj_align(fiathell, LV_ALIGN_TOP_MID, 0, 95);                      // Center but 20 from the top
+  lv_obj_align(fiathell, LV_ALIGN_TOP_MID, 0, 95);                      // Center but 95 from the top
   lv_obj_set_style_text_font(fiathell, &lv_font_montserrat_bold_60, 0); // Assuming lv_font_montserrat_22 is a bold font.
 
   if (strcmp(animated, "Yes") == 0)
@@ -2124,7 +2191,7 @@ void createMainScreen()
   String combinedText = "BURN YOUR " + currencySelected + " FOR SATS";
   lv_label_set_text(burnTextLabel, combinedText.c_str());
   lv_obj_set_style_text_font(burnTextLabel, &lv_font_montserrat_24, 0); // Use the large font
-  lv_obj_align(burnTextLabel, LV_ALIGN_TOP_MID, 0, 163);                // Center but 20 from the top
+  lv_obj_align(burnTextLabel, LV_ALIGN_TOP_MID, 0, 163);                // Center but 163 from the top
   Serial.println("createMainScreen: burnTextLabel created");
 
   if (atmsubtitle == "DVADSATJEDEN" || atmsubtitle == "21")
@@ -2183,18 +2250,8 @@ void createMainScreen()
   lv_obj_set_style_text_font(chargeValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: chargeValueLabel created");
 
-  // if ((currencyATM2 != "" || currencyATM3 != "") || (currencyTwo != "" || currencyThree != ""))
-  // {
   lv_button_currency();
   Serial.println("createMainScreen: lv_button_currency created");
-  // }
-  // else
-  // {
-  //   currencySelected = currencyOne;
-  //   //setCurrency(currencySelected);
-  //   //updateBurnText();
-  //   //Serial.println("createMainScreen: updateBurnText created");
-  // }
 
   createImages(screen_main);
   create_settings_button(screen_main); // Add the WiFi button to the main screen
@@ -2211,41 +2268,49 @@ void createMainScreen()
   Serial.println(ESP.getFreeHeap());
 }
 
+/**
+ * Displays the currency screen with the given currency, rate, balance, and charge.
+ * 
+ * @param currency The selected currency.
+ * @param rate The rate of the currency in BTC.
+ * @param balance The balance in the selected currency.
+ * @param charge The fee percentage.
+ */
 void showCurrencyScreen(const String &currency, float rate, float balance, float charge)
 {
-  lv_obj_t *currency_screen = lv_obj_create(NULL);
+  lv_obj_t *screen_currency = lv_obj_create(NULL);
 
   String currency_text = "Selected Currency: " + currency;
-  lv_obj_t *currency_label = lv_label_create(currency_screen);
+  lv_obj_t *currency_label = lv_label_create(screen_currency);
   lv_label_set_text(currency_label, currency_text.c_str());
   lv_obj_align(currency_label, LV_ALIGN_TOP_MID, 0, 20);
   lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
 
   String rate_text = "Rate: " + String(rate) + currency + "/BTC";
-  lv_obj_t *rate_label = lv_label_create(currency_screen);
+  lv_obj_t *rate_label = lv_label_create(screen_currency);
   lv_label_set_text(rate_label, rate_text.c_str());
   lv_obj_align(rate_label, LV_ALIGN_TOP_MID, 0, 50);
   lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
 
   String balance_text = "Balance: " + String(balance) + currency;
-  lv_obj_t *balance_label = lv_label_create(currency_screen);
+  lv_obj_t *balance_label = lv_label_create(screen_currency);
   lv_label_set_text(balance_label, balance_text.c_str());
   lv_obj_align(balance_label, LV_ALIGN_TOP_MID, 0, 80);
   lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
 
   String charge_text = "Fee: " + String(charge) + "%";
-  lv_obj_t *charge_label = lv_label_create(currency_screen);
+  lv_obj_t *charge_label = lv_label_create(screen_currency);
   lv_label_set_text(charge_label, charge_text.c_str());
   lv_obj_align(charge_label, LV_ALIGN_TOP_MID, 0, 110);
   lv_obj_set_style_text_font(charge_label, &lv_font_montserrat_16, 0);
 
   String insert_text = "INSERT " + currency + " SHITCOIN";
-  lv_obj_t *insert_label = lv_label_create(currency_screen);
+  lv_obj_t *insert_label = lv_label_create(screen_currency);
   lv_label_set_text(insert_label, insert_text.c_str());
   lv_obj_align(insert_label, LV_ALIGN_CENTER, 0, 0);
   lv_obj_set_style_text_font(insert_label, &lv_font_montserrat_24, 0);
 
-  lv_scr_load(currency_screen);
+  lv_scr_load(screen_currency);
 
   enableAcceptor(); // Enable the acceptor and uninhibit currencies
 }
@@ -2255,43 +2320,6 @@ void enableAcceptor()
   SerialPort1.write(184);          // Enable acceptor
   digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
 }
-
-/*void escrow_and_balance_task(lv_timer_t * t) {
-  Serial.println("Inside escrow_and_balance_task");
-  // Your balance checking logic here
-  //checkBalance();
-  SerialPort1.write(170); // Enable escrow mode
-
-  if (SerialPort1.available())
-  {
-    Serial.println("Data available on SerialPort1");
-    int channel = SerialPort1.read();
-    Serial.print("Read data: ");
-    Serial.println(channel);
-    if (channel >= 1 && channel <= 16) {
-      double noteValue = billAmountIntOne[channel]; // Replace 'yourMap' with the actual map or array you have of channel-value mappings
-      Serial.print("Note value");
-      Serial.println(noteValue);
-
-
-
-      delay(1000); // Give some time for NV10 to act, replace with the actual needed delay
-      checkBalance(); // Check balance immediately
-      Serial.print("Fiat balance");
-      Serial.println(fiatBalance);
-
-      if (fiatBalance >= noteValue) {
-        SerialPort1.write(172); // Accept the bill
-      } else {
-        SerialPort1.write(173); // Reject the bill
-      }
-
-      SerialPort1.write(171); // Disable escrow mode
-    }
-  } else {
-    Serial.println("Serial port 1 unavailable");
-  }
-}*/
 
 /**
  * @brief Creates the insert money screen.
@@ -2378,6 +2406,15 @@ void createInsertMoneyScreen()
   lv_scr_load(screen_insert_money);
 }
 
+/**
+ * @brief Event handler for the switch.
+ * 
+ * This function handles the events triggered by the switch object. It updates the funding source
+ * based on the state of the switch and performs various actions such as checking network and device
+ * status, updating balance, updating burn text, updating main screen label, and saving settings to file.
+ * 
+ * @param e The event object.
+ */
 void switch_event_handler(lv_event_t *e)
 {
   Serial.println("Handling switch event...");
@@ -2423,6 +2460,15 @@ void switch_event_handler(lv_event_t *e)
   Serial.println(fundingSourceBuffer);
 }
 
+/**
+ * Event handler for the switch animation.
+ * This function is called when the value of the switch is changed.
+ * It updates the enableAnimBuffer variable based on the state of the switch,
+ * and prints the updated value to the Serial monitor.
+ * Finally, it saves the updated setting to a JSON file.
+ *
+ * @param e The event object containing information about the event.
+ */
 static void switch_animation_event_handler(lv_event_t *e)
 {
   lv_event_code_t code = lv_event_get_code(e);
@@ -2444,6 +2490,16 @@ static void switch_animation_event_handler(lv_event_t *e)
   }
 }
 
+/**
+ * @brief Creates a switch and adds it to the parent object.
+ *
+ * This function creates a switch and adds it to the specified parent object on the screen.
+ * It also creates a label for the switch and aligns it to the right of the switch.
+ * An event handler is assigned to the switch to handle the LV_EVENT_VALUE_CHANGED event.
+ * The initial state of the switch and the text of the label are set based on the value of the fundingSourceBuffer.
+ *
+ * @param parent The parent object to which the switch will be added.
+ */
 void createSwitch(lv_obj_t *parent)
 {
   // Create a switch and add it to the screen
@@ -2471,28 +2527,10 @@ void createSwitch(lv_obj_t *parent)
   }
 }
 
-// void set_initial_checked_button()
-// {
-//   // Example condition to decide which button should be checked
-//   if (currencySelected == currencyOne)
-//   {
-//     lv_obj_add_state(btn1, LV_STATE_PRESSED);
-//   }
-//   if (currencySelected == currencyTwo)
-//   {
-//     lv_obj_add_state(btn2, LV_STATE_PRESSED);
-//   }
-//   if (currencySelected == currencyThree)
-//   {
-//     lv_obj_add_state(btn3, LV_STATE_CHECKED);
-//   }
-//   // updateBurnText();
-// }
-
 /**
  * @brief Function to create and initialize currency buttons.
  *
- * This function creates and initializes currency buttons for EUR, USD, and CZK.
+ * This function creates and initializes currency buttons (up to 3 currencies).
  * It sets the position, size, and text of each button based on the currency values.
  * It also sets the button style for the checked state and sets the initial currency.
  *
@@ -2737,6 +2775,19 @@ void getBlinkLnURL(const String &boltInvoice)
   http.end(); // Close connection
 }
 
+/**
+ * @brief Creates a LNURL withdrawal request and sends it to the specified API endpoint.
+ * 
+ * This function calculates the withdrawal amount in satoshis based on the total amount and fiat value.
+ * If a charge percentage is specified, it deducts the charge from the withdrawal amount.
+ * Then, it sends a POST request to the primary API endpoint. If the request fails, it tries the secondary endpoint.
+ * If the request is successful, it parses the response JSON and extracts the LNURL and callback URL.
+ * 
+ * @note This function requires the `http` library and the `primaryApiEndpoint` and `secondaryApiEndpoint` variables to be defined.
+ * 
+ * @param None
+ * @return None
+ */
 void createLNURLWithdraw()
 {
   float temp = ((total / 100.0) / fiatValue * 1e8);
@@ -2810,6 +2861,16 @@ void createLNURLWithdraw()
   http.end();
 }
 
+/**
+ * @brief Retrieves the Blink LNURL and executes an operation using the LNURL.
+ * 
+ * This function retrieves the Blink LNURL and performs an operation using the LNURL. It calculates the total amount in cents, 
+ * the EUR value (price of 1 Bitcoin in euros), and the charge. It then converts the total amount to satoshis and subtracts the charge 
+ * if applicable. Finally, it sends a POST request to the API endpoint with the LNURL and retrieves the response from Blink.
+ * 
+ * @note Make sure to set the appropriate values for `total`, `fiatValue`, `chargeSelected`, `graphqlEndpoint`, `blinkapikey`, and `lnurl` 
+ * before calling this function.
+ */
 void getBlinkLNURL()
 {
   Serial.print("Total (cents): ");
@@ -3082,13 +3143,6 @@ void showMessageLVGL(String message)
 void showQRCodeLVGL(const char *data)
 {
   //static lv_obj_t *screen_qr = nullptr;
-
-  // if (screen_qr != nullptr)
-  // {
-  //   lv_obj_del(screen_qr); // Delete the previous screen
-  //   screen_qr = nullptr;
-  //   Serial.println("Previous screen deleted");
-  // }
   
   screen_qr = lv_obj_create(NULL); // Create a new screen
   // if (screen_qr == nullptr)
@@ -3289,6 +3343,15 @@ static void saveSettingsToFile()
   }
 }
 
+/**
+ * @brief Displays the settings screen.
+ * 
+ * This function creates and loads a settings screen using the LVGL library. It adds various UI elements such as buttons, 
+ * labels, and switches to the screen.
+ * The settings screen allows the user to configure settings such as the funding source and animation enablement.
+ * 
+ * @note This function assumes that the LVGL library is properly initialized and configured.
+ */
 void displaySettingsScreen()
 {
   lv_obj_t *screen_settings = lv_obj_create(NULL); // Get the current active screen or create a new one
@@ -3386,10 +3449,10 @@ void btn_back_event_handler(lv_event_t *e)
 
 void switchFundingSource()
 {
-  // Toggle between Blink and another funding source
+  // Toggle between Blink and LNbits funding source
   if (strcmp(fundingSourceBuffer, "Blink") == 0)
   {
-    strcpy(fundingSourceBuffer, "LNbits"); // Assume "Alternative" is another valid funding source
+    strcpy(fundingSourceBuffer, "LNbits"); // Switch to LNbits
   }
   else
   {
@@ -3399,6 +3462,14 @@ void switchFundingSource()
   Serial.println(fundingSourceBuffer);
 }
 
+/**
+ * @brief Starts the configuration portal.
+ * 
+ * This function is responsible for starting the configuration portal, which allows the user to configure the device settings.
+ * It assumes that the 'config' and 'portal' objects have been previously defined and configured appropriately.
+ * 
+ * @note This function enters an infinite loop until the configuration process is completed.
+ */
 void startConfigPortal()
 {
   Serial.println("Entered Config Portal");
@@ -3444,7 +3515,7 @@ static void reset_btn_event_cb(lv_event_t *e)
 }
 
 /* Back button */
-// Function to create a reset button
+// Function to create a back button
 void createBackButton(lv_obj_t *parent)
 {
   if (parent == NULL)
@@ -3480,8 +3551,7 @@ volatile bool isLoopReading = false;
 void loop()
 {
   lv_timer_handler(); // Let the GUI do its work
-  //ArduinoOTA.handle();
-  // portal.handleClient();
+
   if (initialCheck)
   {
     previousMillis = millis() - interval; // So that it gets executed immediately after setup
