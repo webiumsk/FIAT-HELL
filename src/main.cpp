@@ -1678,7 +1678,7 @@ void checkPrice()
   {
     checkPriceExchangeApi();
   }
-  else if (strcmp(rateSourceBuffer, "CoinGecko") == 0)
+  else if (strcmp(rateSourceBuffer, "Coingecko") == 0)
   {
     checkPriceCoinGecko();
   }
@@ -1699,18 +1699,18 @@ void checkPriceCoinGecko()
     DynamicJsonDocument doc(1024);
     deserializeJson(doc, payload);
 
-    //String tempCurrency = currencySelected;
-    currencySelected.toLowerCase();
+    String tempCurrency = currencySelected;
+    tempCurrency.toLowerCase();
 
     // Get EUR value from parsed JSON
-    fiatValue = doc["bitcoin"][currencySelected.c_str()];
+    fiatValue = doc["bitcoin"][tempCurrency.c_str()];
     Serial.print(F("HTTP (checkPrice): "));
     Serial.println(httpCode);
   }
   else
   {
     Serial.print(F("Error (checkPrice): "));
-    Serial.println(httpCode);
+    Serial.println(httpCode);    
   }
   Serial.print("Free heap (checkPrice): ");
   Serial.println(ESP.getFreeHeap());
@@ -1730,12 +1730,13 @@ void checkPriceExchangeApi()
     DynamicJsonDocument doc(16384); // Increased buffer size for large JSON response
     DeserializationError error = deserializeJson(doc, payload);
 
-    currencySelected.toLowerCase();
+    String tempCurrency = currencySelected;
+    tempCurrency.toLowerCase();
 
     if (!error)
     {
       String date = doc["date"];
-      fiatValue = doc["btc"][currencySelected];
+      fiatValue = doc["btc"][tempCurrency];
 
       if (!fiatValue)
       {
@@ -3474,10 +3475,10 @@ void createSettingsScreen()
   // Create a label for rate source switch
   lv_obj_t *label_rate = lv_label_create(screen_settings);
   lv_label_set_text(label_rate, "Rate: (Coingecko \nor ExchangeApi)");
-  lv_obj_align(label_rate, LV_ALIGN_TOP_LEFT, 200, 55); // Position the label
+  lv_obj_align(label_rate, LV_ALIGN_TOP_LEFT, 190, 55); // Position the label
   // Create a switch and add it to the screen
   switch_rate = lv_switch_create(screen_settings);
-  lv_obj_set_pos(switch_rate, 200, 100); // Set the position of the switch
+  lv_obj_set_pos(switch_rate, 190, 100); // Set the position of the switch
 
   // Create a label for the switch
   rate_label = lv_label_create(screen_settings);
