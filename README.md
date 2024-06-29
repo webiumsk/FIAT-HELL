@@ -40,11 +40,11 @@ FIAT HELL LN ATM is a cryptocurrency ATM project built on the ESP32 platform. It
 
 ```bash
 git clone https://github.com/yourusername/fiat-hell-ln-atm.git
-    Open the project in your preferred development environment (Arduino IDE or PlatformIO).
+```bash
 
-    Configure your project settings, such as WiFi credentials and funding source configurations, in the config.h file.
+2. Open the project in your preferred development environment (Arduino IDE or PlatformIO).
 
-    Upload the project to your ESP32 board.
+3. Upload the project to your ESP32 board.
 
 ### Configuration
 
