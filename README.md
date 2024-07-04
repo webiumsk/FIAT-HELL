@@ -1,7 +1,7 @@
 # FIAT HELL LN ATM
 
 FIAT HELL LN ATM is a bitcoin ATM project built on the ESP32 platform. It allows users to convert fiat currencies to cryptocurrency using the Lightning Network. This project is designed to be highly configurable, supporting multiple currencies and funding sources.
-Its based on [Ben's FOSSA DYI ATM](https://github.com/lnbits/fossa)
+Its based on [Ben's FOSSA DIY ATM](https://github.com/lnbits/fossa)
 
 ## Features
 
@@ -18,8 +18,10 @@ Its based on [Ben's FOSSA DYI ATM](https://github.com/lnbits/fossa)
 - NV10 USB+ note acceptor [EBAY](https://www.ebay.com/sch/i.html?_from=R40&_trksid=p3519243.m570.l1313&_nkw=nv10+usb%2B&_sacat=0)
 - 12V to 5V Step Down Converter [Aliexpress](https://www.aliexpress.com/item/1005006407431542.html)
 - 12V battery [I'm using this one from LIDL](https://www.lidl.de/p/parkside-12v-akku-papk-12-b4-4-ah/p100362831), or any 12V power source
-- 
-- Dupont cables
+- Dupont cables [Aliexpress](https://www.aliexpress.com/item/1005004022062472.html)
+- - M-M 20cm 2x
+  - M-F 20cm 2x
+  - F-F 20cm 2x
 
 ## Software Requirements
 
@@ -49,6 +51,7 @@ Access the Config Portal to configure various parameters:
 1. Tap the screen during the initial loading animation
 2. On your phone or PC, connect to the device (find device with name "LN ATM-xxx")
 3. Set your preferences, currencies and wallets
+4. "Reset" will restart the ATM
 
 **Some prefences can be set during the runtime.**
 Tap the dot in top right corner of main screen.
