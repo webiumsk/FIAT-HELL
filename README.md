@@ -38,7 +38,7 @@ Its based on [Ben's FOSSA DIY ATM](https://github.com/lnbits/fossa)
 
 1. Clone the repository:
 ```
-    git clone https://github.com/webiumsk/fiat-hell-ln-atm.git
+    git clone https://github.com/webiumsk/fiat-hell.git
 ```
 
 2. Open the project in VSCode.
