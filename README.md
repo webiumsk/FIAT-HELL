@@ -15,7 +15,7 @@ FIAT HELL LN ATM is a cryptocurrency ATM project built on the ESP32 platform. It
 - ESP32 WT32 SC01
 - NV10 USB+ note acceptor
 - 12V to 5V Step Down Converter
-- 12V battery [I'm using this one from LIDL][https://www.lidl.de/p/parkside-12v-akku-papk-12-b4-4-ah/p100362831], or any 12V power source
+- 12V battery [I'm using this one from LIDL](https://www.lidl.de/p/parkside-12v-akku-papk-12-b4-4-ah/p100362831), or any 12V power source
 - 
 - Dupont cables
 
