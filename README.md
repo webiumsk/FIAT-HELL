@@ -6,21 +6,22 @@ FIAT HELL LN ATM is a cryptocurrency ATM project built on the ESP32 platform. It
 
 - **Multiple Currencies Support**: Configurable to support various fiat currencies.
 - **Funding Sources**: Supports multiple funding sources such as LNbits and Blink.
-- **WiFi Provisioning**: Configure WiFi through QR code.
 - **Animation**: Enable or disable animations on the main screen.
-- **Configurable Settings**: Easily configure settings through a dedicated settings screen.
+- **Configurable Settings**: Easily configure aome basic settings through a dedicated settings screen.
 - **Dynamic UI**: Adjusts UI elements based on configuration (e.g., single currency mode displays "START" button).
 
 ## Hardware Requirements
 
-- ESP32 microcontroller
-- Touchscreen display
-- WiFi module (built into ESP32)
-- Power supply
+- ESP32 WT32 SC01
+- NV10 USB+ note acceptor
+- 12V to 5V Step Down Converter
+- 12V battery [I'm using this one from LIDL][https://www.lidl.de/p/parkside-12v-akku-papk-12-b4-4-ah/p100362831], or any 12V power source
+- 
+- Dupont cables
 
 ## Software Requirements
 
-- Arduino IDE or PlatformIO
+- VSCode and PlatformIO
 - LVGL (Light and Versatile Graphics Library)
 - ArduinoJson library
 
@@ -28,7 +29,7 @@ FIAT HELL LN ATM is a cryptocurrency ATM project built on the ESP32 platform. It
 
 ### Prerequisites
 
-- Install Arduino IDE or PlatformIO
+- Install VSCode and PlatformIO
 - Install the required libraries:
   - LVGL
   - ArduinoJson
@@ -38,16 +39,16 @@ FIAT HELL LN ATM is a cryptocurrency ATM project built on the ESP32 platform. It
 
 1. Clone the repository:
 ```
-    git clone https://github.com/yourusername/fiat-hell-ln-atm.git
+    git clone https://github.com/webiumsk/fiat-hell-ln-atm.git
 ```
 
-2. Open the project in your preferred development environment (Arduino IDE or PlatformIO).
+2. Open the project in VSCode.
 
-3. Upload the project to your ESP32 board.
+3. Upload the project to your ESP32 board through PlatformIO.
 
 ### Configuration
 
-Access the settings screen to configure various parameters:
+Access the Config Portal to configure various parameters:
 
     Funding Source: Choose between LNbits and Blink.
     Enable/Disable Animation: Toggle animations on the main screen.
