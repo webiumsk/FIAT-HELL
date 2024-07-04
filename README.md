@@ -31,10 +31,7 @@ FIAT HELL LN ATM is a cryptocurrency ATM project built on the ESP32 platform. It
 ### Prerequisites
 
 - Install VSCode and PlatformIO
-- Install the required libraries:
-  - LVGL
-  - ArduinoJson
-  - WiFiClientSecure
+- PlatformIO will download and install all necessary libraries defined in platformio.ini
 
 ### Installation
 
@@ -50,15 +47,17 @@ FIAT HELL LN ATM is a cryptocurrency ATM project built on the ESP32 platform. It
 ### Configuration
 
 Access the Config Portal to configure various parameters:
+1. Tap the screen during the initial loading animation
+2. On your phone or PC, connect to the device (find device with name "LN ATM-xxx")
 
-    Funding Source: Choose between LNbits and Blink.
-    Enable/Disable Animation: Toggle animations on the main screen.
+Funding Source: Choose between LNbits and Blink.
+Enable/Disable Animation: Toggle animations on the main screen.
 
 ### Usage
 
-    On startup, the ATM will connect to the configured WiFi network and initialize the main screen.
-    Use the settings button on the top-right corner to access the settings screen.
-    Tap the currency buttons to select a currency and proceed with the transaction.
+On startup, the ATM will connect to the configured WiFi network and initialize the main screen.
+Use the settings button on the top-right corner to access the settings screen.
+Tap the currency buttons to select a currency and proceed with the transaction.
 
 ### Troubleshooting
 
@@ -72,12 +71,7 @@ Contributions are welcome! Please fork the repository and create a pull request 
 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-### Acknowledgements
-
-    LVGL for the graphics library
-    ArduinoJson for the JSON library
-    ESP32-TUX for WiFi provisioning example
 
 ## Contact
 
-For any inquiries, please contact your-email@example.com.
+For any inquiries, please contact webium@protonmail.com
