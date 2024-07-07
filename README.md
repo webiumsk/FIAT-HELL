@@ -8,7 +8,7 @@ Its based on [Ben's FOSSA DIY ATM](https://github.com/lnbits/fossa)
 ## Features
 
 - **Multiple Currencies Support**: Configurable to support various fiat currencies (Up to 3).
-- **Funding Sources**: Supports two funding sources such as LNbits and Blink.
+- **Funding Sources**: Supports two funding sources LNbits and Blink.
 - **Works Offline**: With [LNbits](https://lnbits.com) or **Online**: With [Blink](https://blink.sv) or [LNbits](https://lnbits.com)
 - **Animation**: Enable or disable animations on the main screen.
 - **Configurable Settings**: Easily configure aome basic settings through a dedicated settings screen.
@@ -34,6 +34,14 @@ Its based on [Ben's FOSSA DIY ATM](https://github.com/lnbits/fossa)
 
 - Install VSCode and PlatformIO
 - PlatformIO will download and install all necessary libraries defined in platformio.ini
+
+#### LNbits
+
+You need a running instance of LNbits
+
+#### Blink
+
+Install Blink wallet on your phone, and use their API.
 
 ### Installation
 
