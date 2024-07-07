@@ -3,7 +3,7 @@
 FIAT HELL LN ATM is a bitcoin ATM project built on the ESP32 platform. It allows users to convert fiat currencies to bitcoin using the Lightning Network. This project is designed to be highly configurable, supporting multiple currencies and funding sources.
 Its based on [Ben's FOSSA DIY ATM](https://github.com/lnbits/fossa)
 
-![FIAT HELL - LN ATM](https://atm.lnpay.eu/wp-content/uploads/2023/09/blackbox1.jpg)
+![FIAT HELL - LN ATM](https://storage.googleapis.com/geyser-images-distribution-prod-us/cdc6a4fc-218b-497d-9b7e-85b5b9b7ed2b_signal-2024-06-05-145915_005/image_large.webp)
 
 ## Features
 
