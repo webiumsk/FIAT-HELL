@@ -2309,8 +2309,19 @@ void createMainScreen()
   lv_obj_set_style_text_font(chargeValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: chargeValueLabel created");
 
-  lv_button_currency();
-  Serial.println("createMainScreen: lv_button_currency created");
+  if ((strcmp(fundingSourceBuffer, "Blink") == 0)  && (!wifiStatus()))
+    {
+      lv_obj_t *labelDisconnected = lv_label_create(screen_main);       // full screen as the parent
+      lv_label_set_text(labelDisconnected, "X NOT CONNECTED");                      // set label text
+      lv_obj_align(labelDisconnected, LV_ALIGN_BOTTOM_MID, 0, -90);    // Center but 20 from the top
+      lv_obj_set_style_text_font(labelDisconnected, &lv_font_montserrat_28, 0);
+      Serial.println("createMainScreen: labelDisconnected created");
+    } 
+  else 
+    {
+      lv_button_currency();
+      Serial.println("createMainScreen: lv_button_currency created");
+    } 
 
   createImages(screen_main);
   create_settings_button(screen_main); // Add the WiFi button to the main screen
