@@ -273,11 +273,20 @@ static int32_t x, y;
 void display_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p);
 void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data);
 void createLogoScreen();
+void deleteLogoScreen();
 void createPortalScreen();
 void createAPIScreen();
 void createMainScreen();
-void createSwitch(lv_obj_t *parent);
+void deleteMainScreen();
+void createCurrencyScreen(const String &currency, float rate, float balance, float charge);
+void deleteCurrencyScreen();
 void createInsertMoneyScreen();
+void deleteInsertMoneyScreen();
+void createPinEntryScreen();
+void deletePinEntryScreen();
+void createSettingsScreen();
+void deleteSettingsScreen();
+void createSwitch(lv_obj_t *parent);
 void lv_button_currency();
 void updateBurnText();
 void updateMainScreenLabel();
@@ -290,9 +299,7 @@ bool isLNbits();
 bool wifiStatus();
 void showQRCodeLVGL(const char *data);
 int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen, uint8_t *nonce, size_t nonce_len, uint64_t pin, uint64_t amount_in_cents);
-void deleteMainScreen();
-void deleteInsertMoneyScreen();
-void createSettingsScreen();
+
 void checkNetworkAndDeviceStatus();
 void btn_config_portal_event_handler(lv_event_t *e);
 void startConfigPortal();
@@ -306,7 +313,6 @@ void createBackButton(lv_obj_t *parent);
 static void reset_btn_event_cb(lv_event_t *e);
 void setupPinEntryComponents(lv_obj_t *parent);
 void printHeapStatus();
-void showCurrencyScreen(const String &currency, float rate, float balance, float charge);
 void createLoadingIndicator();
 void showLoadingIndicator();
 void hideLoadingIndicator();
@@ -988,8 +994,9 @@ void setup()
   // config.password = "password";
 
   WiFi.begin(localssid, localpass);
-  checkPrice();
-  checkBalance();
+  //delay(5000);
+  //checkPrice();
+  //checkBalance();
 
   // Create the loading indicator
   createLoadingIndicator();
@@ -1345,6 +1352,8 @@ static void btn_event_cb(lv_event_t *e)
  */
 void createPinEntryScreen()
 {
+  deleteMainScreen();                         // Properly manage deletion of the previous screen
+
   memset(pin_code, 0, sizeof(pin_code));      // Reset the pin_code every time screen is created
   lv_obj_t *pin_screen = lv_obj_create(NULL); // Create a new screen
   lv_scr_load(pin_screen);                    // Load the new screen
@@ -1971,7 +1980,7 @@ static void btn1_event_handler(lv_event_t *e)
     }
     chargeSelected = charge1;
     maxamountSelected = maxamount;
-    showCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected); // Show the new screen
+    createCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected); // Show the new screen
 
     hideLoadingIndicator();
   }
@@ -2009,7 +2018,7 @@ static void btn2_event_handler(lv_event_t *e)
     }
     chargeSelected = charge2;
     maxamountSelected = maxamount2;
-    showCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected); // Show the new screen
+    createCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected); // Show the new screen
 
     hideLoadingIndicator();
   }
@@ -2038,7 +2047,7 @@ static void btn3_event_handler(lv_event_t *e)
     }
     chargeSelected = charge3;
     maxamountSelected = maxamount3;
-    showCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected); // Show the new screen
+    createCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected); // Show the new screen
 
     hideLoadingIndicator();
   }
@@ -2176,6 +2185,7 @@ void updateMainScreenLabel()
  */
 void createMainScreen()
 {
+  deleteSettingsScreen();             // Properly manage deletion of the previous screen
   SerialPort1.write(185);         // Command to turn off the acceptor
   digitalWrite(INHIBITMECH, LOW); 
 
@@ -2309,28 +2319,27 @@ void createMainScreen()
   lv_obj_set_style_text_font(chargeValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: chargeValueLabel created");
 
-  if ((strcmp(fundingSourceBuffer, "Blink") == 0)  && (!wifiStatus()))
-    {
-      lv_obj_t *labelDisconnected = lv_label_create(screen_main);       // full screen as the parent
-      lv_label_set_text(labelDisconnected, "X NOT CONNECTED");                      // set label text
-      lv_obj_align(labelDisconnected, LV_ALIGN_BOTTOM_MID, 0, -90);    // Center but 20 from the top
-      lv_obj_set_style_text_font(labelDisconnected, &lv_font_montserrat_28, 0);
-      Serial.println("createMainScreen: labelDisconnected created");
-    } 
-  else 
-    {
-      lv_button_currency();
-      Serial.println("createMainScreen: lv_button_currency created");
-    } 
+  /*if ((isBlink()) && (!wifiStatus()))
+  {
+    lv_obj_t *labelNotConnected = lv_label_create(screen_main);   // full screen as the parent
+    lv_label_set_text(labelNotConnected, "Blink & NOT CONNECTED");                // set label text
+    lv_obj_align(labelNotConnected, LV_ALIGN_BOTTOM_MID, 0, -90); // Center but 20 from the top
+    lv_obj_set_style_text_font(labelNotConnected, &lv_font_montserrat_22, 0);
+    Serial.println("createMainScreen: labelNotConnected created");
+  }
+  else
+  {*/
+    lv_button_currency();
+    Serial.println("createMainScreen: lv_button_currency created");
+  //}
+    createImages(screen_main);
+    create_settings_button(screen_main); // Add the WiFi button to the main screen
 
-  createImages(screen_main);
-  create_settings_button(screen_main); // Add the WiFi button to the main screen
-
-  lv_scr_load(screen_main);
-  Serial.println("createMainScreen: Screen loaded");
-  Serial.print("Free heap (createMainScreen End): ");
-  Serial.println(ESP.getFreeHeap());
-}
+    lv_scr_load(screen_main);
+    Serial.println("createMainScreen: Screen loaded");
+    Serial.print("Free heap (createMainScreen End): ");
+    Serial.println(ESP.getFreeHeap());
+  }
 
 /**
  * Displays the currency screen with the given currency, rate, balance, and charge.
@@ -2340,8 +2349,9 @@ void createMainScreen()
  * @param balance The balance in the selected currency.
  * @param charge The fee percentage.
  */
-void showCurrencyScreen(const String &currency, float rate, float balance, float charge)
+void createCurrencyScreen(const String &currency, float rate, float balance, float charge)
 {
+  deleteMainScreen(); // Properly manage deletion of the previous screen
   lv_obj_t *screen_currency = lv_obj_create(NULL);
 
   String currency_text = "Selected Currency: " + currency;
@@ -2381,8 +2391,16 @@ void showCurrencyScreen(const String &currency, float rate, float balance, float
 
 void enableAcceptor()
 {
-  SerialPort1.write(184);          // Enable acceptor
-  digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
+  if ((isBlink()) && (!wifiStatus()))
+  {
+    Serial.println("Error: Blink API is selected but the device is offline");
+    return;
+  }
+  else
+  {
+    SerialPort1.write(184);          // Enable acceptor
+    digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies}
+  }
 }
 
 /**
@@ -2397,7 +2415,7 @@ void enableAcceptor()
  */
 void createInsertMoneyScreen()
 {
-  deleteMainScreen(); // Properly manage deletion of the previous screen
+  deleteCurrencyScreen(); // Properly manage deletion of the previous screen
 
   isInsertingMoney = true;
 
@@ -3223,6 +3241,7 @@ void showMessageLVGL(String message)
 
 void showQRCodeLVGL(const char *data)
 {
+  deleteInsertMoneyScreen(); // Delete the insert money screen before showing the QR code
   //static lv_obj_t *screen_qr = nullptr;
   
   screen_qr = lv_obj_create(NULL); // Create a new screen
@@ -3316,10 +3335,49 @@ void showQRCodeLVGL(const char *data)
 void deleteMainScreen()
 {
   if (screen_main != NULL)
-  { // Check if screen_qr actually points to an object
+  { // Check if screen_main actually points to an object
     lv_obj_del(screen_main);
     screen_main = NULL; // Set the pointer to NULL to avoid "dangling pointers"
     Serial.println(F("Delete: screen_main"));
+  }
+}
+void deleteLogoScreen()
+{
+  if (screen_logo != NULL)
+  { // Check if screen_logo actually points to an object
+    lv_obj_del(screen_logo);
+    screen_logo = NULL; // Set the pointer to NULL to avoid "dangling pointers"
+    Serial.println(F("Delete: screen_logo"));
+  }
+}
+
+// void deletePinEntryScreen()
+// {
+//   if (pin_scre != NULL)
+//   { // Check if screen_pinentry actually points to an object
+//     lv_obj_del(screen_pinentry);
+//     screen_pinentry = NULL; // Set the pointer to NULL to avoid "dangling pointers"
+//     Serial.println(F("Delete: screen_pinentry"));
+//   }
+// }
+
+void deleteSettingsScreen()
+{
+  if (screen_settings != NULL)
+  { // Check if screen_qr actually points to an object
+    lv_obj_del(screen_settings);
+    screen_settings = NULL; // Set the pointer to NULL to avoid "dangling pointers"
+    Serial.println(F("Delete: screen_settings"));
+  }
+}
+
+void deleteCurrencyScreen()
+{
+  if (screen_currency != NULL)
+  { // Check if screen_currency actually points to an object
+    lv_obj_del(screen_currency);
+    screen_currency = NULL; // Set the pointer to NULL to avoid "dangling pointers"
+    Serial.println(F("Delete: screen_currency"));
   }
 }
 
@@ -3435,6 +3493,8 @@ static void saveSettingsToFile()
  */
 void createSettingsScreen()
 {
+  deleteMainScreen();                              // Properly manage deletion of the previous screen
+
   lv_obj_t *screen_settings = lv_obj_create(NULL); // Get the current active screen or create a new one
   lv_scr_load(screen_settings);                    // Load the new screen as active
 
