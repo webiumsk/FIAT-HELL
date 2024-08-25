@@ -1352,7 +1352,7 @@ static void btn_event_cb(lv_event_t *e)
  */
 void createPinEntryScreen()
 {
-  deleteMainScreen();                         // Properly manage deletion of the previous screen
+  //deleteMainScreen();                         // Properly manage deletion of the previous screen
 
   memset(pin_code, 0, sizeof(pin_code));      // Reset the pin_code every time screen is created
   lv_obj_t *pin_screen = lv_obj_create(NULL); // Create a new screen
@@ -1540,7 +1540,7 @@ void settings_btn_event_cb(lv_event_t *e)
  */
 bool isBlink()
 {
-  if (blinkapikey != "" || blinkwalletid != "" && (strcmp(fundingSourceBuffer, "Blink") == 0))
+  if (strcmp(fundingSourceBuffer, "Blink") == 0)
   {
     return true;
   }
@@ -1559,7 +1559,7 @@ bool isBlink()
  */
 bool isLNbits()
 {
-  if (currencyATM != "" || adminkey != "" || readkey != "" && (strcmp(fundingSourceBuffer, "LNbits") == 0))
+  if (strcmp(fundingSourceBuffer, "LNbits") == 0)
   {
     return true;
   }
@@ -1617,7 +1617,7 @@ void updateBurnText()
   Serial.println(ESP.getFreeHeap());
   if (burnTextLabel) // Ensure the label has been created
   {
-    String combinedText = "BURN YOUR " + currencySelected + " FOR SATS";
+    String combinedText = "BURN YOUR SHITCOIN FOR SATS";
     lv_label_set_text(burnTextLabel, combinedText.c_str());
 
     checkNetworkAndDeviceStatus();
@@ -1641,7 +1641,7 @@ void setCurrency(const String &newCurrency)
 {
   Serial.println("setCurrency Currency set to " + newCurrency);
   currencySelected = newCurrency;
-  updateBurnText(); // Update the label text when the currency changes
+  //updateBurnText(); // Update the label text when the currency changes
 
   // Clear all channels before setting the new ones
   for (int i = 0; i < 16; i++)
@@ -2185,7 +2185,7 @@ void updateMainScreenLabel()
  */
 void createMainScreen()
 {
-  deleteSettingsScreen();             // Properly manage deletion of the previous screen
+  //deleteSettingsScreen();             // Properly manage deletion of the previous screen
   SerialPort1.write(185);         // Command to turn off the acceptor
   digitalWrite(INHIBITMECH, LOW); 
 
@@ -2257,7 +2257,7 @@ void createMainScreen()
 
   /* Create a label with big text */
   burnTextLabel = lv_label_create(screen_main); // Assign it to global variable
-  String combinedText = "BURN YOUR " + currencySelected + " FOR SATS";
+  String combinedText = "BURN YOUR SHITCOIN FOR SATS";
   lv_label_set_text(burnTextLabel, combinedText.c_str());
   lv_obj_set_style_text_font(burnTextLabel, &lv_font_montserrat_24, 0); // Use the large font
   lv_obj_align(burnTextLabel, LV_ALIGN_TOP_MID, 0, 163);                // Center but 163 from the top
@@ -2351,7 +2351,7 @@ void createMainScreen()
  */
 void createCurrencyScreen(const String &currency, float rate, float balance, float charge)
 {
-  deleteMainScreen(); // Properly manage deletion of the previous screen
+  //deleteMainScreen(); // Properly manage deletion of the previous screen
   lv_obj_t *screen_currency = lv_obj_create(NULL);
 
   String currency_text = "Selected Currency: " + currency;
@@ -2555,7 +2555,7 @@ void switch_event_handler(lv_event_t *e)
 
   checkNetworkAndDeviceStatus();
   checkBalance();
-  updateBurnText();
+  //updateBurnText();
   updateMainScreenLabel();
 }
 
@@ -3493,12 +3493,12 @@ static void saveSettingsToFile()
  */
 void createSettingsScreen()
 {
-  deleteMainScreen();                              // Properly manage deletion of the previous screen
+  //deleteMainScreen();                              // Properly manage deletion of the previous screen
 
   lv_obj_t *screen_settings = lv_obj_create(NULL); // Get the current active screen or create a new one
   lv_scr_load(screen_settings);                    // Load the new screen as active
 
-  createBackButton(screen_settings);  // Add back button to the settings screen
+  //createBackButton(screen_settings);  // Add back button to the settings screen
   createResetButton(screen_settings); // Add reset button to the settings screen
 
   // Create a label to inform the user
@@ -3675,7 +3675,7 @@ void createResetButton(lv_obj_t *parent)
   lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -10, 10);
 
   lv_obj_t *label = lv_label_create(btn); // Create label on the button
-  lv_label_set_text(label, "Reset");      // Set label text
+  lv_label_set_text(label, "Restart");      // Set label text
   lv_obj_center(label);                   // Center the label within the button
 
   // Attach event handler to the button
