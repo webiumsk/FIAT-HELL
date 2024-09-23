@@ -207,7 +207,7 @@ HardwareSerial SerialPort2(2);
 
 Button BTNA(BTN1);
 
-lv_obj_t *screen_logo, *screen_portal, *screen_api, *screen_thx, *screen_main, *screen_insert_money, *screen_qr, *screen_settings, *screen_currency;
+lv_obj_t *screen_logo, *screen_portal, *screen_api, *screen_thx, *screen_main, *screen_insert_money, *screen_qr, *screen_settings, *screen_currency, *pin_screen;
 lv_obj_t *labelbtn;
 lv_obj_t *fiathell;
 lv_obj_t *labelLastInserted = nullptr;
@@ -286,6 +286,7 @@ void createPinEntryScreen();
 void deletePinEntryScreen();
 void createSettingsScreen();
 void deleteSettingsScreen();
+void deleteAllScreens();
 void createSwitch(lv_obj_t *parent);
 void lv_button_currency();
 void updateBurnText();
@@ -1001,6 +1002,7 @@ void setup()
   // Create the loading indicator
   createLoadingIndicator();
   lv_task_handler();
+  delay(5);
 
   Serial.print(F("APP PASSWORD: "));
   Serial.println(password);
@@ -1352,7 +1354,7 @@ static void btn_event_cb(lv_event_t *e)
  */
 void createPinEntryScreen()
 {
-  //deleteMainScreen();                         // Properly manage deletion of the previous screen
+  deleteMainScreen();                         // Properly manage deletion of the previous screen
 
   memset(pin_code, 0, sizeof(pin_code));      // Reset the pin_code every time screen is created
   lv_obj_t *pin_screen = lv_obj_create(NULL); // Create a new screen
@@ -2091,12 +2093,12 @@ void color_anim_cb(void *var, int32_t v)
  */
 void createImages(lv_obj_t *parent)
 {
-  img_blink = lv_img_create(screen_main);
+  img_blink = lv_img_create(screen_settings);
   lv_img_set_src(img_blink, &blink); // 'blink' must be a properly defined LVGL image variable
   lv_obj_align(img_blink, LV_ALIGN_TOP_LEFT, 10, 10);
   lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
 
-  img_lnbits = lv_img_create(screen_main);
+  img_lnbits = lv_img_create(screen_settings);
   lv_img_set_src(img_lnbits, &lnbits); // 'lnbits' must be a properly defined LVGL image variable
   lv_obj_align(img_lnbits, LV_ALIGN_TOP_LEFT, 10, 10);
   lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
@@ -2185,6 +2187,7 @@ void updateMainScreenLabel()
  */
 void createMainScreen()
 {
+  //deleteCurrencyScreen();
   //deleteSettingsScreen();             // Properly manage deletion of the previous screen
   SerialPort1.write(185);         // Command to turn off the acceptor
   digitalWrite(INHIBITMECH, LOW); 
@@ -2331,9 +2334,28 @@ void createMainScreen()
   {*/
     lv_button_currency();
     Serial.println("createMainScreen: lv_button_currency created");
-  //}
-    createImages(screen_main);
+  //}    
     create_settings_button(screen_main); // Add the WiFi button to the main screen
+    img_blink = lv_img_create(screen_main);
+    lv_img_set_src(img_blink, &blink); // 'blink' must be a properly defined LVGL image variable
+    lv_obj_align(img_blink, LV_ALIGN_TOP_LEFT, 10, 10);
+    lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
+
+    img_lnbits = lv_img_create(screen_main);
+    lv_img_set_src(img_lnbits, &lnbits); // 'lnbits' must be a properly defined LVGL image variable
+    lv_obj_align(img_lnbits, LV_ALIGN_TOP_LEFT, 10, 10);
+    lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
+
+    if (strcmp(fundingSourceBuffer, "LNbits") == 0)
+    {
+      lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_clear_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
+    }
+    else if (strcmp(fundingSourceBuffer, "Blink") == 0)
+    {
+      lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_clear_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
+    }
 
     lv_scr_load(screen_main);
     Serial.println("createMainScreen: Screen loaded");
@@ -2351,7 +2373,8 @@ void createMainScreen()
  */
 void createCurrencyScreen(const String &currency, float rate, float balance, float charge)
 {
-  //deleteMainScreen(); // Properly manage deletion of the previous screen
+  deleteMainScreen(); // Properly manage deletion of the previous screen
+  deleteSettingsScreen();
   lv_obj_t *screen_currency = lv_obj_create(NULL);
 
   String currency_text = "Selected Currency: " + currency;
@@ -2383,6 +2406,8 @@ void createCurrencyScreen(const String &currency, float rate, float balance, flo
   lv_label_set_text(insert_label, insert_text.c_str());
   lv_obj_align(insert_label, LV_ALIGN_CENTER, 0, 0);
   lv_obj_set_style_text_font(insert_label, &lv_font_montserrat_24, 0);
+
+  createBackButton(screen_currency);
 
   lv_scr_load(screen_currency);
 
@@ -2556,7 +2581,7 @@ void switch_event_handler(lv_event_t *e)
   checkNetworkAndDeviceStatus();
   checkBalance();
   //updateBurnText();
-  updateMainScreenLabel();
+  //updateMainScreenLabel();
 }
 
 /**
@@ -2602,11 +2627,11 @@ static void switch_animation_event_handler(lv_event_t *e)
 void createSwitch(lv_obj_t *parent)
 {
   // Create a switch and add it to the screen
-  switch_fund = lv_switch_create(screen_main);
+  switch_fund = lv_switch_create(screen_settings);
   lv_obj_set_pos(switch_fund, 10, 30); // Set the position of the switch
 
   // Create a label for the switch
-  switch_label = lv_label_create(screen_main);
+  switch_label = lv_label_create(screen_settings);
   lv_label_set_text(switch_label, fundingSourceBuffer);                      // Use fundingSourceBuffer to set initial text
   lv_obj_align_to(switch_label, switch_fund, LV_ALIGN_OUT_RIGHT_MID, 10, 0); // Align label to the right of the switch
 
@@ -3241,21 +3266,19 @@ void showMessageLVGL(String message)
 
 void showQRCodeLVGL(const char *data)
 {
-  deleteInsertMoneyScreen(); // Delete the insert money screen before showing the QR code
-  //static lv_obj_t *screen_qr = nullptr;
-  
+  // Properly handle screen memory
+  if (screen_qr != nullptr)
+  {
+    lv_obj_del(screen_qr); // Delete the previous screen if exists
+  }
+
   screen_qr = lv_obj_create(NULL); // Create a new screen
-  // if (screen_qr == nullptr)
-  // {
-  //   Serial.println("Failed to create screen object.");
-  //   return;
-  // }
   Serial.println("showQRCodeLVGL: Screen created");
 
   lv_color_t bg_color = lv_color_white();
   lv_color_t fg_color = lv_color_black();
 
-  // Create the QR code with the expected arguments
+  // Create the QR code
   lv_obj_t *qr = lv_qrcode_create(screen_qr, 200, fg_color, bg_color);
   if (qr == nullptr)
   {
@@ -3263,8 +3286,8 @@ void showQRCodeLVGL(const char *data)
     return;
   }
 
-  // Update QR code with the given data
-  if (lv_qrcode_update(qr, data, strlen(data)) != LV_RES_OK)
+  // Update QR code with the given data, ensuring data is valid
+  if (data == nullptr || lv_qrcode_update(qr, data, strlen(data)) != LV_RES_OK)
   {
     Serial.println("Failed to update QR code.");
     return;
@@ -3275,36 +3298,19 @@ void showQRCodeLVGL(const char *data)
   lv_obj_set_style_border_color(qr, bg_color, 0);
   lv_obj_set_style_border_width(qr, 5, 0);
 
-  // Create an LVGL label to display the LNURL
-  // lv_obj_t *labelLNURL = lv_label_create(screen_qr);
-  // if (labelLNURL == nullptr)
-  // {
-  //   Serial.println("Failed to create label object.");
-  //   return;
-  // }
-  // lv_label_set_long_mode(labelLNURL, LV_LABEL_LONG_WRAP); // Break the long lines
-  // lv_label_set_text(labelLNURL, modifiedLnURLgen.c_str());
-  // lv_obj_set_style_text_font(labelLNURL, &lv_font_montserrat_16, 0); // Use the large font
-  // lv_obj_set_style_text_color(labelLNURL, lv_color_hex(0xCCCCCC), 0);
-  // lv_obj_align(labelLNURL, LV_ALIGN_TOP_LEFT, 5, 5);
-  // // Get the display width
-  // uint32_t display_width = lv_disp_get_hor_res(NULL);
-  // // Set the label width to the display width
-  // lv_obj_set_size(labelLNURL, display_width - 5, LV_SIZE_CONTENT);
-
-  // Create an LVGL label to display the message Warning
+  // Create a label for the warning message
   lv_obj_t *labelWarning = lv_label_create(screen_qr);
   if (labelWarning == nullptr)
   {
-    Serial.println("Failed to create label object labelWarning.");
+    Serial.println("Failed to create labelWarning object.");
     return;
-  }  
+  }
   lv_label_set_text(labelWarning, "IN CASE OF PROBLEMS, MAKE A PHOTO AND CONTACT SUPPORT");
-  lv_obj_set_style_text_font(labelWarning, &lv_font_montserrat_14, 0); // Use the large font
+  lv_obj_set_style_text_font(labelWarning, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(labelWarning, lv_color_hex(0xCCCCCC), 0);
   lv_obj_align(labelWarning, LV_ALIGN_BOTTOM_MID, 0, -5);
 
-  // Create an LVGL label to display the message
+  // Create a label for the confirmation message
   lv_obj_t *label = lv_label_create(screen_qr);
   if (label == nullptr)
   {
@@ -3320,12 +3326,14 @@ void showQRCodeLVGL(const char *data)
   {
     lv_label_set_text(label, "SCAN AND WAIT FOR CONFIRMATION");
   }
-  lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0); // Use the large font
+  lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(label, lv_color_hex(0xFF9900), 0);
   lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 10);
 
+  // Load the screen
   lv_scr_load(screen_qr);
 
+  // Debugging heap memory
   Serial.print("Free heap (showQRCodeLVGL): ");
   Serial.println(ESP.getFreeHeap());
 
@@ -3351,15 +3359,15 @@ void deleteLogoScreen()
   }
 }
 
-// void deletePinEntryScreen()
-// {
-//   if (pin_scre != NULL)
-//   { // Check if screen_pinentry actually points to an object
-//     lv_obj_del(screen_pinentry);
-//     screen_pinentry = NULL; // Set the pointer to NULL to avoid "dangling pointers"
-//     Serial.println(F("Delete: screen_pinentry"));
-//   }
-// }
+void deletePinEntryScreen()
+{
+  if (pin_screen != NULL)
+  { // Check if pin_screen actually points to an object
+    lv_obj_del(pin_screen);
+    pin_screen = NULL; // Set the pointer to NULL to avoid "dangling pointers"
+    Serial.println(F("Delete: pin_screen"));
+  }
+}
 
 void deleteSettingsScreen()
 {
@@ -3409,6 +3417,17 @@ void deleteThankYouScreen()
     screen_thx = NULL; // Set the pointer to NULL to avoid "dangling pointers"
     Serial.println(F("Delete: screen_thx"));
   }
+}
+
+void deleteAllScreens() 
+{
+  deleteLogoScreen();
+  deleteCurrencyScreen();
+  deleteInsertMoneyScreen();
+  deletePinEntryScreen();
+  deleteSettingsScreen();
+  deleteQRCodeScreen();
+  deleteThankYouScreen();
 }
 
 void printHeapStatus()
@@ -3493,12 +3512,12 @@ static void saveSettingsToFile()
  */
 void createSettingsScreen()
 {
-  //deleteMainScreen();                              // Properly manage deletion of the previous screen
+  deletePinEntryScreen();
 
   lv_obj_t *screen_settings = lv_obj_create(NULL); // Get the current active screen or create a new one
   lv_scr_load(screen_settings);                    // Load the new screen as active
 
-  //createBackButton(screen_settings);  // Add back button to the settings screen
+  createBackButton(screen_settings);  // Add back button to the settings screen
   createResetButton(screen_settings); // Add reset button to the settings screen
 
   // Create a label to inform the user
@@ -3542,6 +3561,8 @@ void createSettingsScreen()
     lv_obj_clear_state(switch_fund, LV_STATE_CHECKED); // Ensure switch is off if fundingsource is "blink"
     lv_label_set_text(switch_label, "Blink");
   }
+
+  createImages(screen_settings);
 
   // Create a label for rate source switch
   lv_obj_t *label_rate = lv_label_create(screen_settings);
@@ -3747,6 +3768,7 @@ void loop()
     updateMainScreenLabel(); // Update the label on the main screen with the new balance
     update_settings_button_style();
     lv_task_handler();
+    delay(5);
   }
 
   // Check if user is inserting money
@@ -3766,6 +3788,7 @@ void loop()
         {
           createInsertMoneyScreen();
           lv_task_handler();
+          delay(5);
           isInsertingMoney = true;
         }
 
@@ -3795,11 +3818,11 @@ void loop()
 
     if (!wifiStatus())
     {
+      deleteInsertMoneyScreen();
+      Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
       makeLNURL();
       printHeapStatus();
-      Serial.println("makeLNURL() - LNbits offline: ");
-      //deleteInsertMoneyScreen();
-      //Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
+      Serial.println("makeLNURL() - LNbits offline: ");      
       showQRCodeLVGL(qrData.c_str());
       Serial.print("showQRCodeLVGL() - LNbits offline: ");
       Serial.println(qrData);
@@ -3816,14 +3839,15 @@ void loop()
     {
       if (strcmp(fundingSourceBuffer, "Blink") == 0)
       {
+        deleteInsertMoneyScreen();
+        Serial.println("deleteInsertMoneyScreen() - Blink online");
         createLNURLWithdraw();
-        Serial.println("createLNURLWithdraw() - Blink online");
-        //deleteInsertMoneyScreen();
-        //Serial.println("deleteInsertMoneyScreen() - Blink online");
+        Serial.println("createLNURLWithdraw() - Blink online");        
         // Display the QR code for online
         showQRCodeLVGL(lnURLgen.c_str());
         Serial.println("showQRCodeLVGL() - Blink online");
         lv_task_handler();
+        delay(5);
         Serial.println("lv_task_handler() - Blink online");
         // Turn off machines
         SerialPort1.write(185);
@@ -3860,15 +3884,16 @@ void loop()
       }
       if (strcmp(fundingSourceBuffer, "LNbits") == 0)
       {
+        deleteInsertMoneyScreen();
+        Serial.println("deleteInsertMoneyScreen() - LNbits online");
         getLNURL();
         Serial.println("getLNURL()");
-        delay(1000);
-        deleteInsertMoneyScreen();
-        //Serial.println("deleteInsertMoneyScreen() - LNbits online");
+        delay(1000);        
         // Display the QR code for online
         showQRCodeLVGL(lnURLgen.c_str());
         Serial.println("showQRCodeLVGL() - LNbits online");
         lv_task_handler();
+        delay(5);
         Serial.println("lv_task_handler() - LNbits online");
         // Turn off machines
         SerialPort1.write(185);
@@ -3893,7 +3918,8 @@ void loop()
         total = 0;
         isInsertingMoney = false;
         // Load your main screen or perform any other desired action
-        deleteQRCodeScreen();
+        //deleteQRCodeScreen();
+        //deleteAllScreens();
         //createMainScreen();
         ESP.restart();
       }
