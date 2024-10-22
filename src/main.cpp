@@ -1715,15 +1715,15 @@ void checkPriceCoinGecko()
 
     // Get EUR value from parsed JSON
     fiatValue = doc["bitcoin"][tempCurrency.c_str()];
-    Serial.print(F("HTTP (checkPrice): "));
+    Serial.print(F("HTTP (checkPriceCoinGecko): "));
     Serial.println(httpCode);
   }
   else
   {
-    Serial.print(F("Error (checkPrice): "));
+    Serial.print(F("Error (checkPriceCoinGecko): "));
     Serial.println(httpCode);    
   }
-  Serial.print("Free heap (checkPrice): ");
+  Serial.print("Free heap (checkPriceCoinGecko): ");
   Serial.println(ESP.getFreeHeap());
   http.end(); // Close connection
 }
@@ -2374,7 +2374,9 @@ void createMainScreen()
 void createCurrencyScreen(const String &currency, float rate, float balance, float charge)
 {
   deleteMainScreen(); // Properly manage deletion of the previous screen
-  deleteSettingsScreen();
+  deleteSettingsScreen();  
+  checkPrice();
+  checkBalance();
   lv_obj_t *screen_currency = lv_obj_create(NULL);
 
   String currency_text = "Selected Currency: " + currency;
@@ -2383,13 +2385,13 @@ void createCurrencyScreen(const String &currency, float rate, float balance, flo
   lv_obj_align(currency_label, LV_ALIGN_TOP_MID, 0, 20);
   lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
 
-  String rate_text = "Rate: " + String(rate) + currency + "/BTC";
+  String rate_text = "Rate: " + String(rate) + " " + currency + "/BTC";
   lv_obj_t *rate_label = lv_label_create(screen_currency);
   lv_label_set_text(rate_label, rate_text.c_str());
   lv_obj_align(rate_label, LV_ALIGN_TOP_MID, 0, 50);
   lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
 
-  String balance_text = "Balance: " + String(balance) + currency;
+  String balance_text = "Balance: " + String(balance) + " " + currency;
   lv_obj_t *balance_label = lv_label_create(screen_currency);
   lv_label_set_text(balance_label, balance_text.c_str());
   lv_obj_align(balance_label, LV_ALIGN_TOP_MID, 0, 80);
