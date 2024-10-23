@@ -114,7 +114,7 @@ String currencyATM3;
 String currencyOne;
 String currencyTwo;
 String currencyThree;
-String currencySelected = currencyOne;
+String currencySelected = "USD";
 
 lv_obj_t *btn1;
 lv_obj_t *btn2;
@@ -1354,7 +1354,7 @@ static void btn_event_cb(lv_event_t *e)
  */
 void createPinEntryScreen()
 {
-  deleteMainScreen();                         // Properly manage deletion of the previous screen
+  //deleteMainScreen();                         // Properly manage deletion of the previous screen
 
   memset(pin_code, 0, sizeof(pin_code));      // Reset the pin_code every time screen is created
   lv_obj_t *pin_screen = lv_obj_create(NULL); // Create a new screen
@@ -1643,7 +1643,7 @@ void setCurrency(const String &newCurrency)
 {
   Serial.println("setCurrency Currency set to " + newCurrency);
   currencySelected = newCurrency;
-  //updateBurnText(); // Update the label text when the currency changes
+  updateBurnText(); // Update the label text when the currency changes
 
   // Clear all channels before setting the new ones
   for (int i = 0; i < 16; i++)
@@ -2187,8 +2187,8 @@ void updateMainScreenLabel()
  */
 void createMainScreen()
 {
-  //deleteCurrencyScreen();
-  //deleteSettingsScreen();             // Properly manage deletion of the previous screen
+  deleteCurrencyScreen();
+  deleteSettingsScreen();         // Properly manage deletion of the previous screen
   SerialPort1.write(185);         // Command to turn off the acceptor
   digitalWrite(INHIBITMECH, LOW); 
 
@@ -2373,10 +2373,6 @@ void createMainScreen()
  */
 void createCurrencyScreen(const String &currency, float rate, float balance, float charge)
 {
-  deleteMainScreen(); // Properly manage deletion of the previous screen
-  deleteSettingsScreen();  
-  checkPrice();
-  checkBalance();
   lv_obj_t *screen_currency = lv_obj_create(NULL);
 
   String currency_text = "Selected Currency: " + currency;
@@ -2426,7 +2422,7 @@ void enableAcceptor()
   else
   {
     SerialPort1.write(184);          // Enable acceptor
-    digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies}
+    digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
   }
 }
 
@@ -2580,10 +2576,7 @@ void switch_event_handler(lv_event_t *e)
   Serial.print(F("Switch: Rate source: "));
   Serial.println(rateSourceBuffer);
 
-  checkNetworkAndDeviceStatus();
-  checkBalance();
-  //updateBurnText();
-  //updateMainScreenLabel();
+  updateBurnText();
 }
 
 /**
@@ -3880,7 +3873,6 @@ void loop()
         createThankYouScreen();
         lv_task_handler();
         delay(1200);
-        //deleteThankYouScreen();
         //createMainScreen();
         ESP.restart();
       }
