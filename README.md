@@ -11,7 +11,7 @@ Its based on [Ben's FOSSA DIY ATM](https://github.com/lnbits/fossa)
 - **Funding Sources**: Supports two funding sources LNbits and Blink.
 - **Works Offline**: With [LNbits](https://lnbits.com) or **Online**: With [Blink](https://blink.sv) or [LNbits](https://lnbits.com)
 - **Animation**: Enable or disable animations on the main screen.
-- **Configurable Settings**: Easily configure aome basic settings through a dedicated settings screen.
+- **Configurable Settings**: Easily configure some basic settings through a dedicated settings screen.
 - **Dynamic UI**: Adjusts UI elements based on configuration (e.g., single currency mode displays "START" button).
 
 ## Hardware Requirements
@@ -60,7 +60,9 @@ Access the Config Portal to configure various parameters:
 1. Tap the screen during the initial loading animation
 2. On your phone or PC, connect to the device (find device with name "LN ATM-xxx")
 3. Set your preferences, currencies and wallets
-4. "Reset" will restart the ATM
+4. Change the AP password!
+5. Change the Settings screen PIN code!
+6. "Reset" will restart the ATM
 
 **Some prefences can be set during the runtime.**
 Tap the dot in top right corner of main screen.
@@ -82,6 +84,10 @@ Tap the currency buttons to select a currency and proceed with the transaction.
     ESP32 Not Starting: Ensure sufficient heap memory and check for stack overflow issues.
     WiFi Connection Issues: Verify WiFi credentials and network availability.
     UI Elements Not Visible: Check the configuration and ensure the display is properly connected.
+
+### WIP
+
+    This project is work in progress. 
 
 ## Contributing
 
