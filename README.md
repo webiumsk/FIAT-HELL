@@ -21,6 +21,7 @@ Its based on [Ben's FOSSA DIY ATM](https://github.com/lnbits/fossa)
 - 12V to 5V Step Down Converter [Aliexpress](https://www.aliexpress.com/item/1005006407431542.html)
 - 12V battery [I'm using this one from LIDL](https://www.lidl.de/p/parkside-12v-akku-papk-12-b4-4-ah/p100362831), or any 12V power source
 - [3D printed battery holder](https://www.thingiverse.com/thing:4445077/makes)
+- CH3.96 connectors [Aliexpress](https://www.aliexpress.com/item/32959512753.html)
 - Dupont cables [Aliexpress](https://www.aliexpress.com/item/1005004022062472.html)
   - M-M 20cm 2x
   - M-F 20cm 4x
