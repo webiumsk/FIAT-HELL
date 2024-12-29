@@ -297,6 +297,22 @@ void showLoadingIndicator();
 void hideLoadingIndicator();
 void enableAcceptor();
 
+enum AppState
+{
+  STATE_IDLE,
+  STATE_CHECK_NETWORK,
+  STATE_CHECK_PRICE,
+  STATE_CHECK_BALANCE,
+  STATE_UPDATE_UI,
+  STATE_WAIT_FOR_MONEY,
+  STATE_PROCESS_QR,
+  STATE_WAIT_FOR_TAP,
+  STATE_RESET
+};
+
+AppState appState = STATE_IDLE;
+unsigned long lastUpdateTime = 0;
+
 /**
  * @brief The String class provides a way to manipulate and store strings of text in Arduino.
  *
@@ -3208,179 +3224,129 @@ void loop()
   lv_timer_handler(); // Let the GUI do its work
   portal.handleClient();
 
-  if (initialCheck)
+  unsigned long currentTime = millis();
+
+  switch (appState)
   {
-    previousMillis = millis() - interval; // So that it gets executed immediately after setup
-    initialCheck = false;
-  }
-
-  unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= interval)
-  {
-    previousMillis = currentMillis;
-
-    checkNetworkAndDeviceStatus();
-    checkPrice();
-    checkBalance();          // Check the balance every 5 minutes
-    updateMainScreenLabel(); // Update the label on the main screen with the new balance
-    lv_task_handler();
-    delay(5);
-  }
-
-  // Check if user is inserting money
-  int x = nonBlockingRead();
-
-  if (x != -1) // Data available
-  {
-    for (int i = 0; i < billAmountIntOne.size(); i++) // Using .size() method on std::vector
+  case STATE_IDLE:
+    if (initialCheck)
     {
-      if ((i + 1) == x)
+      lastUpdateTime = millis() - interval; // Spustenie prvotnej kontroly
+      initialCheck = false;
+      appState = STATE_CHECK_NETWORK;
+    }
+    break;
+
+  case STATE_CHECK_NETWORK:
+    if (currentTime - lastUpdateTime >= interval)
+    {
+      lastUpdateTime = currentTime;
+      checkNetworkAndDeviceStatus();
+      appState = STATE_CHECK_PRICE;
+    }
+    break;
+
+  case STATE_CHECK_PRICE:
+    showLoadingIndicator();
+    checkPrice();
+    hideLoadingIndicator();
+    appState = STATE_CHECK_BALANCE;
+    break;
+
+  case STATE_CHECK_BALANCE:
+    showLoadingIndicator();
+    checkBalance();
+    hideLoadingIndicator();
+    appState = STATE_UPDATE_UI;
+    break;
+
+  case STATE_UPDATE_UI:
+    updateMainScreenLabel();
+    appState = STATE_WAIT_FOR_MONEY;
+    break;
+
+  case STATE_WAIT_FOR_MONEY:
+  {
+    int x = nonBlockingRead();
+    if (x != -1) // Ak sa detekuje vklad peňazí
+    {
+      for (int i = 0; i < billAmountIntOne.size(); i++)
       {
-        // A valid bill is detected
-        bills = bills + billAmountIntOne[i];
-        total = (coins + bills);
-
-        if (!isInsertingMoney)
+        if ((i + 1) == x)
         {
-          createInsertMoneyScreen();
-          lv_task_handler();
-          delay(5);
-          isInsertingMoney = true;
+          bills += billAmountIntOne[i];
+          total = (coins + bills);
+
+          if (!isInsertingMoney)
+          {
+            createInsertMoneyScreen();
+            lv_task_handler();
+            isInsertingMoney = true;
+          }
+
+          String lastBillString = "Last bill: " + String(billAmountIntOne[i]) + " " + currencySelected;
+          String totalString = "Total: " + String(total) + " " + currencySelected;
+          String maxString = "MAX: " + String(maxamountSelected) + " " + currencySelected + " from " + fundingSourceBuffer;
+
+          lv_label_set_text(labelLastInserted, lastBillString.c_str());
+          lv_label_set_text(labelTotalAmount, totalString.c_str());
+          lv_label_set_text(labelMaxAmount, maxString.c_str());
+          break;
         }
-
-        String lastBillString = "Last bill: " + String(billAmountIntOne[i]) + " " + currencySelected;
-        String totalString = "Total: " + String(total) + " " + currencySelected;
-        String maxString = "MAX: " + String(maxamountSelected) + " " + currencySelected + " from " + fundingSourceBuffer;
-
-        lv_label_set_text(labelLastInserted, lastBillString.c_str());
-        lv_label_set_text(labelTotalAmount, totalString.c_str());
-        lv_label_set_text(labelMaxAmount, maxString.c_str());
-
-        break; // Exit the for loop as we found a match
       }
     }
+
+    BTNA.read();
+    if ((BTNA.wasReleased() && total != 0) || total >= maxamountSelected)
+    {
+      appState = STATE_PROCESS_QR;
+    }
+    break;
   }
 
-  // Check button release or total
-  BTNA.read();
-  // Serial.print("Waiting for tap 1");
-  if ((BTNA.wasReleased() && total != 0) || total >= maxamountSelected)
-  {
-    // Process the total and reset variables for the next transaction.
-    total = (coins + bills) * 100;
-
-    Serial.print(F("Total: "));
-    Serial.println(total);
-
+  case STATE_PROCESS_QR:
     if (!wifiStatus())
     {
       deleteInsertMoneyScreen();
-      Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
       makeLNURL();
-      printHeapStatus();
-      Serial.println("makeLNURL() - LNbits offline: ");
       showQRCodeLVGL(qrData.c_str());
-      Serial.print("showQRCodeLVGL() - LNbits offline: ");
-      Serial.println(qrData);
-      // Turn off machines
-      SerialPort1.write(185);
-      digitalWrite(INHIBITMECH, LOW);
-      Serial.print("Free heap (makeLNURL): ");
-      Serial.println(ESP.getFreeHeap());
-      lv_task_handler();
-      Serial.println("lv_task_handler() - LNbits offline");
-      delay(5);
     }
     else
     {
       if (strcmp(fundingSourceBuffer, "Blink") == 0)
       {
         deleteInsertMoneyScreen();
-        Serial.println("deleteInsertMoneyScreen() - Blink online");
         createLNURLWithdraw();
-        Serial.println("createLNURLWithdraw() - Blink online");
-        // Display the QR code for online
         showQRCodeLVGL(lnURLgen.c_str());
-        Serial.println("showQRCodeLVGL() - Blink online");
-        lv_task_handler();
-        delay(5);
-        Serial.println("lv_task_handler() - Blink online");
-        // Turn off machines
-        SerialPort1.write(185);
-        digitalWrite(INHIBITMECH, LOW);
-        // delay(30000); // Wait for 30 seconds for the user to scan the QR code
-        //  bool waitForTap = true;
-        //  while (waitForTap)
-        //  {
-        //    BTNA.read();
-        //    // Serial.print("Waiting for tap 2");
-        //    if (BTNA.wasReleased())
-        //    {
-        //      waitForTap = false;
-        //      // Reset for the next transaction
-        //      // coins = 0;
-        //      // bills = 0;
-        //      // total = 0;
-        //      // isInsertingMoney = false;
-        //      // Load your main screen or perform any other desired action
-        //      getBoltInvoice();
-        //      getBlinkLnURL(boltInvoice);
-
-        //   }
-        // }
-        getBoltInvoice();
-        getBlinkLnURL(boltInvoice);
-        deleteQRCodeScreen();
-        createThankYouScreen();
-        lv_task_handler();
-        delay(1200);
-        // createMainScreen();
-        ESP.restart();
       }
-      if (strcmp(fundingSourceBuffer, "LNbits") == 0)
+      else if (strcmp(fundingSourceBuffer, "LNbits") == 0)
       {
         deleteInsertMoneyScreen();
-        Serial.println("deleteInsertMoneyScreen() - LNbits online");
         getLNURL();
-        Serial.println("getLNURL()");
-        delay(1000);
-        // Display the QR code for online
         showQRCodeLVGL(lnURLgen.c_str());
-        Serial.println("showQRCodeLVGL() - LNbits online");
-        lv_task_handler();
-        delay(5);
-        Serial.println("lv_task_handler() - LNbits online");
-        // Turn off machines
-        SerialPort1.write(185);
-        digitalWrite(INHIBITMECH, LOW);
       }
-      Serial.print("Free heap (showQRCodeLVGL): ");
-      Serial.println(ESP.getFreeHeap());
     }
+    appState = STATE_WAIT_FOR_TAP;
+    break;
 
-    // Now wait for a tap to go back to the main screen or any other action
-    bool waitForTap = true;
-    while (waitForTap)
+  case STATE_WAIT_FOR_TAP:
+  {
+    BTNA.read();
+    if (BTNA.wasReleased())
     {
-      BTNA.read();
-      // Serial.print("Waiting for tap 2");
-      if (BTNA.wasReleased())
-      {
-        waitForTap = false;
-        // Reset for the next transaction
-        coins = 0;
-        bills = 0;
-        total = 0;
-        isInsertingMoney = false;
-        // Load your main screen or perform any other desired action
-        // deleteQRCodeScreen();
-        // deleteAllScreens();
-        // createMainScreen();
-        ESP.restart();
-      }
+      coins = 0;
+      bills = 0;
+      total = 0;
+      isInsertingMoney = false;
+      appState = STATE_RESET;
     }
+    break;
   }
 
-  lv_task_handler(); // Call LVGL task handler
-  delay(5);          // Small delay to avoid watchdog reset
+  case STATE_RESET:
+    ESP.restart();
+    break;
+  }
+
+  delay(5); // Small delay to avoid watchdog reset
 }
