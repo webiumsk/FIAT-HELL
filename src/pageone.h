@@ -10,6 +10,11 @@ static const char PAGE_ELEMENTS[] PROGMEM = R"(
       "type": "ACText",
       "value": "AP options",
       "style": "font-family:Arial;font-size:16px;font-weight:400;color:#191970;margin-botom:15px;"
+    },
+    {
+      "name": "newline",
+      "type": "ACElement",
+      "value": "<hr>"
     },    
     {
       "name": "password",
@@ -18,34 +23,16 @@ static const char PAGE_ELEMENTS[] PROGMEM = R"(
       "value": "changeme"
     },        
     {
-      "name": "textwifi",
-      "type": "ACText",
-      "value": "WiFi",
-      "style": "font-family:Arial;font-size:16px;font-weight:400;color:#191970;margin-botom:15px;padding-bottom:8px;"
-    },
-    {
-      "name": "localssid",
-      "type": "ACInput",
-      "label": "SSID",
-      "value": ""
-    },
-    {
-      "name": "localpass",
-      "type": "ACInput",
-      "label": "Passwd",
-      "value": ""
-    },
-    {
-      "name": "newline",
-      "type": "ACElement",
-      "value": "<hr>"
-    },
-    {
       "name": "texttext",
       "type": "ACText",
       "value": "Texts",
       "style": "font-family:Arial;font-size:16px;font-weight:400;color:#191970;margin-botom:15px;padding-bottom:8px;width:100%;"
     },
+    {
+      "name": "newline1",
+      "type": "ACElement",
+      "value": "<hr>"
+    },    
     {
       "name": "atmdesc",
       "type": "ACInput",
@@ -63,18 +50,6 @@ static const char PAGE_ELEMENTS[] PROGMEM = R"(
       "type": "ACInput",
       "label": "Main Title",
       "value": ""
-    },
-    {
-      "name": "newline1",
-      "type": "ACElement",
-      "value": "<hr>"
-    },
-    {
-      "name": "pincode",
-      "type": "ACInput",
-      "apply": "number",
-      "label": "PIN: 4 digits",      
-      "value": "1111"
     },  
     {
       "name": "load",

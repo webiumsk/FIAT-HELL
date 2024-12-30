@@ -12,6 +12,11 @@ static const char PAGE_FIRST[] PROGMEM = R"(
       "style": "font-family:Arial;font-size:16px;font-weight:400;color:#191970;margin-botom:15px;padding-bottom:8px;"
     },
     {
+      "name": "newline",
+      "type": "ACElement",
+      "value": "<hr>"
+    },
+    {
       "name": "blinkapikey",
       "type": "ACInput",
       "label": "API key",
@@ -22,17 +27,17 @@ static const char PAGE_FIRST[] PROGMEM = R"(
       "type": "ACInput",
       "label": "Wallet ID",
       "value": ""
-    },
-    {
-      "name": "newline",
-      "type": "ACElement",
-      "value": "<hr>"
-    },
+    },    
     {
       "name": "textonline",
       "type": "ACText",
       "value": "LNbits settings",
       "style": "font-family:Arial;font-size:16px;font-weight:400;color:#191970;margin-botom:15px;padding-bottom:8px;"
+    },
+    {
+      "name": "newline1",
+      "type": "ACElement",
+      "value": "<hr>"
     },
     {
       "name": "lnurl",
@@ -82,11 +87,6 @@ static const char PAGE_FIRST[] PROGMEM = R"(
       "apply": "number",
       "label": "Percentage charge for service",
       "value": ""
-    },
-    {
-      "name": "newline1",
-      "type": "ACElement",
-      "value": "<hr>"
     },    
     {
       "name": "load",

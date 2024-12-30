@@ -49,6 +49,7 @@ fs::SPIFFSFS &FlashFS = SPIFFS;
 #define FORMAT_ON_FAIL true
 
 #include <AutoConnect.h>
+#define AUTOCONNECT_USE_LOG 1
 #include <SPI.h>
 #include <HardwareSerial.h>
 #include <ArduinoJson.h>
@@ -61,7 +62,7 @@ fs::SPIFFSFS &FlashFS = SPIFFS;
 #include <vector>
 #include <iostream>
 
-//#include <ArduinoOTA.h>
+// #include <ArduinoOTA.h>
 
 #include <cstring> // For memset
 char Buf[200];     // Buffer for the encrypted data
@@ -86,7 +87,6 @@ size_t originalSizeOne = 0;
 size_t originalSizeTwo = 0;
 size_t originalSizeThree = 0;
 
-// start old
 HTTPClient http; // Declare object of class HTTPClient
 
 #define PARAM_FILE "/elements.json"
@@ -114,27 +114,17 @@ String currencyATM3;
 String currencyOne;
 String currencyTwo;
 String currencyThree;
-String currencySelected = "USD";
+String currencySelected = currencyOne;
 
-lv_obj_t *btn1;
+lv_obj_t *btn1; // Currencies buttons
 lv_obj_t *btn2;
 lv_obj_t *btn3;
 
-lv_obj_t *burnTextLabel; // This will hold the reference to the label created in burn_text_demo
-
-char localSSIDBuffer[100] = {0};
-char localPassBuffer[100] = {0};
-const char *localssid = localSSIDBuffer;
-const char *localpass = localPassBuffer;
-
-lv_obj_t *btn_wifi;
-lv_style_t style_connected;
-lv_style_t style_disconnected;
+lv_obj_t *burnTextLabel; 
 
 String atmtitle = "FIAT HELL";
 String atmsubtitle;
 String atmdesc = "";
-String pincode = "1111";
 String blinkapikey;
 String blinkwalletid;
 
@@ -161,7 +151,7 @@ const char *animated = enableAnimBuffer;
 int bills;
 float coins;
 float total;
-float maxamount;
+float maxamount = 100;
 float maxamountSelected = maxamount;
 float maxamount2;
 float maxamount3;
@@ -169,8 +159,8 @@ int charge1;
 int charge2;
 int charge3;
 int chargeSelected = charge1;
-float fiatBalance; // balance in €
-float fiatValue = 0;
+float fiatBalance; // balance in fiat
+float fiatValue;
 float tempCharge;
 long result;
 char buffer[32];
@@ -178,11 +168,6 @@ lv_obj_t *balanceValueLabel = nullptr; // Make this global so you can update it 
 lv_obj_t *fiatValueLabel = nullptr;    // initialize globally
 lv_obj_t *chargeValueLabel = nullptr;  // initialize globally
 bool isInsertingMoney = false;
-
-bool billBool = true;
-// bool coinBool = false;
-
-int moneyTimer = 0;
 
 const long interval = 300000; // 5 minutes in milliseconds
 unsigned long previousMillis = 0;
@@ -198,16 +183,14 @@ const String cuexConversionAPI = "https://api.cuex.com/v1/exchanges/btc";
 const String cuexApiKey = "3b71e5d431b2331acb65f2d484d423e5"; // Replace with your actual API key
 const String alternativeConversionAPI = "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=";
 
-// float coinAmountFloat[6] = {0.05, 0.1, 0.2, 0.5, 1, 2};
-// int billAmountSize = sizeof(billAmountIntOne) / sizeof(int);
-// float coinAmountSize = sizeof(coinAmountFloat) / sizeof(float);
+WiFiClientSecure secureClient;
 
 HardwareSerial SerialPort1(1);
 HardwareSerial SerialPort2(2);
 
 Button BTNA(BTN1);
 
-lv_obj_t *screen_logo, *screen_portal, *screen_api, *screen_thx, *screen_main, *screen_insert_money, *screen_qr, *screen_settings, *screen_currency, *pin_screen;
+lv_obj_t *screen_logo, *screen_portal, *screen_api, *screen_thx, *screen_main, *screen_insert_money, *screen_qr, *screen_currency;
 lv_obj_t *labelbtn;
 lv_obj_t *fiathell;
 lv_obj_t *labelLastInserted = nullptr;
@@ -224,6 +207,12 @@ lv_obj_t *switch_rate;
 lv_obj_t *anim_label;
 lv_obj_t *img_blink;
 lv_obj_t *img_lnbits;
+
+void checkStackUsage()
+{
+  UBaseType_t highWaterMark = uxTaskGetStackHighWaterMark(NULL);
+  Serial.printf("Stack high water mark: %u bytes\n", highWaterMark);
+}
 
 /* ----------------------------------
 -------------- PORTAL ---------------
@@ -256,7 +245,6 @@ AutoConnectAux savethirdAux;
 AutoConnectConfig gui;
 AutoConnectAux guiAux;
 AutoConnectAux saveguiAux;
-// end old
 
 /*** Setup screen resolution for LVGL ***/
 static const uint16_t screenWidth = 480;
@@ -282,10 +270,6 @@ void createCurrencyScreen(const String &currency, float rate, float balance, flo
 void deleteCurrencyScreen();
 void createInsertMoneyScreen();
 void deleteInsertMoneyScreen();
-void createPinEntryScreen();
-void deletePinEntryScreen();
-void createSettingsScreen();
-void deleteSettingsScreen();
 void deleteAllScreens();
 void createSwitch(lv_obj_t *parent);
 void lv_button_currency();
@@ -302,27 +286,20 @@ void showQRCodeLVGL(const char *data);
 int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen, uint8_t *nonce, size_t nonce_len, uint64_t pin, uint64_t amount_in_cents);
 
 void checkNetworkAndDeviceStatus();
-void btn_config_portal_event_handler(lv_event_t *e);
 void startConfigPortal();
 void btn_back_event_handler(lv_event_t *e);
-void switchFundingSource();
-void update_settings_button_style();
-void settings_btn_event_cb(lv_event_t *e);
 static void saveSettingsToFile();
-void createResetButton(lv_obj_t *parent);
+
 void createBackButton(lv_obj_t *parent);
-static void reset_btn_event_cb(lv_event_t *e);
-void setupPinEntryComponents(lv_obj_t *parent);
 void printHeapStatus();
 void createLoadingIndicator();
 void showLoadingIndicator();
 void hideLoadingIndicator();
 void enableAcceptor();
 
-
 /**
  * @brief The String class provides a way to manipulate and store strings of text in Arduino.
- * 
+ *
  * The String class enables you to work with strings of text in Arduino sketches. It provides various methods
  * for manipulating and accessing string data. The String class is based on the C++ `String` class and provides
  * similar functionality.
@@ -359,17 +336,22 @@ void to_upper(char *arr)
 
 void setup()
 {
+  /*********************/
+  /*** Init display ***/
+  /*********************/
   lcd.init(); // Initialize LovyanGFX
   lv_init();  // Initialize lvgl
 
-  // Setting display to landscape
+  // Set orientation (landscape)
   if (lcd.width() < lcd.height())
+  {
     lcd.setRotation(lcd.getRotation() ^ 1);
+  }
 
-  /* LVGL : Setting up buffer to use for display */
+  // LVGL buffer
   lv_disp_draw_buf_init(&draw_buf, buf, NULL, screenWidth * 10);
 
-  /*** LVGL : Setup & Initialize the display device driver ***/
+  // Set LVGL display
   static lv_disp_drv_t disp_drv;
   lv_disp_drv_init(&disp_drv);
   disp_drv.hor_res = screenWidth;
@@ -378,21 +360,29 @@ void setup()
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
 
-  /*** LVGL : Setup & Initialize the input device driver ***/
+  // Set LVGL input (touch)
   static lv_indev_drv_t indev_drv;
   lv_indev_drv_init(&indev_drv);
   indev_drv.type = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = touchpad_read;
   lv_indev_drv_register(&indev_drv);
 
+  // Logo / Splash screen
   createLogoScreen();
-  lv_task_handler(); // Process LVGL tasks to refresh the screen.
+  lv_task_handler(); // refresh obrazovky
 
-  BTNA.begin();
-
+  /*********************************/
+  /*** Initialize periferies  ***/
+  /*********************************/
+  BTNA.begin(); // Button/Screen touch
   Serial.begin(115200);
   delay(10);
-  WiFiClientSecure client;
+
+  SerialPort1.begin(300, SERIAL_8N2, TX1, RX1); // Bill acceptor
+  SerialPort2.begin(4800, SERIAL_8N1, TX2);     // Coin mech
+  pinMode(INHIBITMECH, OUTPUT);
+
+  secureClient.setInsecure();
 
   int timer = 0;
   while (timer < 2000)
@@ -408,11 +398,9 @@ void setup()
     delay(100);
   }
 
-  SerialPort1.begin(300, SERIAL_8N2, TX1, RX1);
-  SerialPort2.begin(4800, SERIAL_8N1, TX2);
-
-  pinMode(INHIBITMECH, OUTPUT);
-
+  /******************************************/
+  /*** Read params from SPIFFS  ***/
+  /******************************************/
   FlashFS.begin(FORMAT_ON_FAIL);
   SPIFFS.begin(true);
   if (format == true)
@@ -423,7 +411,7 @@ void setup()
   File paramFile = FlashFS.open(PARAM_FILE, "r");
   if (paramFile)
   {
-    StaticJsonDocument<2500> conf;
+    StaticJsonDocument<2400> conf;
     DeserializationError error = deserializeJson(conf, paramFile.readString());
 
     const JsonObject conf0 = conf[0];
@@ -431,41 +419,23 @@ void setup()
     password = conf0Char;
 
     const JsonObject conf1 = conf[1];
-    if (conf1["value"] != nullptr)
-    {
-      strlcpy(localSSIDBuffer, conf1["value"], sizeof(localSSIDBuffer));
-      localssid = localSSIDBuffer;
-    }
+    const char *conf1Char = conf1["value"];
+    atmdesc = conf1Char;
 
     const JsonObject conf2 = conf[2];
-    if (conf2["value"] != nullptr)
-    {
-      strlcpy(localPassBuffer, conf2["value"], sizeof(localPassBuffer));
-      localpass = localPassBuffer;
-    }
+    const char *conf2Char = conf2["value"];
+    atmsubtitle = conf2Char;
 
     const JsonObject conf3 = conf[3];
     const char *conf3Char = conf3["value"];
-    atmdesc = conf3Char;
-
-    const JsonObject conf4 = conf[4];
-    const char *conf4Char = conf4["value"];
-    atmsubtitle = conf4Char;
-
-    const JsonObject conf5 = conf[5];
-    const char *conf5Char = conf5["value"];
-    atmtitle = conf5Char;
-
-    const JsonObject conf6 = conf[6];
-    const char *conf6Char = conf6["value"];
-    pincode = conf6Char;
-
+    atmtitle = conf3Char;
   }
   else
   {
     triggerAp = true;
   }
   paramFile.close();
+
   server.on("/", []()
             {
     content += AUTOCONNECT_LINK(COG_24);
@@ -477,7 +447,7 @@ void setup()
     File param = FlashFS.open(PARAM_FILE, "r");
     if (param)
     {
-      aux.loadElement(param, {"password", "localssid", "localpass", "atmdesc", "atmsubtitle", "atmtitle", "pincode"});
+      aux.loadElement(param, {"password", "atmdesc", "atmsubtitle", "atmtitle"});
       param.close();
     }
 
@@ -486,7 +456,7 @@ void setup()
       File param = FlashFS.open(PARAM_FILE, "r");
       if (param)
       {
-        aux.loadElement(param, {"password", "localssid", "localpass", "atmdesc", "atmsubtitle", "atmtitle", "pincode"});
+        aux.loadElement(param, {"password", "atmdesc", "atmsubtitle", "atmtitle"});
         param.close();
       }
     }
@@ -497,7 +467,7 @@ void setup()
   File firstFile = FlashFS.open(FIRST_FILE, "r");
   if (firstFile)
   {
-    StaticJsonDocument<2500> docFirst;
+    StaticJsonDocument<2400> docFirst;
     DeserializationError error = deserializeJson(docFirst, firstFile.readString());
 
     const JsonObject docFirst0 = docFirst[0];
@@ -558,13 +528,13 @@ void setup()
     const char *docFirst8Char = docFirst8["value"];
     const String chargestr = docFirst8Char;
     charge1 = chargestr.toInt();
-    
   }
   else
   {
     triggerAp = true;
   }
   firstFile.close();
+
   server.on("/", []()
             {
     content += AUTOCONNECT_LINK(COG_24);
@@ -592,11 +562,11 @@ void setup()
     return String(); });
 
   // Second page start
-  //  get the saved details and store in global variables
+  // get the saved details and store in global variables
   File secondFile = FlashFS.open(SECOND_FILE, "r");
   if (secondFile)
   {
-    StaticJsonDocument<2500> docSecond;
+    StaticJsonDocument<2400> docSecond;
     DeserializationError error = deserializeJson(docSecond, secondFile.readString());
 
     const JsonObject docSecond0 = docSecond[0];
@@ -681,7 +651,7 @@ void setup()
   File thirdFile = FlashFS.open(THIRD_FILE, "r");
   if (thirdFile)
   {
-    StaticJsonDocument<2500> docThird;
+    StaticJsonDocument<2400> docThird;
     DeserializationError error = deserializeJson(docThird, thirdFile.readString());
 
     const JsonObject docThird0 = docThird[0];
@@ -771,7 +741,7 @@ void setup()
   File guiFile = FlashFS.open(GUI_FILE, "r");
   if (guiFile)
   {
-    StaticJsonDocument<2500> docGui;
+    StaticJsonDocument<2400> docGui;
     DeserializationError error = deserializeJson(docGui, guiFile.readString());
 
     const JsonObject docGui0 = docGui[0];
@@ -865,7 +835,7 @@ void setup()
     if (param)
     {
       // save as a loadable set for parameters.
-      elementsAux.saveElement(param, {"password", "localssid", "localpass", "atmdesc", "atmsubtitle", "atmtitle", "pincode"});
+      elementsAux.saveElement(param, {"password", "atmdesc", "atmsubtitle", "atmtitle"});
       param.close();
       // read the saved elements again to display.
       param = FlashFS.open(PARAM_FILE, "r");
@@ -982,22 +952,32 @@ void setup()
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntThree.begin(), billAmountIntThree.end());
   }
 
+  /*********************************************************/
+  /*** Set AutoConnect before launching the portal       ***/
+  /*********************************************************/
   config.auth = AC_AUTH_BASIC;
   config.authScope = AC_AUTHSCOPE_AUX;
   config.ticker = true;
   config.autoReconnect = true;
   config.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  config.psk = password;
-  config.menuItems = AC_MENUITEM_CONFIGNEW | AC_MENUITEM_OPENSSIDS | AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET;
+  config.psk = password; // Password for AP
+  config.menuItems = AC_MENUITEM_CONFIGNEW | AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET;
   config.title = "LN ATM";
   config.reconnectInterval = 1;
-  // config.username = "user";
-  // config.password = "password";
+  config.immediateStart = false; // If we don't have WiFi saved, it will start AP
+  // To define a username/password for the Basic Auth portal, you can use:
+  config.username = password;
+  config.password = password;
 
-  WiFi.begin(localssid, localpass);
-  //delay(5000);
-  //checkPrice();
-  //checkBalance();
+  // Register all Aux pages to the portal
+  portal.join({elementsAux, saveAux,
+               firstAux, savefirstAux,
+               secondAux, savesecondAux,
+               thirdAux, savethirdAux,
+               guiAux, saveguiAux});
+
+  // Apply config
+  portal.config(config);
 
   // Create the loading indicator
   createLoadingIndicator();
@@ -1006,10 +986,6 @@ void setup()
 
   Serial.print(F("APP PASSWORD: "));
   Serial.println(password);
-  Serial.print(F("SSID: "));
-  Serial.println(localssid);
-  Serial.print(F("PASSWORD: "));
-  Serial.println(localpass);
   Serial.print(F("Admin key: "));
   Serial.println(adminkey);
   Serial.print(F("Read key: "));
@@ -1043,33 +1019,70 @@ void setup()
   Serial.print(F("Charge: "));
   Serial.println(charge1);
 
-  if (triggerAp == true)
+  /**************************************************************************/
+  /***      Starting AutoConnect - connection attempt or AP (portal)      ***/
+  /**************************************************************************/
+
+  // 1) First we set immediateStart according to triggerAp
+  if (triggerAp)
   {
+    // We want to start the AP (Config Portal) right away
+    config.immediateStart = true;
+    Serial.println("Button pressed => immediateStart = true");
     createPortalScreen();
-    lv_task_handler(); // Process LVGL tasks to refresh the screen.
-    digitalWrite(11, LOW);
-    // lv_obj_clean(lv_scr_act()); // Clear the entire screen
-
-    Serial.print(F("Entered Config Portal"));
-
-    startConfigPortal();
-    timer = 2000;
-  }
-  else if ((fundingSourceBuffer == "LNbits" && (currencyATM == "" || adminkey == "" || readkey == "")) || (fundingSourceBuffer == "Blink" && (blinkapikey == "" || blinkwalletid == "") || currencyOne == ""))
-  {
-    createAPIScreen();
-    lv_task_handler(); // Process LVGL tasks to refresh the screen.
-    digitalWrite(11, LOW);
-    // lv_obj_clean(lv_scr_act()); // Clear the entire screen
-
-    Serial.print(F("Entered Config Portal"));
-
-    startConfigPortal();
-    timer = 2000;
+    lv_task_handler();
   }
   else
   {
-    createMainScreen();
+    // Let's try to use the saved WiFi credentials
+    config.immediateStart = false;
+    Serial.println("No button => immediateStart = false");
+  }
+  portal.config(config);
+
+  // 2) Now we will run AutoConnect
+  Serial.println("Starting AutoConnect portal...");
+  bool connected = portal.begin();
+
+  // 3) We check the result
+  if (connected)
+  {
+    // If valid WiFi credentials are available, it will be connected to WiFi
+    Serial.println("WiFi connected: " + WiFi.localIP().toString());
+
+    // (Optional) - if you don't want to leave the AP on, turn it off:
+    WiFi.mode(WIFI_STA);
+  }
+  else
+  {
+    // If not, the device remains in AP mode until the user configures it.
+    Serial.println("Config portal active. AP Name: " + config.apid);
+
+    // Just to show some screen in LVGL:
+    createPortalScreen();
+    lv_task_handler();
+    digitalWrite(11, LOW);
+    Serial.println(F("Entered Config Portal by pressing button"));
+  }
+
+  // Additional logic - checking if all API data is entered
+  if ((strcmp(fundingSourceBuffer, "LNbits") == 0 && (currencyATM == "" || adminkey == "" || readkey == "")) ||
+      (strcmp(fundingSourceBuffer, "Blink") == 0 && (blinkapikey == "" || blinkwalletid == "")) ||
+      (currencyOne == ""))
+  {
+    // Start API screen and config portal
+    createAPIScreen();
+    lv_task_handler();
+    digitalWrite(11, LOW);
+
+    // Again, if you need to force an AP, this is where you call portal.begin() or startConfigPortal();
+    return;
+  }
+  else
+  {
+    // Everything is fine - we launch the main screen
+  createMainScreen();
+  lv_task_handler();
   }
 
   // Extract "https://your.lnbits.com" from baseURLATM "https://your.lnbits.com/lnurldevice/api/v1/lnurl/<id>";
@@ -1133,7 +1146,7 @@ static void set_angle(void *obj, int32_t v)
  */
 bool wifiStatus()
 {
-  return WiFi.status() == WL_CONNECTED;
+  return (WiFi.status() == WL_CONNECTED);
 }
 
 /**
@@ -1300,140 +1313,6 @@ void createAPIScreen()
   lv_scr_load(screen_api);
 }
 
-/*PIN*/
-static lv_obj_t *pin_code_label;
-static char pin_code[5] = ""; // Assuming a 4-digit PIN
-
-// Function to handle button clicks
-/**
- * @brief Callback function for button events.
- * 
- * This function is called when a button event occurs. It handles the logic for entering and checking a PIN code.
- * 
- * @param e Pointer to the event object.
- */
-static void btn_event_cb(lv_event_t *e)
-{
-  lv_obj_t *btn = lv_event_get_target(e);
-  lv_obj_t *label = lv_obj_get_child(btn, 0); // Get the label from the button
-  const char *txt = lv_label_get_text(label); // Get the text from the label
-
-  if (strlen(pin_code) < 4)
-  {
-    strcat(pin_code, txt);
-    lv_label_set_text_fmt(pin_code_label, "PIN: %s", pin_code);
-  }
-
-  // Check if PIN is complete and correct
-  if (strlen(pin_code) == 4)
-  {
-    if (strcmp(pin_code, pincode.c_str()) == 0)
-    { // Assuming '1234' is the correct PIN
-      // Trigger access to the settings screen
-      createSettingsScreen();
-    }
-    else
-    {
-      lv_label_set_text(pin_code_label, "PIN: Incorrect");
-      memset(pin_code, 0, sizeof(pin_code)); // Reset the pin_code for a new attempt
-    }
-  }
-}
-
-/**
- * @brief Creates a pin entry screen.
- * 
- * This function creates a pin entry screen by performing the following steps:
- * 1. Resets the `pin_code` array to all zeros.
- * 2. Creates a new screen using the `lv_obj_create` function.
- * 3. Loads the new screen using the `lv_scr_load` function.
- * 4. Sets up the pin entry components using the `setupPinEntryComponents` function.
- * 5. Creates a back button using the `createBackButton` function.
- * 6. Prints a message to the serial monitor indicating that the pin entry screen has been created.
- * 7. Prints the loaded pin code to the serial monitor.
- */
-void createPinEntryScreen()
-{
-  //deleteMainScreen();                         // Properly manage deletion of the previous screen
-
-  memset(pin_code, 0, sizeof(pin_code));      // Reset the pin_code every time screen is created
-  lv_obj_t *pin_screen = lv_obj_create(NULL); // Create a new screen
-  lv_scr_load(pin_screen);                    // Load the new screen
-  setupPinEntryComponents(pin_screen);        // Setup pin entry components
-  createBackButton(pin_screen);               // Create a back button
-  Serial.println("PIN entry screen created");
-  Serial.print("PIN loaded: ");
-  Serial.println(pincode);
-}
-
-/**
- * @brief Sets up the pin entry components on the screen.
- * 
- * This function creates a pin code label and a keypad with buttons for entering the pin code.
- * The pin code label is aligned at the top center of the parent object.
- * The keypad is centered on the parent object.
- * The buttons are created with labels from "1" to "9" and "0".
- * Each button is positioned in a grid layout with the specified button width, height, and spacing.
- * The button event callback function is added to each button to handle the click event.
- * 
- * @param parent The parent object on which the pin entry components will be created.
- */
-void setupPinEntryComponents(lv_obj_t *parent)
-{
-  const int btn_width = 50;
-  const int btn_height = 50;
-  const int btn_spacing = 10;
-  const int cols = 3;
-  int rows = (10 + cols - 1) / cols; // Calculate number of rows needed
-
-  // Get parent (screen) dimensions
-  lv_coord_t parent_width = lv_obj_get_width(parent);
-  lv_coord_t parent_height = lv_obj_get_height(parent);
-
-  // Calculate total keypad width and height
-  int keypad_width = cols * btn_width + (cols - 1) * btn_spacing;
-  int keypad_height = rows * btn_height + (rows - 1) * btn_spacing;
-
-  // Calculate the starting position to center the keypad
-  int start_x = (parent_width - keypad_width) / 2;
-  int start_y = (parent_height - keypad_height) / 2;
-
-  // Create PIN code label
-  pin_code_label = lv_label_create(parent);
-  lv_label_set_text(pin_code_label, "PIN: ");
-  lv_obj_align(pin_code_label, LV_ALIGN_TOP_MID, 0, 10);
-
-  // Create buttons
-  const char *btn_labels[] = {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"};
-  for (int i = 0; i < 10; ++i)
-  {
-    lv_obj_t *btn = lv_btn_create(parent);
-    lv_obj_set_size(btn, btn_width, btn_height);
-    int col = i % cols;
-    int row = i / cols;
-    int x = start_x + col * (btn_width + btn_spacing);
-    int y = start_y + row * (btn_height + btn_spacing);
-    lv_obj_set_pos(btn, x, y);
-    lv_obj_t *label = lv_label_create(btn);
-    lv_label_set_text(label, btn_labels[i]);
-    lv_obj_center(label);
-    lv_obj_add_event_cb(btn, btn_event_cb, LV_EVENT_CLICKED, NULL);
-  }
-
-  // Optionally, print debug information about layout
-  Serial.print("Keypad positioned at X: ");
-  Serial.print(start_x);
-  Serial.print(", Y: ");
-  Serial.println(start_y);
-}
-
-void accessSettings()
-{
-  lv_obj_t *screen = lv_scr_act();
-  createPinEntryScreen();
-}
-/*PIN END*/
-
 /**
  * Checks the network and device status based on the funding source and other conditions.
  * If the funding source is "Blink" and there is no network connection available, it prints a message and optionally triggers a screen update or indicator.
@@ -1456,88 +1335,14 @@ void checkNetworkAndDeviceStatus()
     if (!wifiStatus())
     {
       Serial.println("Network not needed, but missing data for LNbits...");
-      //SerialPort1.write(184);
+      // SerialPort1.write(184);
     }
-  }
-}
-
-void reconnectWiFi()
-{
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.println("Reconnecting to WiFi...");
-    WiFi.disconnect();
-    WiFi.begin(localssid, localpass);
-  }
-}
-
-/**
- * @brief Creates a settings button.
- * 
- * This function creates a settings button with a specified parent object. 
- * The button is initialized with two styles: style_connected and style_disconnected.
- * The button size is set to 20x20 pixels and positioned at the top right corner with an offset of (-10, 10).
- * The initial style is applied to the button.
- * An event handler, settings_btn_event_cb, is attached to the button for the LV_EVENT_CLICKED event.
- * 
- * @param parent The parent object to which the button will be attached.
- */
-void create_settings_button(lv_obj_t *parent)
-{
-  // Initialize styles
-  lv_style_init(&style_connected);
-  lv_style_set_bg_color(&style_connected, lv_color_hex(0x00FF00)); // Green for connected
-
-  lv_style_init(&style_disconnected);
-  lv_style_set_bg_color(&style_disconnected, lv_color_hex(0xFF0000)); // Red for disconnected
-
-  // Create a button
-  btn_wifi = lv_btn_create(screen_main);
-  lv_obj_set_size(btn_wifi, 20, 20);                   // Set the button size
-  lv_obj_align(btn_wifi, LV_ALIGN_TOP_RIGHT, -10, 10); // Position the button
-
-  // Apply initial style
-  update_settings_button_style();
-
-  // Attach an event handler to the button
-  lv_obj_add_event_cb(btn_wifi, settings_btn_event_cb, LV_EVENT_CLICKED, NULL);
-}
-
-/**
- * @brief Updates the style of the settings button based on the WiFi status.
- * 
- * If the WiFi is disconnected, the button will be styled with the "disconnected" style.
- * If the WiFi is connected, the button will be styled with the "connected" style.
- */
-void update_settings_button_style()
-{
-  if (!wifiStatus())
-  {
-    lv_obj_add_style(btn_wifi, &style_disconnected, 0);
-  }
-  else
-  {
-    lv_obj_add_style(btn_wifi, &style_connected, 0);
-  }
-}
-
-/**
- * Callback function for the settings button event.
- * 
- * @param e The event object.
- */
-void settings_btn_event_cb(lv_event_t *e)
-{
-  lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_CLICKED)
-  {
-    accessSettings(); // Show or update no connection screen
   }
 }
 
 /**
  * Checks if the device is configured for Blink payments.
- * 
+ *
  * @return true if the device is configured for Blink payments, false otherwise.
  */
 bool isBlink()
@@ -1556,7 +1361,7 @@ bool isBlink()
 
 /**
  * Checks if the funding source is LNbits.
- * 
+ *
  * @return true if the funding source is LNbits, false otherwise.
  */
 bool isLNbits()
@@ -1575,12 +1380,12 @@ bool isLNbits()
 
 /**
  * @brief Creates a thank you screen.
- * 
+ *
  * This function creates a new screen with a thank you message and description.
  * The screen includes a title and a description label, both centered on the screen.
  * The title label uses a large font and green text color.
  * The description label uses a smaller font and green text color.
- * 
+ *
  * @note The screen_thx global variable must be defined before calling this function.
  */
 void createThankYouScreen()
@@ -1607,9 +1412,9 @@ void createThankYouScreen()
 /**
  * @brief Updates the burn text label with the combined text of "BURN YOUR {currencySelected} FOR SATS".
  *        It also checks the network and device status, price, balance, and updates the main screen label.
- * 
+ *
  * @note This function assumes that the burnTextLabel has been created.
- * 
+ *
  * @param None
  * @return None
  */
@@ -1623,8 +1428,8 @@ void updateBurnText()
     lv_label_set_text(burnTextLabel, combinedText.c_str());
 
     checkNetworkAndDeviceStatus();
-    checkPrice();
-    checkBalance();
+    //checkPrice();
+    //checkBalance();
     updateMainScreenLabel();
   }
   Serial.print("Free heap (updateBurnText end): ");
@@ -1636,14 +1441,15 @@ const int UNINHIBIT_START = 151;
 
 /**
  * Sets the currency to the specified value.
- * 
+ *
  * @param newCurrency The new currency to set.
  */
 void setCurrency(const String &newCurrency)
 {
   Serial.println("setCurrency Currency set to " + newCurrency);
   currencySelected = newCurrency;
-  updateBurnText(); // Update the label text when the currency changes
+  //updateBurnText(); // Update the label text when the currency changes
+  //checkPrice();
 
   // Clear all channels before setting the new ones
   for (int i = 0; i < 16; i++)
@@ -1697,13 +1503,12 @@ void checkPrice()
 
 void checkPriceCoinGecko()
 {
-  // Price API
   http.begin(coingeckoConversionAPI + currencySelected); // Specify request destination
 
   int httpCode = http.GET(); // Send the request
 
   if (httpCode == 200 || httpCode == 201) // Check the returning code
-  {                                    
+  {
     String payload = http.getString(); // Get the request response payload
     // Serial.println(payload);
     //  Parse JSON
@@ -1721,7 +1526,7 @@ void checkPriceCoinGecko()
   else
   {
     Serial.print(F("Error (checkPriceCoinGecko): "));
-    Serial.println(httpCode);    
+    Serial.println(httpCode);
   }
   Serial.print("Free heap (checkPriceCoinGecko): ");
   Serial.println(ESP.getFreeHeap());
@@ -1937,7 +1742,7 @@ void createLoadingIndicator()
   lv_label_set_text(loadingLabel, "Loading...");
   lv_obj_center(loadingLabel);
   lv_obj_set_style_text_font(loadingLabel, &lv_font_montserrat_22, 0); // Optional: set font size
-  lv_obj_add_flag(loadingLabel, LV_OBJ_FLAG_HIDDEN); // Initially hidden
+  lv_obj_add_flag(loadingLabel, LV_OBJ_FLAG_HIDDEN);                   // Initially hidden
   Serial.println("Loading indicator created");
 }
 
@@ -1945,7 +1750,7 @@ void showLoadingIndicator()
 {
   lv_obj_clear_flag(loadingLabel, LV_OBJ_FLAG_HIDDEN); // Show loading indicator
   lv_refr_now(NULL);                                   // Force immediate refresh of LVGL
-  //delay(100);                                          // Small delay to ensure the display updates
+  // delay(100);                                          // Small delay to ensure the display updates
   Serial.println("Loading indicator shown");
 }
 
@@ -1958,11 +1763,11 @@ void hideLoadingIndicator()
 
 /**
  * @brief Event handler for button 1.
- * 
+ *
  * This function is called when button 1 is clicked. It sets the currency to currencyOne,
  * updates the base URL and secret if the funding source is "LNbits", and updates the charge
  * and max amount variables. It then shows the currency screen with the updated values.
- * 
+ *
  * @param e The event object.
  */
 static void btn1_event_handler(lv_event_t *e)
@@ -1973,7 +1778,9 @@ static void btn1_event_handler(lv_event_t *e)
     showLoadingIndicator();
 
     setCurrency(currencyOne);
-    //update_button_states(lv_event_get_target(e));
+    checkPrice();
+    checkBalance();
+    // update_button_states(lv_event_get_target(e));
     Serial.println("Currency set to " + currencyOne);
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
@@ -1983,14 +1790,14 @@ static void btn1_event_handler(lv_event_t *e)
     chargeSelected = charge1;
     maxamountSelected = maxamount;
     createCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected); // Show the new screen
-
+    lv_task_handler();
     hideLoadingIndicator();
   }
 }
 
 /**
  * @brief Event handler for button 2.
- * 
+ *
  * This function is called when button 2 is clicked. It performs the following actions:
  * 1. Shows a loading indicator.
  * 2. Sets the currency to currencyTwo.
@@ -2000,7 +1807,7 @@ static void btn1_event_handler(lv_event_t *e)
  * 6. Sets the maxamountSelected variable to maxamount2.
  * 7. Shows the currency screen with the updated values.
  * 8. Hides the loading indicator.
- * 
+ *
  * @param e The event object.
  */
 static void btn2_event_handler(lv_event_t *e)
@@ -2011,7 +1818,9 @@ static void btn2_event_handler(lv_event_t *e)
     showLoadingIndicator();
 
     setCurrency(currencyTwo);
-    //update_button_states(lv_event_get_target(e));
+    checkPrice();
+    checkBalance();
+    // update_button_states(lv_event_get_target(e));
     Serial.println("Currency set to " + currencyTwo);
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
@@ -2021,7 +1830,7 @@ static void btn2_event_handler(lv_event_t *e)
     chargeSelected = charge2;
     maxamountSelected = maxamount2;
     createCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected); // Show the new screen
-
+    lv_task_handler();
     hideLoadingIndicator();
   }
 }
@@ -2040,7 +1849,9 @@ static void btn3_event_handler(lv_event_t *e)
     showLoadingIndicator();
 
     setCurrency(currencyThree);
-    //update_button_states(lv_event_get_target(e));
+    checkPrice();
+    checkBalance();
+    // update_button_states(lv_event_get_target(e));
     Serial.println("Currency set to " + currencyThree);
     if (strcmp(fundingSourceBuffer, "LNbits") == 0)
     {
@@ -2050,7 +1861,7 @@ static void btn3_event_handler(lv_event_t *e)
     chargeSelected = charge3;
     maxamountSelected = maxamount3;
     createCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected); // Show the new screen
-
+    lv_task_handler();
     hideLoadingIndicator();
   }
 }
@@ -2077,42 +1888,6 @@ void color_anim_cb(void *var, int32_t v)
   lv_color_t color = colors[idx];
 
   lv_obj_set_style_text_color(obj, color, 0);
-}
-
-/**
- * @brief Creates and configures LVGL image objects based on the selected funding source.
- * 
- * This function creates LVGL image objects for displaying images related to the funding source.
- * The images are aligned to the top left corner of the parent object with an offset of 10 pixels.
- * The images are initially hidden using the LV_OBJ_FLAG_HIDDEN flag.
- * The visibility of the images is determined by the value of the fundingSourceBuffer variable.
- * If the funding source is "LNbits", the LNbits image is shown and the Blink image is hidden.
- * If the funding source is "Blink", the Blink image is shown and the LNbits image is hidden.
- * 
- * @param parent The parent object to which the images will be added.
- */
-void createImages(lv_obj_t *parent)
-{
-  img_blink = lv_img_create(screen_settings);
-  lv_img_set_src(img_blink, &blink); // 'blink' must be a properly defined LVGL image variable
-  lv_obj_align(img_blink, LV_ALIGN_TOP_LEFT, 10, 10);
-  lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
-
-  img_lnbits = lv_img_create(screen_settings);
-  lv_img_set_src(img_lnbits, &lnbits); // 'lnbits' must be a properly defined LVGL image variable
-  lv_obj_align(img_lnbits, LV_ALIGN_TOP_LEFT, 10, 10);
-  lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-  {
-    lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-  }
-  else if (strcmp(fundingSourceBuffer, "Blink") == 0)
-  {
-    lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
-  }
 }
 
 /**
@@ -2176,21 +1951,21 @@ void updateMainScreenLabel()
 
 /**
  * @brief Creates the main screen of the ATM.
- * 
+ *
  * This function initializes and configures various UI elements such as labels, images, and buttons
  * to create the main screen of the ATM. It sets the text, alignment, and font styles of the labels,
  * and loads the screen onto the display. It also handles the creation of additional UI elements
  * based on certain conditions, such as the presence of animated text or specific subtitle values.
- * 
+ *
  * @note This function assumes that the necessary LVGL library and display configurations have been
  * properly set up beforehand.
  */
 void createMainScreen()
 {
   deleteCurrencyScreen();
-  deleteSettingsScreen();         // Properly manage deletion of the previous screen
-  SerialPort1.write(185);         // Command to turn off the acceptor
-  digitalWrite(INHIBITMECH, LOW); 
+  lv_task_handler();
+  SerialPort1.write(185); // Command to turn off the acceptor
+  digitalWrite(INHIBITMECH, LOW);
 
   Serial.println("createMainScreen: Start machine");
   Serial.println("createMainScreen: Start");
@@ -2222,7 +1997,7 @@ void createMainScreen()
   {
     lv_label_set_text(zeroline, ""); // set label text
   }
-  if (atmsubtitle == "DVADSATJEDEN")
+  if (atmsubtitle == "DVADSATJEDEN" || atmsubtitle == "Dvadsatjeden" || atmsubtitle == "21")
   {
     lv_obj_set_style_text_font(zeroline, &lv_font_the_bold_48, 0); // Assuming lv_font_montserrat_22 is a bold font.
   }
@@ -2276,8 +2051,8 @@ void createMainScreen()
 
   if (atmsubtitle == "AMITY" || atmsubtitle == "Amity")
   {
-    lv_obj_t *img1 = lv_img_create(screen_main);   // Create an image object
-    lv_img_set_src(img1, &amityImg);            // Set the image source to your converted image (my_image)
+    lv_obj_t *img1 = lv_img_create(screen_main); // Create an image object
+    lv_img_set_src(img1, &amityImg);             // Set the image source to your converted image (my_image)
     lv_obj_align(img1, LV_ALIGN_TOP_MID, 0, 15); // Align the image to the center of the screen
     Serial.println("createMainScreen: amity logo added");
   }
@@ -2332,40 +2107,39 @@ void createMainScreen()
   }
   else
   {*/
-    lv_button_currency();
-    Serial.println("createMainScreen: lv_button_currency created");
-  //}    
-    create_settings_button(screen_main); // Add the WiFi button to the main screen
-    img_blink = lv_img_create(screen_main);
-    lv_img_set_src(img_blink, &blink); // 'blink' must be a properly defined LVGL image variable
-    lv_obj_align(img_blink, LV_ALIGN_TOP_LEFT, 10, 10);
+  lv_button_currency();
+  Serial.println("createMainScreen: lv_button_currency created");
+  //}
+  img_blink = lv_img_create(screen_main);
+  lv_img_set_src(img_blink, &blink); // 'blink' must be a properly defined LVGL image variable
+  lv_obj_align(img_blink, LV_ALIGN_TOP_LEFT, 10, 10);
+  lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
+
+  img_lnbits = lv_img_create(screen_main);
+  lv_img_set_src(img_lnbits, &lnbits); // 'lnbits' must be a properly defined LVGL image variable
+  lv_obj_align(img_lnbits, LV_ALIGN_TOP_LEFT, 10, 10);
+  lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
+
+  if (strcmp(fundingSourceBuffer, "LNbits") == 0)
+  {
     lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
-
-    img_lnbits = lv_img_create(screen_main);
-    lv_img_set_src(img_lnbits, &lnbits); // 'lnbits' must be a properly defined LVGL image variable
-    lv_obj_align(img_lnbits, LV_ALIGN_TOP_LEFT, 10, 10);
-    lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-    {
-      lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_clear_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-    }
-    else if (strcmp(fundingSourceBuffer, "Blink") == 0)
-    {
-      lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_clear_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    lv_scr_load(screen_main);
-    Serial.println("createMainScreen: Screen loaded");
-    Serial.print("Free heap (createMainScreen End): ");
-    Serial.println(ESP.getFreeHeap());
+    lv_obj_clear_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
   }
+  else if (strcmp(fundingSourceBuffer, "Blink") == 0)
+  {
+    lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  lv_scr_load(screen_main);
+  Serial.println("createMainScreen: Screen loaded");
+  Serial.print("Free heap (createMainScreen End): ");
+  Serial.println(ESP.getFreeHeap());
+}
 
 /**
  * Displays the currency screen with the given currency, rate, balance, and charge.
- * 
+ *
  * @param currency The selected currency.
  * @param rate The rate of the currency in BTC.
  * @param balance The balance in the selected currency.
@@ -2447,7 +2221,7 @@ void createInsertMoneyScreen()
   Serial.println(ESP.getFreeHeap());
 
   // Create a new screen
-  //lv_obj_t *screen_insert_money = lv_obj_create(NULL);
+  // lv_obj_t *screen_insert_money = lv_obj_create(NULL);
   screen_insert_money = lv_obj_create(NULL); // Create a new screen
   if (!screen_insert_money)
   {
@@ -2511,83 +2285,6 @@ void createInsertMoneyScreen()
   lv_scr_load(screen_insert_money);
 }
 
-/**
- * @brief Event handler for the switch.
- * 
- * This function handles the events triggered by the switch object. It updates the funding source
- * based on the state of the switch and performs various actions such as checking network and device
- * status, updating balance, updating burn text, updating main screen label, and saving settings to file.
- * 
- * @param e The event object.
- */
-void switch_event_handler(lv_event_t *e)
-{
-  Serial.println("Handling switch event...");
-  lv_obj_t *obj = lv_event_get_target(e);
-  if (!obj || obj == NULL)
-  {
-    Serial.println("Error: Target object is null in event handler!");
-    return;
-  }
-
-  // Also check images before using them
-  if (!img_lnbits || !img_blink)
-  {
-    Serial.println("Error: Image objects are not initialized!");
-    return;
-  }
-
-  if (obj == switch_fund)
-  {
-    if (lv_obj_has_state(obj, LV_STATE_CHECKED))
-    {
-      strcpy(fundingSourceBuffer, "LNbits");
-      lv_label_set_text(switch_label, "LNbits");
-      lv_obj_clear_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
-    }
-    else
-    {
-      strcpy(fundingSourceBuffer, "Blink");
-      lv_label_set_text(switch_label, "Blink");
-      lv_obj_clear_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-    }
-  }
-  else if (obj == switch_rate)
-  {
-    if (lv_obj_has_state(obj, LV_STATE_CHECKED))
-    {
-      strcpy(rateSourceBuffer, "ExchangeApi");
-      lv_label_set_text(rate_label, "ExchangeApi");
-    }
-    else
-    {
-      strcpy(rateSourceBuffer, "Coingecko");
-      lv_label_set_text(rate_label, "Coingecko");
-    }
-  }
-
-  // Save the updated settings to the file
-  saveSettingsToFile();
-
-  Serial.print(F("Switch: Funding source: "));
-  Serial.println(fundingSourceBuffer);
-  Serial.print(F("Switch: Rate source: "));
-  Serial.println(rateSourceBuffer);
-
-  updateBurnText();
-}
-
-/**
- * Event handler for the switch animation.
- * This function is called when the value of the switch is changed.
- * It updates the enableAnimBuffer variable based on the state of the switch,
- * and prints the updated value to the Serial monitor.
- * Finally, it saves the updated setting to a JSON file.
- *
- * @param e The event object containing information about the event.
- */
 static void switch_animation_event_handler(lv_event_t *e)
 {
   lv_event_code_t code = lv_event_get_code(e);
@@ -2606,43 +2303,6 @@ static void switch_animation_event_handler(lv_event_t *e)
     Serial.println(enableAnimBuffer);
     // Save the updated setting to JSON
     saveSettingsToFile();
-  }
-}
-
-/**
- * @brief Creates a switch and adds it to the parent object.
- *
- * This function creates a switch and adds it to the specified parent object on the screen.
- * It also creates a label for the switch and aligns it to the right of the switch.
- * An event handler is assigned to the switch to handle the LV_EVENT_VALUE_CHANGED event.
- * The initial state of the switch and the text of the label are set based on the value of the fundingSourceBuffer.
- *
- * @param parent The parent object to which the switch will be added.
- */
-void createSwitch(lv_obj_t *parent)
-{
-  // Create a switch and add it to the screen
-  switch_fund = lv_switch_create(screen_settings);
-  lv_obj_set_pos(switch_fund, 10, 30); // Set the position of the switch
-
-  // Create a label for the switch
-  switch_label = lv_label_create(screen_settings);
-  lv_label_set_text(switch_label, fundingSourceBuffer);                      // Use fundingSourceBuffer to set initial text
-  lv_obj_align_to(switch_label, switch_fund, LV_ALIGN_OUT_RIGHT_MID, 10, 0); // Align label to the right of the switch
-
-  // Assign an event handler to the switch
-  lv_obj_add_event_cb(switch_fund, switch_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
-
-  // Set the initial state from fundingSourceBuffer
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-  {
-    lv_obj_add_state(switch_fund, LV_STATE_CHECKED); // Turn switch on if fundingsource is "lnbits"
-    lv_label_set_text(switch_label, "LNbits");
-  }
-  else
-  {
-    lv_obj_clear_state(switch_fund, LV_STATE_CHECKED); // Ensure switch is off if fundingsource is "blink"
-    lv_label_set_text(switch_label, "Blink");
   }
 }
 
@@ -2896,14 +2556,14 @@ void getBlinkLnURL(const String &boltInvoice)
 
 /**
  * @brief Creates a LNURL withdrawal request and sends it to the specified API endpoint.
- * 
+ *
  * This function calculates the withdrawal amount in satoshis based on the total amount and fiat value.
  * If a charge percentage is specified, it deducts the charge from the withdrawal amount.
  * Then, it sends a POST request to the primary API endpoint. If the request fails, it tries the secondary endpoint.
  * If the request is successful, it parses the response JSON and extracts the LNURL and callback URL.
- * 
+ *
  * @note This function requires the `http` library and the `primaryApiEndpoint` and `secondaryApiEndpoint` variables to be defined.
- * 
+ *
  * @param None
  * @return None
  */
@@ -2982,12 +2642,12 @@ void createLNURLWithdraw()
 
 /**
  * @brief Retrieves the Blink LNURL and executes an operation using the LNURL.
- * 
- * This function retrieves the Blink LNURL and performs an operation using the LNURL. It calculates the total amount in cents, 
- * the EUR value (price of 1 Bitcoin in euros), and the charge. It then converts the total amount to satoshis and subtracts the charge 
+ *
+ * This function retrieves the Blink LNURL and performs an operation using the LNURL. It calculates the total amount in cents,
+ * the EUR value (price of 1 Bitcoin in euros), and the charge. It then converts the total amount to satoshis and subtracts the charge
  * if applicable. Finally, it sends a POST request to the API endpoint with the LNURL and retrieves the response from Blink.
- * 
- * @note Make sure to set the appropriate values for `total`, `fiatValue`, `chargeSelected`, `graphqlEndpoint`, `blinkapikey`, and `lnurl` 
+ *
+ * @note Make sure to set the appropriate values for `total`, `fiatValue`, `chargeSelected`, `graphqlEndpoint`, `blinkapikey`, and `lnurl`
  * before calling this function.
  */
 void getBlinkLNURL()
@@ -3354,26 +3014,6 @@ void deleteLogoScreen()
   }
 }
 
-void deletePinEntryScreen()
-{
-  if (pin_screen != NULL)
-  { // Check if pin_screen actually points to an object
-    lv_obj_del(pin_screen);
-    pin_screen = NULL; // Set the pointer to NULL to avoid "dangling pointers"
-    Serial.println(F("Delete: pin_screen"));
-  }
-}
-
-void deleteSettingsScreen()
-{
-  if (screen_settings != NULL)
-  { // Check if screen_qr actually points to an object
-    lv_obj_del(screen_settings);
-    screen_settings = NULL; // Set the pointer to NULL to avoid "dangling pointers"
-    Serial.println(F("Delete: screen_settings"));
-  }
-}
-
 void deleteCurrencyScreen()
 {
   if (screen_currency != NULL)
@@ -3414,13 +3054,11 @@ void deleteThankYouScreen()
   }
 }
 
-void deleteAllScreens() 
+void deleteAllScreens()
 {
   deleteLogoScreen();
   deleteCurrencyScreen();
   deleteInsertMoneyScreen();
-  deletePinEntryScreen();
-  deleteSettingsScreen();
   deleteQRCodeScreen();
   deleteThankYouScreen();
 }
@@ -3439,7 +3077,7 @@ void printHeapStatus()
 
 static void saveSettingsToFile()
 {
-  StaticJsonDocument<2500> docGui;
+  StaticJsonDocument<2400> docGui;
 
   JsonObject docGui0 = docGui.createNestedObject();
   docGui0["name"] = "fundingsource";
@@ -3496,172 +3134,22 @@ static void saveSettingsToFile()
   }
 }
 
-/**
- * @brief Displays the settings screen.
- * 
- * This function creates and loads a settings screen using the LVGL library. It adds various UI elements such as buttons, 
- * labels, and switches to the screen.
- * The settings screen allows the user to configure settings such as the funding source and animation enablement.
- * 
- * @note This function assumes that the LVGL library is properly initialized and configured.
- */
-void createSettingsScreen()
-{
-  deletePinEntryScreen();
-
-  lv_obj_t *screen_settings = lv_obj_create(NULL); // Get the current active screen or create a new one
-  lv_scr_load(screen_settings);                    // Load the new screen as active
-
-  createBackButton(screen_settings);  // Add back button to the settings screen
-  createResetButton(screen_settings); // Add reset button to the settings screen
-
-  // Create a label to inform the user
-  lv_obj_t *label = lv_label_create(screen_settings);
-  lv_label_set_text(label, "Settings");
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 10); // Position the label
-
-  // Button to open configuration portal
-  lv_obj_t *btn_config = lv_btn_create(screen_settings);
-  lv_obj_set_size(btn_config, 120, 40);
-  lv_obj_align(btn_config, LV_ALIGN_BOTTOM_LEFT, 10, -10);
-  lv_obj_t *btn_label_config = lv_label_create(btn_config);
-  lv_label_set_text(btn_label_config, "Config Portal");
-  lv_obj_center(btn_label_config);
-  lv_obj_add_event_cb(btn_config, btn_config_portal_event_handler, LV_EVENT_CLICKED, NULL);
-
-  // Create a label for funding source switch
-  lv_obj_t *label_switch = lv_label_create(screen_settings);
-  lv_label_set_text(label_switch, "Funding source: \n(Blink or LNbits)");
-  lv_obj_align(label_switch, LV_ALIGN_TOP_LEFT, 30, 55); // Position the label
-  // Create a switch and add it to the screen
-  switch_fund = lv_switch_create(screen_settings);
-  lv_obj_set_pos(switch_fund, 30, 100); // Set the position of the switch
-
-  // Create a label for the switch
-  switch_label = lv_label_create(screen_settings);
-  lv_label_set_text(switch_label, fundingSourceBuffer);                      // Use fundingSourceBuffer to set initial text
-  lv_obj_align_to(switch_label, switch_fund, LV_ALIGN_OUT_RIGHT_MID, 10, 0); // Align label to the right of the switch
-
-  // Assign an event handler to the switch
-  lv_obj_add_event_cb(switch_fund, switch_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
-
-  // Set the initial state from fundingSourceBuffer
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-  {
-    lv_obj_add_state(switch_fund, LV_STATE_CHECKED); // Turn switch on if fundingsource is "lnbits"
-    lv_label_set_text(switch_label, "LNbits");
-  }
-  else
-  {
-    lv_obj_clear_state(switch_fund, LV_STATE_CHECKED); // Ensure switch is off if fundingsource is "blink"
-    lv_label_set_text(switch_label, "Blink");
-  }
-
-  createImages(screen_settings);
-
-  // Create a label for rate source switch
-  lv_obj_t *label_rate = lv_label_create(screen_settings);
-  lv_label_set_text(label_rate, "Rate: (Coingecko \nor ExchangeApi)");
-  lv_obj_align(label_rate, LV_ALIGN_TOP_LEFT, 190, 55); // Position the label
-  // Create a switch and add it to the screen
-  switch_rate = lv_switch_create(screen_settings);
-  lv_obj_set_pos(switch_rate, 190, 100); // Set the position of the switch
-
-  // Create a label for the switch
-  rate_label = lv_label_create(screen_settings);
-  lv_label_set_text(rate_label, rateSourceBuffer);                         // Use rateSourceBuffer to set initial text
-  lv_obj_align_to(rate_label, switch_rate, LV_ALIGN_OUT_RIGHT_MID, 10, 0); // Align label to the right of the switch
-
-  // Assign an event handler to the switch
-  lv_obj_add_event_cb(switch_rate, switch_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
-
-  // Set the initial state from rateSourceBuffer
-  if (strcmp(rateSourceBuffer, "ExchangeApi") == 0)
-  {
-    lv_obj_add_state(switch_rate, LV_STATE_CHECKED); // Turn switch on if rate source is "ExchangeApi"
-    lv_label_set_text(rate_label, "ExchangeApi");
-  }
-  else
-  {
-    lv_obj_clear_state(switch_rate, LV_STATE_CHECKED); // Ensure switch is off if rate source is "Coingecko"
-    lv_label_set_text(rate_label, "Coingecko");
-  }
-
-  // Animation Switch
-  // Create a label for animation switch
-  lv_obj_t *label_switch_animation = lv_label_create(screen_settings);
-  lv_label_set_text(label_switch_animation, "\nAnimation");
-  lv_obj_align(label_switch_animation, LV_ALIGN_TOP_LEFT, 370, 55); // Position the label
-
-  // Create a switch and add it to the screen
-  lv_obj_t *switch_animation = lv_switch_create(screen_settings);
-  lv_obj_set_pos(switch_animation, 370, 100); // Set the position of the switch
-
-  // Create a label for the switch
-  anim_label = lv_label_create(screen_settings);
-  lv_label_set_text(anim_label, enableAnimBuffer);                           // Use fundingSourceBuffer to set initial text
-  lv_obj_align_to(anim_label, switch_animation, LV_ALIGN_OUT_RIGHT_MID, 10, 0);   // Align label to the right of the switch
-
-  // Assign an event handler to the switch
-  lv_obj_add_event_cb(switch_animation, switch_animation_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
-
-  // Set the initial state from enableAnimBuffer
-  if (strcmp(enableAnimBuffer, "Yes") == 0)
-  {
-    lv_obj_add_state(switch_animation, LV_STATE_CHECKED); // Turn switch on if animation is enabled
-    lv_label_set_text(anim_label, "On");
-  }
-  else
-  {
-    lv_obj_clear_state(switch_animation, LV_STATE_CHECKED); // Ensure switch is off if animation is disabled
-    lv_label_set_text(anim_label, "Off");
-  }
-
-  lv_scr_load(screen_settings);
-}
-
-void btn_config_portal_event_handler(lv_event_t *e)
-{
-  if (lv_event_get_code(e) == LV_EVENT_CLICKED)
-  {
-    Serial.println("Button Clicked - Starting Config Portal");
-    createPortalScreen();
-    lv_task_handler(); // Process LVGL tasks to refresh the screen.
-    startConfigPortal();
-  }
-}
-
 void btn_back_event_handler(lv_event_t *e)
 {
   if (lv_event_get_code(e) == LV_EVENT_CLICKED)
   {
-    memset(pin_code, 0, sizeof(pin_code)); // Clear pin_code when going back
     Serial.println("Back to Main Screen");
     createMainScreen(); // Navigate back to the main screen
+    lv_task_handler();
   }
-}
-
-void switchFundingSource()
-{
-  // Toggle between Blink and LNbits funding source
-  if (strcmp(fundingSourceBuffer, "Blink") == 0)
-  {
-    strcpy(fundingSourceBuffer, "LNbits"); // Switch to LNbits
-  }
-  else
-  {
-    strcpy(fundingSourceBuffer, "Blink");
-  }
-  Serial.print("Funding source switched to: ");
-  Serial.println(fundingSourceBuffer);
 }
 
 /**
  * @brief Starts the configuration portal.
- * 
+ *
  * This function is responsible for starting the configuration portal, which allows the user to configure the device settings.
  * It assumes that the 'config' and 'portal' objects have been previously defined and configured appropriately.
- * 
+ *
  * @note This function enters an infinite loop until the configuration process is completed.
  */
 void startConfigPortal()
@@ -3673,39 +3161,12 @@ void startConfigPortal()
   portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux, savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux});
   portal.config(config);
   portal.begin();
+  Serial.println("Portal finished. IP2: " + WiFi.localIP().toString());
   while (true)
   {
     portal.handleClient();
   }
   // timer = 2000;
-}
-
-/* Reset button */
-// Function to create a reset button
-void createResetButton(lv_obj_t *parent)
-{
-  if (parent == NULL)
-    return;                              // Safety check
-  lv_obj_t *btn = lv_btn_create(parent); // Create button on the provided parent object
-  lv_obj_set_size(btn, 100, 40);         // Set button size
-  lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -10, 10);
-
-  lv_obj_t *label = lv_label_create(btn); // Create label on the button
-  lv_label_set_text(label, "Restart");      // Set label text
-  lv_obj_center(label);                   // Center the label within the button
-
-  // Attach event handler to the button
-  lv_obj_add_event_cb(btn, reset_btn_event_cb, LV_EVENT_CLICKED, NULL);
-}
-
-// Event handler for the reset button
-static void reset_btn_event_cb(lv_event_t *e)
-{
-  if (lv_event_get_code(e) == LV_EVENT_CLICKED)
-  {
-    Serial.println("Reset button clicked, restarting...");
-    ESP.restart(); // Command to soft reset the device (specific to ESP32/ESP8266)
-  }
 }
 
 /* Back button */
@@ -3745,6 +3206,7 @@ volatile bool isLoopReading = false;
 void loop()
 {
   lv_timer_handler(); // Let the GUI do its work
+  portal.handleClient();
 
   if (initialCheck)
   {
@@ -3761,7 +3223,6 @@ void loop()
     checkPrice();
     checkBalance();          // Check the balance every 5 minutes
     updateMainScreenLabel(); // Update the label on the main screen with the new balance
-    update_settings_button_style();
     lv_task_handler();
     delay(5);
   }
@@ -3778,7 +3239,6 @@ void loop()
         // A valid bill is detected
         bills = bills + billAmountIntOne[i];
         total = (coins + bills);
-
         if (!isInsertingMoney)
         {
           createInsertMoneyScreen();
@@ -3786,7 +3246,6 @@ void loop()
           delay(5);
           isInsertingMoney = true;
         }
-
         String lastBillString = "Last bill: " + String(billAmountIntOne[i]) + " " + currencySelected;
         String totalString = "Total: " + String(total) + " " + currencySelected;
         String maxString = "MAX: " + String(maxamountSelected) + " " + currencySelected + " from " + fundingSourceBuffer;
@@ -3799,7 +3258,6 @@ void loop()
       }
     }
   }
-
   // Check button release or total
   BTNA.read();
   // Serial.print("Waiting for tap 1");
@@ -3817,7 +3275,7 @@ void loop()
       Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
       makeLNURL();
       printHeapStatus();
-      Serial.println("makeLNURL() - LNbits offline: ");      
+      Serial.println("makeLNURL() - LNbits offline: ");
       showQRCodeLVGL(qrData.c_str());
       Serial.print("showQRCodeLVGL() - LNbits offline: ");
       Serial.println(qrData);
@@ -3837,7 +3295,7 @@ void loop()
         deleteInsertMoneyScreen();
         Serial.println("deleteInsertMoneyScreen() - Blink online");
         createLNURLWithdraw();
-        Serial.println("createLNURLWithdraw() - Blink online");        
+        Serial.println("createLNURLWithdraw() - Blink online");
         // Display the QR code for online
         showQRCodeLVGL(lnURLgen.c_str());
         Serial.println("showQRCodeLVGL() - Blink online");
@@ -3864,7 +3322,6 @@ void loop()
         //      // Load your main screen or perform any other desired action
         //      getBoltInvoice();
         //      getBlinkLnURL(boltInvoice);
-
         //   }
         // }
         getBoltInvoice();
@@ -3873,7 +3330,7 @@ void loop()
         createThankYouScreen();
         lv_task_handler();
         delay(1200);
-        //createMainScreen();
+        // createMainScreen();
         ESP.restart();
       }
       if (strcmp(fundingSourceBuffer, "LNbits") == 0)
@@ -3882,7 +3339,7 @@ void loop()
         Serial.println("deleteInsertMoneyScreen() - LNbits online");
         getLNURL();
         Serial.println("getLNURL()");
-        delay(1000);        
+        delay(1000);
         // Display the QR code for online
         showQRCodeLVGL(lnURLgen.c_str());
         Serial.println("showQRCodeLVGL() - LNbits online");
@@ -3912,9 +3369,9 @@ void loop()
         total = 0;
         isInsertingMoney = false;
         // Load your main screen or perform any other desired action
-        //deleteQRCodeScreen();
-        //deleteAllScreens();
-        //createMainScreen();
+        // deleteQRCodeScreen();
+        // deleteAllScreens();
+        // createMainScreen();
         ESP.restart();
       }
     }

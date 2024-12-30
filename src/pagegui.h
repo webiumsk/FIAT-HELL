@@ -3,7 +3,7 @@ static const char PAGE_GUI[] PROGMEM = R"(
 {
   "uri": "/gui",
   "title": "GUI",
-  "menu": false,
+  "menu": true,
   "element": [
     {
       "name": "fundingsource",
@@ -17,6 +17,11 @@ static const char PAGE_GUI[] PROGMEM = R"(
       "checked": 1
     },
     {
+      "name": "newline",
+      "type": "ACElement",
+      "value": "<hr>"
+    },
+    {
       "name": "ratesource",
       "type": "ACRadio",
       "value": [
@@ -26,6 +31,11 @@ static const char PAGE_GUI[] PROGMEM = R"(
       "label": "Rate source 'Coingecko' or 'ExchangeApi'",
       "arrange": "horizontal",
       "checked": 1
+    },
+    {
+      "name": "newline1",
+      "type": "ACElement",
+      "value": "<hr>"
     },
     {
       "name": "animated",
