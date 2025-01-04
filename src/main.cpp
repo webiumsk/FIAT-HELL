@@ -19,10 +19,6 @@ bool format = false; // true for formatting FOSSA memory, use once, then make fa
 
 #define LGFX_AUTODETECT // Autodetect board
 #define LGFX_USE_V1     // set to use new version of library
-// #define LV_CONF_INCLUDE_SIMPLE
-
-/* Uncomment below line to draw on screen with touch */
-// #define DRAW_ON_SCREEN
 
 #include <LovyanGFX.hpp> // main library
 static LGFX lcd;         // declare display variable
@@ -61,8 +57,6 @@ fs::SPIFFSFS &FlashFS = SPIFFS;
 
 #include <vector>
 #include <iostream>
-
-// #include <ArduinoOTA.h>
 
 #include <cstring> // For memset
 char Buf[200];     // Buffer for the encrypted data
@@ -389,7 +383,7 @@ void setup()
   {
     lv_task_handler();
     BTNA.read();
-    if (BTNA.wasReleased())
+    if (BTNA.wasPressed())
     {
       timer = 5000;
       triggerAp = true;
@@ -984,7 +978,8 @@ void setup()
   lv_task_handler();
   delay(5);
 
-  Serial.print(F("APP PASSWORD: "));
+  ///*** Debug ***////
+  /*Serial.print(F("APP PASSWORD: "));
   Serial.println(password);
   Serial.print(F("Admin key: "));
   Serial.println(adminkey);
@@ -1017,72 +1012,118 @@ void setup()
   Serial.print(F("MAX (selected): "));
   Serial.println(maxamountSelected);
   Serial.print(F("Charge: "));
-  Serial.println(charge1);
+  Serial.println(charge1);*/
 
   /**************************************************************************/
-  /***      Starting AutoConnect - connection attempt or AP (portal)      ***/
+  /***  Starting AutoConnect - connection attempt or AP (portal)         ***/
   /**************************************************************************/
 
-  // 1) First we set immediateStart according to triggerAp
-  if (triggerAp)
+  bool connected = false; // Helper variable to hold the result of the WiFi connection
+
+  // 1) Decision by fundingsourceBuffer
+  if (strcmp(fundingSourceBuffer, "Blink") == 0)
   {
-    // We want to start the AP (Config Portal) right away
-    config.immediateStart = true;
-    Serial.println("Button pressed => immediateStart = true");
-    createPortalScreen();
-    lv_task_handler();
+    // Blink => zariadenie potrebuje internet
+    Serial.println("Blink mode => Internet needed");
+
+    // If the user pressed the button, we want the AP to immediately
+    if (triggerAp)
+    {
+      config.immediateStart = true;
+      Serial.println("User pressed button => immediateStart = true");
+    }
+    else
+    {
+      config.immediateStart = false;
+      Serial.println("No button => immediateStart = false");
+    }
+
+    portal.config(config);
+    Serial.println("Attempting to connect via AutoConnect...");
+    connected = portal.begin(); // Will try to connect to a saved WiFi or start an AP
+    if (connected)
+    {
+      Serial.println("Blink: WiFi connected! IP: " + WiFi.localIP().toString());
+      // (Optional) if you don't want to leave the AP on, switch to STA only
+      WiFi.mode(WIFI_STA);
+    }
+    else
+    {
+      Serial.println("Blink: No WiFi => AP mode active. AP Name: " + config.apid);
+      //createPortalScreen();
+      //lv_task_handler();
+      digitalWrite(11, LOW);
+      Serial.println(F("Entered Config Portal (Blink) because WiFi not connected"));
+    }
   }
-  else
+  else if (strcmp(fundingSourceBuffer, "LNbits") == 0)
   {
-    // Let's try to use the saved WiFi credentials
-    config.immediateStart = false;
-    Serial.println("No button => immediateStart = false");
+    // LNbits => can work offline
+    Serial.println("LNbits mode => offline possible");
+
+    if (triggerAp)
+    {
+      // User pressed the button => we want to start the AP for configuration
+      config.immediateStart = true;
+      Serial.println("User pressed button => immediateStart = true (LNbits)");
+
+      portal.config(config);
+      Serial.println("Attempting to start config portal for LNbits...");
+      connected = portal.begin(); // Run AP
+      if (connected)
+      {
+        Serial.println("LNbits: WiFi connected (optional). IP: " + WiFi.localIP().toString());
+        // We can, but don't have to, put WiFi.mode(WIFI_STA)
+      }
+      else
+      {
+        Serial.println("LNbits: AP mode active. AP Name: " + config.apid);
+        //createPortalScreen();
+        //lv_task_handler();
+        digitalWrite(11, LOW);
+        Serial.println(F("Entered Config Portal (LNbits) because user forced it"));
+      }
+    }
+    else
+    {
+      // LNbits offline => we don't try WiFi at all
+      Serial.println("LNbits offline => skipping portal.begin()");
+      connected = false;
+    }
   }
-  portal.config(config);
 
-  // 2) Now we will run AutoConnect
-  Serial.println("Starting AutoConnect portal...");
-  bool connected = portal.begin();
-
-  // 3) We check the result
-  if (connected)
-  {
-    // If valid WiFi credentials are available, it will be connected to WiFi
-    Serial.println("WiFi connected: " + WiFi.localIP().toString());
-
-    // (Optional) - if you don't want to leave the AP on, turn it off:
-    WiFi.mode(WIFI_STA);
-  }
-  else
-  {
-    // If not, the device remains in AP mode until the user configures it.
-    Serial.println("Config portal active. AP Name: " + config.apid);
-
-    // Just to show some screen in LVGL:
-    createPortalScreen();
-    lv_task_handler();
-    digitalWrite(11, LOW);
-    Serial.println(F("Entered Config Portal by pressing button"));
-  }
-
-  // Additional logic - checking if all API data is entered
+  // 2) Checking if API data is entered
+  // (common for both branches - LNbits and Blink)
   if ((strcmp(fundingSourceBuffer, "LNbits") == 0 && (currencyATM == "" || adminkey == "" || readkey == "")) ||
       (strcmp(fundingSourceBuffer, "Blink") == 0 && (blinkapikey == "" || blinkwalletid == "")) ||
       (currencyOne == ""))
   {
-    // Start API screen and config portal
-    createAPIScreen();
-    lv_task_handler();
+    // Data is missing, we will run the API screen to add it
+    Serial.println("API data missing => createAPIScreen");
+    //createAPIScreen();
+    //lv_task_handler();
     digitalWrite(11, LOW);
 
-    // Again, if you need to force an AP, this is where you call portal.begin() or startConfigPortal();
+    Serial.println("Launching Config Portal for missing API data...");
+    config.immediateStart = true; // Run AP immediately
+    portal.config(config);
+    bool started = portal.begin(); // Now the AP will start (if WiFi credentials were not saved)
+    if (!started)
+    {
+      Serial.println("ConfigPortal in AP mode. WiFi not connected.");
+    }
+    else
+    {
+      Serial.println("WiFi got connected, but user may update data.");
+    }
     return;
   }
   else
   {
-    // Everything is fine - we launch the main screen
-  createMainScreen();
-  lv_task_handler();
+    // 3) Everything is fine - we launch the main screen
+    Serial.println("All API data present => launching main screen");
+    createMainScreen();
+    lv_task_handler();
   }
 
   // Extract "https://your.lnbits.com" from baseURLATM "https://your.lnbits.com/lnurldevice/api/v1/lnurl/<id>";
@@ -1128,9 +1169,7 @@ int nonBlockingRead()
 // Create the logo screen
 /**
  * @brief Sets the angle of an LVGL arc object.
- *
  * This function is used to set the angle of an LVGL arc object.
- *
  * @param obj Pointer to the LVGL arc object.
  * @param v The angle value to set.
  */
@@ -1141,7 +1180,6 @@ static void set_angle(void *obj, int32_t v)
 
 /**
  * Checks the status of the WiFi connection.
- *
  * @return true if the WiFi is connected, false otherwise.
  */
 bool wifiStatus()
@@ -1151,10 +1189,8 @@ bool wifiStatus()
 
 /**
  * @brief Creates a logo screen with a logo, URL label, arc animation, and an image.
- *
  * This function creates a new screen and adds various graphical elements to it, including a logo,
  * a URL label, an arc animation, and an image. The logo screen is then loaded and displayed.
- *
  * @note The function assumes that the necessary resources (e.g., fonts, images) have been properly
  *       initialized and loaded beforehand.
  */
@@ -1198,17 +1234,11 @@ void createLogoScreen()
 // Create the portal screen
 /**
  * @brief Creates the portal screen.
- *
  * This function creates a new screen and adds various labels to display instructions for connecting to a Wi-Fi network.
- *
  * @note The function assumes that the necessary fonts have been loaded and the screen_portal object has been declared globally.
- *
  * @note The labels are aligned vertically and centered horizontally on the screen.
- *
  * @note The text for the labels is set using predefined string constants.
- *
  * @note The font styles for the labels are set using predefined font objects.
- *
  * @note The screen_portal object is loaded as the active screen.
  */
 void createPortalScreen()
@@ -1258,14 +1288,10 @@ void createPortalScreen()
 
 /**
  * @brief Creates the API screen.
- *
  * This function creates a new screen and adds various labels to display API information.
  * The labels include the API title, restart instructions, connection instructions, and preference instructions.
- *
  * @note The API data is currently set to "API DATA MISSING".
- *
  * @note The labels are aligned and styled using different fonts.
- *
  * @note The screen is loaded after all the labels are created.
  */
 void createAPIScreen()
@@ -1342,7 +1368,6 @@ void checkNetworkAndDeviceStatus()
 
 /**
  * Checks if the device is configured for Blink payments.
- *
  * @return true if the device is configured for Blink payments, false otherwise.
  */
 bool isBlink()
@@ -1361,7 +1386,6 @@ bool isBlink()
 
 /**
  * Checks if the funding source is LNbits.
- *
  * @return true if the funding source is LNbits, false otherwise.
  */
 bool isLNbits()
@@ -1385,7 +1409,6 @@ bool isLNbits()
  * The screen includes a title and a description label, both centered on the screen.
  * The title label uses a large font and green text color.
  * The description label uses a smaller font and green text color.
- *
  * @note The screen_thx global variable must be defined before calling this function.
  */
 void createThankYouScreen()
@@ -1412,9 +1435,7 @@ void createThankYouScreen()
 /**
  * @brief Updates the burn text label with the combined text of "BURN YOUR {currencySelected} FOR SATS".
  *        It also checks the network and device status, price, balance, and updates the main screen label.
- *
  * @note This function assumes that the burnTextLabel has been created.
- *
  * @param None
  * @return None
  */
@@ -1441,7 +1462,6 @@ const int UNINHIBIT_START = 151;
 
 /**
  * Sets the currency to the specified value.
- *
  * @param newCurrency The new currency to set.
  */
 void setCurrency(const String &newCurrency)
@@ -1640,7 +1660,8 @@ void checkBalance()
 
       fiatBalance = ((double)balanceSats * fiatValue) / 100000000000.0;
 
-      Serial.print(F("Balance: "));
+      ///*** Debug ***////
+      /*Serial.print(F("Balance: "));
       Serial.println(fiatBalance);
 
       Serial.print(F("Currency: "));
@@ -1661,7 +1682,7 @@ void checkBalance()
       Serial.print(F("HTTP (checkBalance): "));
       Serial.println(httpCode);
       Serial.print("Free heap (checkBalance): ");
-      Serial.println(ESP.getFreeHeap());
+      Serial.println(ESP.getFreeHeap());*/
     }
     else
     {
@@ -1718,14 +1739,15 @@ void checkBalance()
 
       fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
 
-      Serial.print("Wallet ID: ");
+      ///*** Debug ***////
+      /*Serial.print("Wallet ID: ");
       Serial.println(blinkwalletid);
       Serial.print("Wallet Currency: ");
       Serial.println(walletCurrency);
       Serial.print("Wallet Balance: ");
       Serial.println(balanceSats);
       Serial.print("Fiat balance: ");
-      Serial.println(fiatBalance);
+      Serial.println(fiatBalance);*/
     }
     else
     {
@@ -1968,7 +1990,6 @@ void createMainScreen()
   digitalWrite(INHIBITMECH, LOW);
 
   Serial.println("createMainScreen: Start machine");
-  Serial.println("createMainScreen: Start");
   Serial.print("Free heap (createMainScreen Start): ");
   Serial.println(ESP.getFreeHeap());
 
@@ -2097,16 +2118,6 @@ void createMainScreen()
   lv_obj_set_style_text_font(chargeValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: chargeValueLabel created");
 
-  /*if ((isBlink()) && (!wifiStatus()))
-  {
-    lv_obj_t *labelNotConnected = lv_label_create(screen_main);   // full screen as the parent
-    lv_label_set_text(labelNotConnected, "Blink & NOT CONNECTED");                // set label text
-    lv_obj_align(labelNotConnected, LV_ALIGN_BOTTOM_MID, 0, -90); // Center but 20 from the top
-    lv_obj_set_style_text_font(labelNotConnected, &lv_font_montserrat_22, 0);
-    Serial.println("createMainScreen: labelNotConnected created");
-  }
-  else
-  {*/
   lv_button_currency();
   Serial.println("createMainScreen: lv_button_currency created");
   //}
@@ -2205,9 +2216,7 @@ void enableAcceptor()
  *
  * This function creates a new screen and adds labels for displaying the money inserted, total amount, prompt, and maximum amount.
  * It also sets the necessary styles for the labels.
- *
  * @note This function assumes that the main screen has already been deleted and the global variable `isInsertingMoney` has been set to `true`.
- *
  * @note This function prints the free heap size to the serial monitor.
  */
 void createInsertMoneyScreen()
@@ -2312,7 +2321,6 @@ static void switch_animation_event_handler(lv_event_t *e)
  * This function creates and initializes currency buttons (up to 3 currencies).
  * It sets the position, size, and text of each button based on the currency values.
  * It also sets the button style for the checked state and sets the initial currency.
- *
  * @note This function assumes that the variables currencyATM3, currencyThree, currencyOne, currencyTwo, and currencySelected are defined and accessible.
  */
 void lv_button_currency()
@@ -3261,7 +3269,7 @@ void loop()
   // Check button release or total
   BTNA.read();
   // Serial.print("Waiting for tap 1");
-  if ((BTNA.wasReleased() && total != 0) || total >= maxamountSelected)
+  if ((BTNA.wasPressed() && total != 0) || total >= maxamountSelected)
   {
     // Process the total and reset variables for the next transaction.
     total = (coins + bills) * 100;
@@ -3360,7 +3368,7 @@ void loop()
     {
       BTNA.read();
       // Serial.print("Waiting for tap 2");
-      if (BTNA.wasReleased())
+      if (BTNA.wasPressed())
       {
         waitForTap = false;
         // Reset for the next transaction
