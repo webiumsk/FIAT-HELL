@@ -2190,7 +2190,7 @@ void createCurrencyScreen(const String &currency, float rate, float balance, flo
   lv_obj_align(insert_label, LV_ALIGN_CENTER, 0, 0);
   lv_obj_set_style_text_font(insert_label, &lv_font_montserrat_24, 0);
 
-  createBackButton(screen_currency);
+  //createBackButton(screen_currency);
 
   lv_scr_load(screen_currency);
 
@@ -3175,21 +3175,6 @@ void startConfigPortal()
     portal.handleClient();
   }
   // timer = 2000;
-}
-
-/* Back button */
-// Function to create a back button
-void createBackButton(lv_obj_t *parent)
-{
-  if (parent == NULL)
-    return;                                   // Safety check
-  lv_obj_t *btn_back = lv_btn_create(parent); // Create button on the provided parent object
-  lv_obj_set_size(btn_back, 80, 40);
-  lv_obj_align(btn_back, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
-  lv_obj_t *btn_label_back = lv_label_create(btn_back);
-  lv_label_set_text(btn_label_back, "Back");
-  lv_obj_center(btn_label_back);
-  lv_obj_add_event_cb(btn_back, btn_back_event_handler, LV_EVENT_CLICKED, NULL);
 }
 
 /**
