@@ -411,8 +411,8 @@ void setup() {
   // get the saved details and store in global variables
   File paramFile = FlashFS.open(PARAM_FILE, "r");
   if (paramFile) {
-    StaticJsonDocument<2400> conf;
-    DeserializationError error = deserializeJson(conf, paramFile.readString());
+    DynamicJsonDocument conf(2400);
+    DeserializationError error = deserializeJson(conf, paramFile);
 
     const JsonObject conf0 = conf[0];
     const char *conf0Char = conf0["value"];

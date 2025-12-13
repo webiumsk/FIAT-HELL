@@ -7,8 +7,8 @@ bool ConfigService::loadGuiConfig(fs::FS &fs, const char *path,
     return false;
   }
 
-  StaticJsonDocument<2400> docGui;
-  DeserializationError error = deserializeJson(docGui, guiFile.readString());
+  DynamicJsonDocument docGui(2400);
+  DeserializationError error = deserializeJson(docGui, guiFile);
   guiFile.close();
   if (error) {
     return false;
@@ -47,7 +47,7 @@ bool ConfigService::loadGuiConfig(fs::FS &fs, const char *path,
 
 bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
                                   const GuiConfig &in) {
-  StaticJsonDocument<2400> docGui;
+  DynamicJsonDocument docGui(2400);
 
   JsonObject docGui0 = docGui.createNestedObject();
   docGui0["name"] = "fundingsource";
@@ -165,8 +165,10 @@ bool ConfigService::loadFirst(fs::FS &fs, const char *path, FirstConfig &out) {
   if (!f) {
     return false;
   }
-  StaticJsonDocument<2400> doc;
-  if (deserializeJson(doc, f.readString())) {
+  DynamicJsonDocument doc(2400);
+  DeserializationError error = deserializeJson(doc, f);
+  f.close();
+  if (error) {
     return false;
   }
 
@@ -212,8 +214,10 @@ bool ConfigService::loadSecond(fs::FS &fs, const char *path,
   if (!f) {
     return false;
   }
-  StaticJsonDocument<2400> doc;
-  if (deserializeJson(doc, f.readString())) {
+  DynamicJsonDocument doc(2400);
+  DeserializationError error = deserializeJson(doc, f);
+  f.close();
+  if (error) {
     return false;
   }
 
@@ -246,8 +250,10 @@ bool ConfigService::loadThird(fs::FS &fs, const char *path, ThirdConfig &out) {
   if (!f) {
     return false;
   }
-  StaticJsonDocument<2400> doc;
-  if (deserializeJson(doc, f.readString())) {
+  DynamicJsonDocument doc(2400);
+  DeserializationError error = deserializeJson(doc, f);
+  f.close();
+  if (error) {
     return false;
   }
 
