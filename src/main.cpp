@@ -1225,17 +1225,31 @@ const int UNINHIBIT_START = 151;
  * Sets the currency to the specified value.
  * @param newCurrency The new currency to set.
  */
-void setCurrency(const char *newCurrency) {
+/**
+ * @brief Sets the currency and configures bill acceptor channels.
+ *
+ * @param newCurrency The currency to set (currencyOne, currencyTwo, or
+ * currencyThree)
+ * @param skipInhibit If true, skip the inhibit/uninhibit process (useful at
+ * startup when acceptor is off)
+ */
+void setCurrency(const char *newCurrency, bool skipInhibit = false) {
   Serial.print("setCurrency Currency set to ");
   Serial.println(newCurrency);
   strlcpy(currencySelected, newCurrency, sizeof(currencySelected));
-  // updateBurnText(); // Update the label text when the currency changes
-  // checkPrice();
+
+  // Skip inhibit/uninhibit if acceptor is not enabled (e.g., at startup)
+  if (skipInhibit) {
+    Serial.println("setCurrency: Skipping inhibit (acceptor not enabled)");
+    return;
+  }
 
   // Clear all channels before setting the new ones
+  // Reduced delay - bill acceptor should respond faster
+  // Most bill acceptors can handle commands much faster than 200ms
   for (int i = 0; i < 16; i++) {
     SerialPort1.write(INHIBIT_START + i); // Inhibit all initially
-    delay(200);
+    delay(5); // Reduced from 200ms to 5ms - much faster
   }
 
   // Determine which channels to uninhibit based on the selected currency
@@ -1254,6 +1268,7 @@ void setCurrency(const char *newCurrency) {
   }
 
   // Uninhibit channels for the selected currency
+  // Reduced delay - commands can be sent faster
   for (int i = 0; i < currencySize; i++) {
     int channelCode = UNINHIBIT_START + startChannel + i;
     Serial.print("Sending value allow ");
@@ -1261,7 +1276,8 @@ void setCurrency(const char *newCurrency) {
     Serial.print(": ");
     Serial.println(channelCode);
     SerialPort1.write(channelCode);
-    delay(20);
+    delay(
+        2); // Reduced from 20ms to 2ms - minimal delay for serial communication
   }
 }
 
@@ -1530,22 +1546,33 @@ static void btn1_event_handler(lv_event_t *e) {
   if (code == LV_EVENT_CLICKED) {
     showLoadingIndicator();
 
+    // Set currency first (fast operation)
     setCurrency(currencyOne);
-    checkPrice();
-    checkBalance();
-    // update_button_states(lv_event_get_target(e));
-    Serial.print("Currency set to ");
-    Serial.println(currencyOne);
+
+    // Update config variables
     if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
       strlcpy(baseURLATM, baseURLATM1, sizeof(baseURLATM));
       strlcpy(secretATM, secretATM1, sizeof(secretATM));
     }
     chargeSelected = charge1;
     maxamountSelected = maxamount;
-    createCurrencyScreen(currencyOne, fiatValue, fiatBalance,
-                         chargeSelected); // Show the new screen
+
+    // Show screen immediately with current values (may be slightly outdated)
+    createCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected);
     lv_task_handler();
     hideLoadingIndicator();
+
+    // Update price and balance in background (these are slow HTTP requests)
+    // This happens after screen is shown, so user sees response immediately
+    checkPrice();
+    checkBalance();
+
+    // Update screen with new values after they're fetched
+    createCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected);
+    lv_task_handler();
+
+    Serial.print("Currency set to ");
+    Serial.println(currencyOne);
   }
 }
 
@@ -1571,22 +1598,32 @@ static void btn2_event_handler(lv_event_t *e) {
   if (code == LV_EVENT_CLICKED) {
     showLoadingIndicator();
 
+    // Set currency first (fast operation)
     setCurrency(currencyTwo);
-    checkPrice();
-    checkBalance();
-    // update_button_states(lv_event_get_target(e));
-    Serial.print("Currency set to ");
-    Serial.println(currencyTwo);
+
+    // Update config variables
     if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
       strlcpy(baseURLATM, baseURLATM2, sizeof(baseURLATM));
       strlcpy(secretATM, secretATM2, sizeof(secretATM));
     }
     chargeSelected = charge2;
     maxamountSelected = maxamount2;
-    createCurrencyScreen(currencyTwo, fiatValue, fiatBalance,
-                         chargeSelected); // Show the new screen
+
+    // Show screen immediately with current values (may be slightly outdated)
+    createCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected);
     lv_task_handler();
     hideLoadingIndicator();
+
+    // Update price and balance in background (these are slow HTTP requests)
+    checkPrice();
+    checkBalance();
+
+    // Update screen with new values after they're fetched
+    createCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected);
+    lv_task_handler();
+
+    Serial.print("Currency set to ");
+    Serial.println(currencyTwo);
   }
 }
 
@@ -1602,22 +1639,32 @@ static void btn3_event_handler(lv_event_t *e) {
   if (code == LV_EVENT_CLICKED) {
     showLoadingIndicator();
 
+    // Set currency first (fast operation)
     setCurrency(currencyThree);
-    checkPrice();
-    checkBalance();
-    // update_button_states(lv_event_get_target(e));
-    Serial.print("Currency set to ");
-    Serial.println(currencyThree);
+
+    // Update config variables
     if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
       strlcpy(baseURLATM, baseURLATM3, sizeof(baseURLATM));
       strlcpy(secretATM, secretATM3, sizeof(secretATM));
     }
     chargeSelected = charge3;
     maxamountSelected = maxamount3;
-    createCurrencyScreen(currencyThree, fiatValue, fiatBalance,
-                         chargeSelected); // Show the new screen
+
+    // Show screen immediately with current values (may be slightly outdated)
+    createCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected);
     lv_task_handler();
     hideLoadingIndicator();
+
+    // Update price and balance in background (these are slow HTTP requests)
+    checkPrice();
+    checkBalance();
+
+    // Update screen with new values after they're fetched
+    createCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected);
+    lv_task_handler();
+
+    Serial.print("Currency set to ");
+    Serial.println(currencyThree);
   }
 }
 
@@ -2149,8 +2196,8 @@ void lv_button_currency() {
     lv_obj_center(labelbtn);
   }
 
-  // Set initial currency
-  setCurrency(currencyOne);
+  // Set initial currency (skip inhibit since acceptor is not enabled yet)
+  setCurrency(currencyOne, true);
 }
 
 /*** Display callback to flush the buffer to screen ***/
