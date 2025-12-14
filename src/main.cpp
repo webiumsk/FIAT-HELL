@@ -175,6 +175,24 @@ unsigned long previousMillis = 0;
 long balanceSats = 0; // Assuming it's a long or an appropriate type
 bool initialCheck = true;
 
+// UI State Machine
+enum UiState {
+  UI_IDLE,
+  UI_LOGO_WAIT,
+  UI_INSERTING_MONEY,
+  UI_SHOWING_QR,
+  UI_WAITING_FOR_TAP,
+  UI_WAITING_FOR_BLINK_INVOICE,
+  UI_THANK_YOU
+};
+
+UiState currentUiState = UI_IDLE;
+unsigned long stateEnterTime = 0;
+bool qrDebounceDone = false;
+bool isBlinkFlow = false; // Track if we're in Blink payment flow
+unsigned long lastBlinkPollTime =
+    0; // Track last time we polled for Blink invoice
+
 const char *graphqlEndpoint = "https://api.blink.sv/graphql";
 const char *primaryApiEndpoint = "https://api.lnbc.sk/v1/lnurl";
 const char *secondaryApiEndpoint = "https://api.lnurlproxy.me/v1/lnurl";
@@ -299,6 +317,7 @@ int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen,
 void checkNetworkAndDeviceStatus();
 void startConfigPortal();
 void btn_back_event_handler(lv_event_t *e);
+void handleUiStateMachine();
 
 void createBackButton(lv_obj_t *parent);
 void printHeapStatus();
@@ -388,16 +407,16 @@ void setup() {
 
   secureClient.setInsecure();
 
-  int timer = 0;
-  while (timer < 2000) {
+  // Start logo wait state (non-blocking)
+  currentUiState = UI_LOGO_WAIT;
+  stateEnterTime = millis();
+
+  // Non-blocking wait for tap during logo screen
+  // Keep checking for tap while loading config
+  while (currentUiState == UI_LOGO_WAIT) {
     lv_task_handler();
-    BTNA.read();
-    if (BTNA.wasPressed()) {
-      timer = 5000;
-      triggerAp = true;
-    }
-    timer = timer + 100;
-    delay(100);
+    handleUiStateMachine();
+    yield(); // Allow other tasks to run
   }
 
   /******************************************/
@@ -2187,10 +2206,23 @@ void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
  * in the JSON response, an appropriate message is printed. If the HTTP GET
  * request fails, the function will retry after a delay of 3 seconds.
  */
-void getBoltInvoice() {
-  // Assuming 'callback' is the URL where the invoice can be fetched
+/**
+ * @brief Non-blocking function to check for Bolt invoice from callback URL.
+ *
+ * This function polls the callback URL to check if an invoice is available.
+ * Returns true if invoice was found, false otherwise.
+ *
+ * @return true if invoice was successfully retrieved, false otherwise
+ */
+bool checkBoltInvoice() {
+  if (callback[0] == '\0') {
+    Serial.println("Error: callback URL is empty");
+    return false;
+  }
+
   http.begin(callback); // Initialize the connection to the URL
   http.addHeader("Content-Type", "application/json"); // Set header for JSON
+  http.setTimeout(5000); // Set timeout to 5 seconds
 
   int httpCode = http.GET(); // Perform the GET request
 
@@ -2198,33 +2230,32 @@ void getBoltInvoice() {
     String responseCallback = http.getString(); // Get the response as a string
 
     DynamicJsonDocument doc(1024);
-    deserializeJson(
-        doc, responseCallback); // Parse the JSON response into the document
+    DeserializationError error = deserializeJson(doc, responseCallback);
+
+    if (error) {
+      Serial.print("JSON parse error: ");
+      Serial.println(error.c_str());
+      http.end();
+      return false;
+    }
 
     const char *inv = doc["invoice"];
-    if (inv) {
+    if (inv && strlen(inv) > 0) {
       strlcpy(boltInvoice, inv, sizeof(boltInvoice));
-    } else {
-      boltInvoice[0] = '\0';
-    }
-
-    if (boltInvoice[0] != '\0') {
-      Serial.print("Bolt Invoice: ");
+      Serial.print("Bolt Invoice received: ");
       Serial.println(boltInvoice);
+      http.end();
+      return true;
     } else {
       Serial.println("Invoice not found in the JSON response.");
+      http.end();
+      return false;
     }
   } else {
-    Serial.print("HTTP GET failed, error: ");
-    Serial.println(httpCode); // Print the HTTP error code
+    // Not ready yet, this is normal - invoice hasn't been generated
     http.end();
-    delay(5000);
-    Serial.print("Waiting for Bolt11: ");
-    Serial.println(ESP.getFreeHeap());
-    getBoltInvoice();
+    return false;
   }
-
-  http.end(); // Close the connection
 }
 
 /**
@@ -2784,6 +2815,133 @@ void startConfigPortal() {
 volatile bool isLoopReading = false;
 
 /**
+ * @brief Handles UI state machine transitions non-blockingly.
+ *
+ * This function processes state transitions based on current state, timestamps,
+ * and user input. It replaces blocking while/delay loops with non-blocking
+ * state checks.
+ */
+void handleUiStateMachine() {
+  unsigned long currentTime = millis();
+  BTNA.read();
+
+  switch (currentUiState) {
+  case UI_LOGO_WAIT: {
+    // Wait for 5 seconds or tap during logo screen
+    // Check both hardware button (BTNA) and touchscreen
+    bool tapDetected = false;
+
+    // Check hardware button first
+    if (BTNA.wasPressed()) {
+      tapDetected = true;
+      Serial.println("Logo tap detected (BTNA) => triggerAp = true");
+    }
+
+    // Also check touchscreen directly (for display touch)
+    uint16_t touchX, touchY;
+    if (lcd.getTouch(&touchX, &touchY)) {
+      tapDetected = true;
+      Serial.print("Logo tap detected (touchscreen) at (");
+      Serial.print(touchX);
+      Serial.print(",");
+      Serial.print(touchY);
+      Serial.println(") => triggerAp = true");
+    }
+
+    if (tapDetected) {
+      triggerAp = true;
+      currentUiState = UI_IDLE;
+    } else if (currentTime - stateEnterTime >= 2000) {
+      currentUiState = UI_IDLE;
+      Serial.println("Logo wait timeout => proceeding");
+    }
+    break;
+  }
+
+  case UI_INSERTING_MONEY:
+    // State is set when bill is detected, handled in main loop
+    // Transition to SHOWING_QR happens when total reached (handled elsewhere)
+    break;
+
+  case UI_SHOWING_QR:
+    // After QR is shown, wait for debounce (1000ms) then transition
+    if (currentTime - stateEnterTime >= 1000) {
+      if (!qrDebounceDone) {
+        qrDebounceDone = true;
+        Serial.println("QR debounce done");
+      }
+      // For Blink, transition to waiting for invoice from proxy server
+      // For LNbits, transition to waiting for tap
+      if (isBlinkFlow) {
+        currentUiState = UI_WAITING_FOR_BLINK_INVOICE;
+        stateEnterTime = currentTime;
+        lastBlinkPollTime = 0; // Reset poll timer
+        Serial.println("State: SHOWING_QR -> WAITING_FOR_BLINK_INVOICE");
+      } else {
+        currentUiState = UI_WAITING_FOR_TAP;
+        stateEnterTime = currentTime;
+        Serial.println("State: SHOWING_QR -> WAITING_FOR_TAP");
+      }
+    }
+    break;
+
+  case UI_WAITING_FOR_BLINK_INVOICE:
+    // Non-blocking polling for Blink invoice from callback URL
+    // Poll every 2 seconds
+    if (currentTime - lastBlinkPollTime >= 2000) {
+      lastBlinkPollTime = currentTime;
+      Serial.println("Polling for Blink invoice...");
+
+      if (checkBoltInvoice()) {
+        // Invoice received! Process it and show thank you screen
+        Serial.println("Blink invoice received => processing payment");
+        getBlinkLnURL(boltInvoice);
+        uiController.deleteQRCodeScreen();
+        createThankYouScreen();
+        lv_task_handler();
+        currentUiState = UI_THANK_YOU;
+        stateEnterTime = millis();
+        isBlinkFlow = false;
+      }
+      // If no invoice yet, continue polling (will check again in 2 seconds)
+    }
+    // Optional: Add timeout (e.g., 5 minutes) to prevent infinite waiting
+    if (currentTime - stateEnterTime >= 300000) { // 5 minutes timeout
+      Serial.println("Blink invoice timeout => restarting");
+      ESP.restart();
+    }
+    break;
+
+  case UI_WAITING_FOR_TAP:
+    // Non-blocking wait for tap after QR code (for LNbits)
+    if (BTNA.wasPressed()) {
+      // Reset for the next transaction
+      coins = 0;
+      bills = 0;
+      total = 0;
+      isInsertingMoney = false;
+      currentUiState = UI_IDLE;
+      Serial.println("Tap detected => resetting and restarting");
+      ESP.restart();
+    }
+    break;
+
+  case UI_THANK_YOU:
+    // After thank you screen, wait then restart
+    if (currentTime - stateEnterTime >= 1200) {
+      Serial.println("Thank you timeout => restarting");
+      ESP.restart();
+    }
+    break;
+
+  case UI_IDLE:
+  default:
+    // Idle state - no special handling needed
+    break;
+  }
+}
+
+/**
  * @brief The main loop function that runs repeatedly in the program.
  *
  * This function is responsible for handling the GUI, checking the balance,
@@ -2794,6 +2952,9 @@ volatile bool isLoopReading = false;
 void loop() {
   lv_timer_handler();    // Let the GUI do its work
   portal.handleClient(); // Already non‑blocking
+
+  // Handle UI state machine
+  handleUiStateMachine();
 
   if (initialCheck) {
     previousMillis =
@@ -2829,8 +2990,9 @@ void loop() {
         if (!isInsertingMoney) {
           createInsertMoneyScreen();
           lv_task_handler();
-          delay(5);
           isInsertingMoney = true;
+          currentUiState = UI_INSERTING_MONEY;
+          stateEnterTime = millis();
         }
         String lastBillString = "Last bill: " + String(billAmountIntOne[i]) +
                                 " " + currencySelected;
@@ -2846,134 +3008,90 @@ void loop() {
       }
     }
   }
-  // Check button release or total
-  BTNA.read();
-  // Serial.print("Waiting for tap 1");
-  if ((BTNA.wasPressed() && total != 0) || total >= maxamountSelected) {
-    // Process the total and reset variables for the next transaction.
-    total = (coins + bills) * 100;
+  // Check button release or total (only if in INSERTING_MONEY state)
+  if (currentUiState == UI_INSERTING_MONEY) {
+    if ((BTNA.wasPressed() && total != 0) || total >= maxamountSelected) {
+      // Process the total and reset variables for the next transaction.
+      total = (coins + bills) * 100;
 
-    Serial.print(F("Total: "));
-    Serial.println(total);
+      Serial.print(F("Total: "));
+      Serial.println(total);
 
-    if (!wifiStatus()) {
-      uiController.deleteInsertMoneyScreen();
-      Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
-      makeLNURL();
-      printHeapStatus();
-      Serial.println("makeLNURL() - LNbits offline: ");
-      showQRCodeLVGL(qrData);
-      Serial.print("showQRCodeLVGL() - LNbits offline: ");
-      Serial.println(qrData);
-      // Turn off machines
-      SerialPort1.write(185);
-      digitalWrite(INHIBITMECH, LOW);
-      Serial.print("Free heap (makeLNURL): ");
-      Serial.println(ESP.getFreeHeap());
-      lv_task_handler();
-      Serial.println("lv_task_handler() - LNbits offline");
-      delay(5);
-    } else {
-      if (paymentService.isBlink(fundingSourceBuffer)) {
+      if (!wifiStatus()) {
         uiController.deleteInsertMoneyScreen();
-        Serial.println("deleteInsertMoneyScreen() - Blink online");
-        createLNURLWithdraw();
-        Serial.println("createLNURLWithdraw() - Blink online");
-        // Display the QR code for online
-        showQRCodeLVGL(lnURLgen);
-        Serial.println("showQRCodeLVGL() - Blink online");
-        lv_task_handler();
-        delay(5);
-        Serial.println("lv_task_handler() - Blink online");
+        Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
+        makeLNURL();
+        printHeapStatus();
+        Serial.println("makeLNURL() - LNbits offline: ");
+        showQRCodeLVGL(qrData);
+        Serial.print("showQRCodeLVGL() - LNbits offline: ");
+        Serial.println(qrData);
         // Turn off machines
         SerialPort1.write(185);
         digitalWrite(INHIBITMECH, LOW);
-        // delay(30000); // Wait for 30 seconds for the user to scan the QR code
-        //  bool waitForTap = true;
-        //  while (waitForTap)
-        //  {
-        //    BTNA.read();
-        //    // Serial.print("Waiting for tap 2");
-        //    if (BTNA.wasReleased())
-        //    {
-        //      waitForTap = false;
-        //      // Reset for the next transaction
-        //      // coins = 0;
-        //      // bills = 0;
-        //      // total = 0;
-        //      // isInsertingMoney = false;
-        //      // Load your main screen or perform any other desired action
-        //      getBoltInvoice();
-        //      getBlinkLnURL(boltInvoice);
-        //   }
-        // }
-        getBoltInvoice();
-        getBlinkLnURL(boltInvoice);
-        uiController.deleteQRCodeScreen();
-        createThankYouScreen();
+        Serial.print("Free heap (makeLNURL): ");
+        Serial.println(ESP.getFreeHeap());
         lv_task_handler();
-        delay(1200);
-        // createMainScreen();
-        ESP.restart();
-      }
-      if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
-        if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
+        Serial.println("lv_task_handler() - LNbits offline");
+        currentUiState = UI_SHOWING_QR;
+        stateEnterTime = millis();
+        qrDebounceDone = false;
+      } else {
+        if (paymentService.isBlink(fundingSourceBuffer)) {
           uiController.deleteInsertMoneyScreen();
-          Serial.println("deleteInsertMoneyScreen() - LNbits online");
-          getLNURL();
-          Serial.println("getLNURL()");
-          delay(1000);
+          Serial.println("deleteInsertMoneyScreen() - Blink online");
+          createLNURLWithdraw();
+          Serial.println("createLNURLWithdraw() - Blink online");
           // Display the QR code for online
           showQRCodeLVGL(lnURLgen);
-          Serial.println("showQRCodeLVGL() - LNbits online");
+          Serial.println("showQRCodeLVGL() - Blink online");
           lv_task_handler();
-          delay(5);
-          Serial.println("lv_task_handler() - LNbits online");
+          Serial.println("lv_task_handler() - Blink online");
           // Turn off machines
           SerialPort1.write(185);
           digitalWrite(INHIBITMECH, LOW);
-        } else {
-          uiController.deleteInsertMoneyScreen();
-          Serial.println("deleteInsertMoneyScreen() - LNbits offline fallback");
-          makeLNURL();
-          showQRCodeLVGL(qrData);
-          lv_task_handler();
-          SerialPort1.write(185);
-          digitalWrite(INHIBITMECH, LOW);
+          currentUiState = UI_SHOWING_QR;
+          stateEnterTime = millis();
+          qrDebounceDone = false;
+          isBlinkFlow = true; // Mark that we're in Blink flow
         }
+        if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+          if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
+            uiController.deleteInsertMoneyScreen();
+            Serial.println("deleteInsertMoneyScreen() - LNbits online");
+            getLNURL();
+            Serial.println("getLNURL()");
+            // Display the QR code for online
+            showQRCodeLVGL(lnURLgen);
+            Serial.println("showQRCodeLVGL() - LNbits online");
+            lv_task_handler();
+            Serial.println("lv_task_handler() - LNbits online");
+            // Turn off machines
+            SerialPort1.write(185);
+            digitalWrite(INHIBITMECH, LOW);
+            currentUiState = UI_SHOWING_QR;
+            stateEnterTime = millis();
+            qrDebounceDone = false;
+          } else {
+            uiController.deleteInsertMoneyScreen();
+            Serial.println(
+                "deleteInsertMoneyScreen() - LNbits offline fallback");
+            makeLNURL();
+            showQRCodeLVGL(qrData);
+            lv_task_handler();
+            SerialPort1.write(185);
+            digitalWrite(INHIBITMECH, LOW);
+            currentUiState = UI_SHOWING_QR;
+            stateEnterTime = millis();
+            qrDebounceDone = false;
+          }
+        }
+        Serial.print("Free heap (showQRCodeLVGL): ");
+        Serial.println(ESP.getFreeHeap());
       }
-      Serial.print("Free heap (showQRCodeLVGL): ");
-      Serial.println(ESP.getFreeHeap());
     }
 
-    // Clear button state and wait a bit to prevent accidental double-tap or
-    // bounce
-    delay(1000);
-    BTNA.read();
-
-    // Now wait for a tap to go back to the main screen or any other action
-    bool waitForTap = true;
-    while (waitForTap) {
-      lv_task_handler();
-      delay(100);
-      BTNA.read();
-      // Serial.print("Waiting for tap 2");
-      if (BTNA.wasPressed()) {
-        waitForTap = false;
-        // Reset for the next transaction
-        coins = 0;
-        bills = 0;
-        total = 0;
-        isInsertingMoney = false;
-        // Load your main screen or perform any other desired action
-        // deleteQRCodeScreen();
-        // deleteAllScreens();
-        // createMainScreen();
-        ESP.restart();
-      }
-    }
+    lv_task_handler(); // Call LVGL task handler
+    yield();           // Yield to other tasks (non-blocking, prevents watchdog)
   }
-
-  lv_task_handler(); // Call LVGL task handler
-  delay(5);          // Small delay to avoid watchdog reset
 }
