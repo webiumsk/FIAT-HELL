@@ -72,17 +72,17 @@ LV_IMG_DECLARE(blink);
 #include "lnbits.c"
 LV_IMG_DECLARE(lnbits);
 
+#include "DeviceState.h"
+#include "SessionState.h"
 #include "services/ConfigService.h"
 #include "services/PaymentService.h"
 #include "services/UiController.h"
 
-std::vector<int> billAmountIntOne;
-std::vector<int> billAmountIntTwo;
-std::vector<int> billAmountIntThree;
+// Global device state (persistent configuration)
+static DeviceState deviceState;
 
-size_t originalSizeOne = 0;
-size_t originalSizeTwo = 0;
-size_t originalSizeThree = 0;
+// Global session state (runtime state)
+static SessionState sessionState;
 
 HTTPClient http; // Declare object of class HTTPClient
 
@@ -92,26 +92,28 @@ HTTPClient http; // Declare object of class HTTPClient
 #define THIRD_FILE "/third.json"
 #define GUI_FILE "/gui.json"
 
-char qrData[256] = {0};         // buffer for QR data
-char password[64] = "changeme"; // default WiFi AP password
-char lnurl[1024] = {0};
-char lnurl2[1024] = {0};
-char lnurl3[1024] = {0};
-char baseURLATM1[256] = {0};
-char baseURLATM[256] = {0}; // will be set from baseURLATM1
-char baseURLATM2[256] = {0};
-char baseURLATM3[256] = {0};
-char secretATM1[256] = {0};
-char secretATM[256] = {0}; // will be set from secretATM1
-char secretATM2[256] = {0};
-char secretATM3[256] = {0};
-char currencyATM[64] = {0};
-char currencyATM2[64] = {0};
-char currencyATM3[64] = {0};
-char currencyOne[64] = {0};
-char currencyTwo[64] = {0};
-char currencyThree[64] = {0};
-char currencySelected[64] = {0}; // will be set from currencyOne
+// Convenience macros for compatibility (point to deviceState/sessionState)
+#define qrData sessionState.qrData
+// Note: password is used in config.password assignment
+// Use deviceState.password directly
+#define lnurl deviceState.lnurl
+#define lnurl2 deviceState.lnurl2
+#define lnurl3 deviceState.lnurl3
+#define baseURLATM1 deviceState.baseURLATM1
+#define baseURLATM sessionState.baseURLATM
+#define baseURLATM2 deviceState.baseURLATM2
+#define baseURLATM3 deviceState.baseURLATM3
+#define secretATM1 deviceState.secretATM1
+#define secretATM sessionState.secretATM
+#define secretATM2 deviceState.secretATM2
+#define secretATM3 deviceState.secretATM3
+// Note: currencyATM, currencyATM2, currencyATM3 are used as struct field names
+// Use deviceState.currencyATM, deviceState.currencyATM2,
+// deviceState.currencyATM3 directly
+#define currencyOne deviceState.currencyOne
+#define currencyTwo deviceState.currencyTwo
+#define currencyThree deviceState.currencyThree
+#define currencySelected sessionState.currencySelected
 
 lv_obj_t *btn1; // Currencies buttons
 lv_obj_t *btn2;
@@ -119,79 +121,77 @@ lv_obj_t *btn3;
 
 lv_obj_t *burnTextLabel;
 
-char atmtitle[64] = "FIAT HELL";
-char atmsubtitle[128] = {0};
-char atmdesc[256] = {0};
-char blinkapikey[128] = {0};
-char blinkwalletid[128] = {0};
+// More convenience macros
+#define atmtitle deviceState.atmtitle
+#define atmsubtitle deviceState.atmsubtitle
+#define atmdesc deviceState.atmdesc
+#define blinkapikey deviceState.blinkapikey
+#define blinkwalletid deviceState.blinkwalletid
+#define lnbitsURL deviceState.lnbitsURL
+#define adminkey deviceState.adminkey
+#define readkey deviceState.readkey
+#define lnURLgen sessionState.lnURLgen
+#define callback sessionState.callback
+#define paymentRequest sessionState.paymentRequest
+// Note: payload, boltInvoice, modifiedLnURLgen are used as local
+// variables/parameters Use sessionState.payload, sessionState.boltInvoice,
+// sessionState.modifiedLnURLgen directly
 
-char lnbitsURL[256] = {0};
-char adminkey[256] = {0};
-char readkey[256] = {0};
-
-char lnURLgen[1024] = {0};
-char modifiedLnURLgen[1024] = {0};
-char callback[1024] = {0};
-char boltInvoice[1024] = {0};
+// Temporary buffers (remain global for now)
 char totalStr[64] = {0};
 
-char paymentRequest[1024] = {0};
-char payload[1024] = {0};
+// Note: fundingSourceBuffer, rateSourceBuffer, enableAnimBuffer are used in
+// sizeof() and strlcpy() Use deviceState.fundingSourceBuffer,
+// deviceState.rateSourceBuffer, deviceState.enableAnimBuffer directly
+#define bills sessionState.bills
+#define coins sessionState.coins
+#define total sessionState.total
+#define maxamount deviceState.maxamount
+#define maxamountSelected sessionState.maxamountSelected
+#define maxamount2 deviceState.maxamount2
+#define maxamount3 deviceState.maxamount3
+#define charge1 deviceState.charge1
+#define charge2 deviceState.charge2
+#define charge3 deviceState.charge3
+#define chargeSelected sessionState.chargeSelected
+#define fiatBalance sessionState.fiatBalance
+#define fiatValue sessionState.fiatValue
+#define tempCharge sessionState.tempCharge
+#define result sessionState.result
+#define isInsertingMoney sessionState.isInsertingMoney
+#define previousMillis sessionState.previousMillis
+#define balanceSats sessionState.balanceSats
+#define initialCheck sessionState.initialCheck
 
-static char fundingSourceBuffer[100] = {
-    0}; // Ensure this buffer is large enough for possible values
-const char *fundingsource = fundingSourceBuffer;
-static char rateSourceBuffer[100] = {
-    0}; // Ensure this buffer is large enough for possible values
-const char *ratesource = rateSourceBuffer;
-static char enableAnimBuffer[100] = {
-    0}; // Ensure this buffer is large enough for possible values
-const char *animated = enableAnimBuffer;
+// Compatibility pointers for const char* usage
+const char *fundingsource = deviceState.fundingSourceBuffer;
+const char *ratesource = deviceState.rateSourceBuffer;
+const char *animated = deviceState.enableAnimBuffer;
 
-int bills;
-float coins;
-float total;
-float maxamount = 100;
-float maxamountSelected = maxamount;
-float maxamount2;
-float maxamount3;
-int charge1;
-int charge2;
-int charge3;
-int chargeSelected = charge1;
-float fiatBalance; // balance in fiat
-float fiatValue;
-float tempCharge;
-long result;
+// UI objects (remain global as they're LVGL objects)
+lv_obj_t *balanceValueLabel = nullptr;
+lv_obj_t *fiatValueLabel = nullptr;
+lv_obj_t *chargeValueLabel = nullptr;
+
+// Temporary buffers
 char buffer[32];
-lv_obj_t *balanceValueLabel =
-    nullptr; // Make this global so you can update it later
-lv_obj_t *fiatValueLabel = nullptr;   // initialize globally
-lv_obj_t *chargeValueLabel = nullptr; // initialize globally
-bool isInsertingMoney = false;
 
 const long interval = 300000; // 5 minutes in milliseconds
-unsigned long previousMillis = 0;
-long balanceSats = 0; // Assuming it's a long or an appropriate type
-bool initialCheck = true;
 
-// UI State Machine
-enum UiState {
-  UI_IDLE,
-  UI_LOGO_WAIT,
-  UI_INSERTING_MONEY,
-  UI_SHOWING_QR,
-  UI_WAITING_FOR_TAP,
-  UI_WAITING_FOR_BLINK_INVOICE,
-  UI_THANK_YOU
-};
+// UI State Machine - now defined in SessionState.h
+#define currentUiState sessionState.currentUiState
+#define stateEnterTime sessionState.stateEnterTime
+#define qrDebounceDone sessionState.qrDebounceDone
+#define isBlinkFlow sessionState.isBlinkFlow
+#define lastBlinkPollTime sessionState.lastBlinkPollTime
 
-UiState currentUiState = UI_IDLE;
-unsigned long stateEnterTime = 0;
-bool qrDebounceDone = false;
-bool isBlinkFlow = false; // Track if we're in Blink payment flow
-unsigned long lastBlinkPollTime =
-    0; // Track last time we polled for Blink invoice
+// Bill acceptor configuration
+#define billAmountIntOne deviceState.billAmountIntOne
+#define billAmountIntTwo deviceState.billAmountIntTwo
+#define billAmountIntThree deviceState.billAmountIntThree
+#define originalSizeOne deviceState.originalSizeOne
+#define originalSizeTwo deviceState.originalSizeTwo
+#define originalSizeThree deviceState.originalSizeThree
 
 const char *graphqlEndpoint = "https://api.blink.sv/graphql";
 const char *primaryApiEndpoint = "https://api.lnbc.sk/v1/lnurl";
@@ -435,7 +435,7 @@ void setup() {
 
     const JsonObject conf0 = conf[0];
     const char *conf0Char = conf0["value"];
-    strlcpy(password, conf0Char, sizeof(password));
+    strlcpy(deviceState.password, conf0Char, sizeof(deviceState.password));
 
     const JsonObject conf1 = conf[1];
     const char *conf1Char = conf1["value"];
@@ -486,7 +486,8 @@ void setup() {
     strlcpy(blinkwalletid, firstCfg.blinkWalletId, sizeof(blinkwalletid));
     strlcpy(baseURLATM1, firstCfg.baseUrl, sizeof(baseURLATM1));
     strlcpy(secretATM1, firstCfg.secret, sizeof(secretATM1));
-    strlcpy(currencyATM, firstCfg.currencyATM, sizeof(currencyATM));
+    strlcpy(deviceState.currencyATM, firstCfg.currencyATM,
+            sizeof(deviceState.currencyATM));
     strlcpy(adminkey, firstCfg.adminKey, sizeof(adminkey));
     strlcpy(readkey, firstCfg.readKey, sizeof(readkey));
     strlcpy(currencyOne, firstCfg.currencyLabel, sizeof(currencyOne));
@@ -520,7 +521,8 @@ void setup() {
     strlcpy(currencyTwo, secondCfg.currencyLabel, sizeof(currencyTwo));
     strlcpy(baseURLATM2, secondCfg.baseUrl, sizeof(baseURLATM2));
     strlcpy(secretATM2, secondCfg.secret, sizeof(secretATM2));
-    strlcpy(currencyATM2, secondCfg.currencyATM, sizeof(currencyATM2));
+    strlcpy(deviceState.currencyATM2, secondCfg.currencyATM,
+            sizeof(deviceState.currencyATM2));
     billAmountIntTwo = secondCfg.billMech;
     maxamount2 = secondCfg.maxAmount;
     charge2 = secondCfg.charge;
@@ -550,7 +552,8 @@ void setup() {
     strlcpy(currencyThree, thirdCfg.currencyLabel, sizeof(currencyThree));
     strlcpy(baseURLATM3, thirdCfg.baseUrl, sizeof(baseURLATM3));
     strlcpy(secretATM3, thirdCfg.secret, sizeof(secretATM3));
-    strlcpy(currencyATM3, thirdCfg.currencyATM, sizeof(currencyATM3));
+    strlcpy(deviceState.currencyATM3, thirdCfg.currencyATM,
+            sizeof(deviceState.currencyATM3));
     billAmountIntThree = thirdCfg.billMech;
     maxamount3 = thirdCfg.maxAmount;
     charge3 = thirdCfg.charge;
@@ -580,23 +583,25 @@ void setup() {
   // Gui page start - use ConfigService to load persisted GUI settings
   if (configService.loadGuiConfig(FlashFS, GUI_FILE, guiConfig)) {
     if (guiConfig.fundingSource[0] != '\0') {
-      strlcpy(fundingSourceBuffer, guiConfig.fundingSource,
-              sizeof(fundingSourceBuffer));
-      fundingsource = fundingSourceBuffer;
+      strlcpy(deviceState.fundingSourceBuffer, guiConfig.fundingSource,
+              sizeof(deviceState.fundingSourceBuffer));
+      fundingsource = deviceState.fundingSourceBuffer;
       Serial.print("fundingsource: ");
-      Serial.println(fundingSourceBuffer);
+      Serial.println(deviceState.fundingSourceBuffer);
     }
 
     if (guiConfig.rateSource[0] != '\0') {
-      strlcpy(rateSourceBuffer, guiConfig.rateSource, sizeof(rateSourceBuffer));
-      ratesource = rateSourceBuffer;
+      strlcpy(deviceState.rateSourceBuffer, guiConfig.rateSource,
+              sizeof(deviceState.rateSourceBuffer));
+      ratesource = deviceState.rateSourceBuffer;
       Serial.print("ratesource: ");
       Serial.println(ratesource);
     }
 
     if (guiConfig.animated[0] != '\0') {
-      strlcpy(enableAnimBuffer, guiConfig.animated, sizeof(enableAnimBuffer));
-      animated = enableAnimBuffer;
+      strlcpy(deviceState.enableAnimBuffer, guiConfig.animated,
+              sizeof(deviceState.enableAnimBuffer));
+      animated = deviceState.enableAnimBuffer;
       Serial.print("animated: ");
       Serial.println(animated);
     }
@@ -714,12 +719,12 @@ void setup() {
   originalSizeThree = billAmountIntThree.size();
 
   // First merge billAmountIntOne and billAmountIntTwo
-  if ((currencyATM2[0] != '\0') || (currencyTwo[0] != '\0')) {
+  if ((deviceState.currencyATM2[0] != '\0') || (currencyTwo[0] != '\0')) {
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntTwo.begin(),
                             billAmountIntTwo.end());
   }
   // Check if currencyATM3 is not empty
-  if ((currencyATM3[0] != '\0') || (currencyThree[0] != '\0')) {
+  if ((deviceState.currencyATM3[0] != '\0') || (currencyThree[0] != '\0')) {
     // Then merge billAmountIntThree into the now-extended billAmountIntOne
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntThree.begin(),
                             billAmountIntThree.end());
@@ -734,7 +739,7 @@ void setup() {
   config.autoReconnect = true;
   config.autoRise = false; // set dynamically during startup based on mode
   config.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  config.psk = password; // Password for AP
+  config.psk = deviceState.password; // Password for AP
   config.menuItems =
       AC_MENUITEM_CONFIGNEW | AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET;
   config.title = "LN ATM";
@@ -742,8 +747,8 @@ void setup() {
   config.immediateStart =
       false; // If we don't have WiFi saved, it will start AP
   // To define a username/password for the Basic Auth portal, you can use:
-  config.username = password;
-  config.password = password;
+  config.username = deviceState.password;
+  config.password = deviceState.password;
 
   // Register all Aux pages to the portal
   portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
@@ -797,15 +802,16 @@ void setup() {
   /***  Starting AutoConnect - connection attempt or AP (portal)         ***/
   /**************************************************************************/
 
-  const bool isBlinkMode = (strcmp(fundingSourceBuffer, "Blink") == 0);
+  const bool isBlinkMode =
+      (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0);
   const bool wifiRequired = isBlinkMode;
   const bool userWantsPortal = triggerAp; // tap during logo window
 
   const bool apiDataMissing =
-      ((strcmp(fundingSourceBuffer, "LNbits") == 0 &&
-        (currencyATM[0] == '\0' || adminkey[0] == '\0' ||
+      ((strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 &&
+        (deviceState.currencyATM[0] == '\0' || adminkey[0] == '\0' ||
          readkey[0] == '\0')) ||
-       (strcmp(fundingSourceBuffer, "Blink") == 0 &&
+       (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0 &&
         (blinkapikey[0] == '\0' || blinkwalletid[0] == '\0')) ||
        (currencyOne[0] == '\0'));
 
@@ -1129,7 +1135,7 @@ void createAPIScreen() {
  * message.
  */
 void checkNetworkAndDeviceStatus() {
-  if (paymentService.isBlink(fundingSourceBuffer)) {
+  if (paymentService.isBlink(deviceState.fundingSourceBuffer)) {
     if (!wifiStatus()) {
       Serial.println("No network connection available. Checking again soon...");
       // Optionally, trigger a screen update or indicator that network is
@@ -1137,8 +1143,8 @@ void checkNetworkAndDeviceStatus() {
       SerialPort1.write(185);
       digitalWrite(INHIBITMECH, LOW);
     }
-  } else if (strcmp(fundingSourceBuffer, "LNbits") == 0 &&
-             (currencyATM[0] == '\0' || adminkey[0] == '\0' ||
+  } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 &&
+             (deviceState.currencyATM[0] == '\0' || adminkey[0] == '\0' ||
               readkey[0] == '\0')) {
     if (!wifiStatus()) {
       Serial.println("Network not needed, but missing data for LNbits...");
@@ -1152,7 +1158,7 @@ void checkNetworkAndDeviceStatus() {
  * @return true if the funding source is LNbits, false otherwise.
  */
 bool isLNbits() {
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
     return true;
   } else {
     return false;
@@ -1282,9 +1288,9 @@ void setCurrency(const char *newCurrency, bool skipInhibit = false) {
 }
 
 void checkPrice() {
-  if (strcmp(rateSourceBuffer, "ExchangeApi") == 0) {
+  if (strcmp(deviceState.rateSourceBuffer, "ExchangeApi") == 0) {
     checkPriceExchangeApi();
-  } else if (strcmp(rateSourceBuffer, "Coingecko") == 0) {
+  } else if (strcmp(deviceState.rateSourceBuffer, "Coingecko") == 0) {
     checkPriceCoinGecko();
   }
 }
@@ -1297,11 +1303,12 @@ void checkPriceCoinGecko() {
 
   if (httpCode == 200 || httpCode == 201) // Check the returning code
   {
-    String payload = http.getString(); // Get the request response payload
-    // Serial.println(payload);
+    String responsePayload =
+        http.getString(); // Get the request response payload
+    // Serial.println(responsePayload);
     //  Parse JSON
     DynamicJsonDocument doc(1024);
-    deserializeJson(doc, payload);
+    deserializeJson(doc, responsePayload);
 
     String tempCurrency = currencySelected;
     tempCurrency.toLowerCase();
@@ -1324,12 +1331,12 @@ void checkPriceExchangeApi() {
   int httpResponseCode = http.GET();
 
   if (httpResponseCode == 200 || httpResponseCode == 201) {
-    String payload = http.getString();
-    Serial.println(payload);
+    String responsePayload = http.getString();
+    Serial.println(responsePayload);
 
     DynamicJsonDocument doc(
         16384); // Increased buffer size for large JSON response
-    DeserializationError error = deserializeJson(doc, payload);
+    DeserializationError error = deserializeJson(doc, responsePayload);
 
     String tempCurrency = currencySelected;
     tempCurrency.toLowerCase();
@@ -1369,32 +1376,32 @@ void checkPriceExchangeApi() {
  * the corresponding fiat currency value.
  */
 void checkBalance() {
-  if (strcmp(currencySelected, currencyATM) == 0 ||
+  if (strcmp(currencySelected, deviceState.currencyATM) == 0 ||
       strcmp(currencySelected, currencyOne) == 0) {
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
       strlcpy(baseURLATM, baseURLATM1, sizeof(baseURLATM));
       strlcpy(secretATM, secretATM1, sizeof(secretATM));
     }
     chargeSelected = charge1;
     maxamountSelected = maxamount;
-  } else if (strcmp(currencySelected, currencyATM2) == 0 ||
+  } else if (strcmp(currencySelected, deviceState.currencyATM2) == 0 ||
              strcmp(currencySelected, currencyTwo) == 0) {
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
       strlcpy(baseURLATM, baseURLATM2, sizeof(baseURLATM));
       strlcpy(secretATM, secretATM2, sizeof(secretATM));
     }
     chargeSelected = charge2;
     maxamountSelected = maxamount2;
-  } else if (strcmp(currencySelected, currencyATM3) == 0 ||
+  } else if (strcmp(currencySelected, deviceState.currencyATM3) == 0 ||
              strcmp(currencySelected, currencyThree) == 0) {
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
       strlcpy(baseURLATM, baseURLATM3, sizeof(baseURLATM));
       strlcpy(secretATM, secretATM3, sizeof(secretATM));
     }
     chargeSelected = charge3;
     maxamountSelected = maxamount3;
   }
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
     http.begin(String(lnbitsURL) +
                "/api/v1/wallet");         // Specify request destination
     http.addHeader("X-Api-Key", readkey); // Specify API key header
@@ -1402,12 +1409,13 @@ void checkBalance() {
     int httpCode = http.GET(); // Send the request
 
     if (httpCode == 200 || httpCode == 201) { // Check the returning code
-      String payloadon = http.getString(); // Get the request response payload
-      Serial.println(payloadon);
+      String responsePayload =
+          http.getString(); // Get the request response payload
+      Serial.println(responsePayload);
 
       // Parse JSON
       DynamicJsonDocument doc(1024);
-      deserializeJson(doc, payloadon);
+      deserializeJson(doc, responsePayload);
 
       // Get balance from parsed JSON
       balanceSats = doc["balance"];
@@ -1441,7 +1449,7 @@ void checkBalance() {
       Serial.print(F("Error (checkBalance): "));
       Serial.println(httpCode);
     }
-  } else if (strcmp(fundingSourceBuffer, "Blink") == 0) {
+  } else if (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0) {
     http.begin(graphqlEndpoint); // API endpoint
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-API-KEY", String(blinkapikey)); // Correct API key header
@@ -1484,7 +1492,8 @@ void checkBalance() {
     if (httpCode == 200) {
       JsonObject me = respDoc["data"]["me"]["defaultAccount"]["wallets"]
                              [0]; // Assuming you want the first wallet
-      String blinkwalletid = me["id"].as<String>();
+      String walletIdStr = me["id"].as<String>();
+      strlcpy(blinkwalletid, walletIdStr.c_str(), sizeof(blinkwalletid));
       String walletCurrency = me["walletCurrency"].as<String>();
       balanceSats = me["balance"];
 
@@ -1550,7 +1559,7 @@ static void btn1_event_handler(lv_event_t *e) {
     setCurrency(currencyOne);
 
     // Update config variables
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
       strlcpy(baseURLATM, baseURLATM1, sizeof(baseURLATM));
       strlcpy(secretATM, secretATM1, sizeof(secretATM));
     }
@@ -1570,6 +1579,10 @@ static void btn1_event_handler(lv_event_t *e) {
     // Update screen with new values after they're fetched
     createCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected);
     lv_task_handler();
+
+    // Enable acceptor only after currency is set, price and balance are loaded,
+    // and inhibit channels are configured
+    enableAcceptor();
 
     Serial.print("Currency set to ");
     Serial.println(currencyOne);
@@ -1602,7 +1615,7 @@ static void btn2_event_handler(lv_event_t *e) {
     setCurrency(currencyTwo);
 
     // Update config variables
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
       strlcpy(baseURLATM, baseURLATM2, sizeof(baseURLATM));
       strlcpy(secretATM, secretATM2, sizeof(secretATM));
     }
@@ -1621,6 +1634,10 @@ static void btn2_event_handler(lv_event_t *e) {
     // Update screen with new values after they're fetched
     createCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected);
     lv_task_handler();
+
+    // Enable acceptor only after currency is set, price and balance are loaded,
+    // and inhibit channels are configured
+    enableAcceptor();
 
     Serial.print("Currency set to ");
     Serial.println(currencyTwo);
@@ -1643,7 +1660,7 @@ static void btn3_event_handler(lv_event_t *e) {
     setCurrency(currencyThree);
 
     // Update config variables
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
       strlcpy(baseURLATM, baseURLATM3, sizeof(baseURLATM));
       strlcpy(secretATM, secretATM3, sizeof(secretATM));
     }
@@ -1662,6 +1679,10 @@ static void btn3_event_handler(lv_event_t *e) {
     // Update screen with new values after they're fetched
     createCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected);
     lv_task_handler();
+
+    // Enable acceptor only after currency is set, price and balance are loaded,
+    // and inhibit channels are configured
+    enableAcceptor();
 
     Serial.print("Currency set to ");
     Serial.println(currencyThree);
@@ -1936,10 +1957,10 @@ void createMainScreen() {
   lv_obj_align(img_lnbits, LV_ALIGN_TOP_LEFT, 10, 10);
   lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
 
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
     lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-  } else if (strcmp(fundingSourceBuffer, "Blink") == 0) {
+  } else if (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0) {
     lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
   }
@@ -1997,11 +2018,13 @@ void createCurrencyScreen(const char *currency, float rate, float balance,
 
   lv_scr_load(screen_currency);
 
-  enableAcceptor(); // Enable the acceptor and uninhibit currencies
+  // Note: enableAcceptor() is now called in button handlers after all data is
+  // loaded
 }
 
 void enableAcceptor() {
-  if (paymentService.isBlink(fundingSourceBuffer) && (!wifiStatus())) {
+  if (paymentService.isBlink(deviceState.fundingSourceBuffer) &&
+      (!wifiStatus())) {
     Serial.println("Error: Blink API is selected but the device is offline");
     return;
   } else {
@@ -2087,13 +2110,14 @@ static void switch_animation_event_handler(lv_event_t *e) {
   lv_obj_t *switch_obj = lv_event_get_target(e);
   if (code == LV_EVENT_VALUE_CHANGED) {
     if (lv_obj_has_state(switch_obj, LV_STATE_CHECKED)) {
-      strcpy(enableAnimBuffer, "Yes");
+      strcpy(deviceState.enableAnimBuffer, "Yes");
     } else {
-      strcpy(enableAnimBuffer, "No");
+      strcpy(deviceState.enableAnimBuffer, "No");
     }
-    strlcpy(guiConfig.animated, enableAnimBuffer, sizeof(guiConfig.animated));
+    strlcpy(guiConfig.animated, deviceState.enableAnimBuffer,
+            sizeof(guiConfig.animated));
     Serial.print("Animation enabled: ");
-    Serial.println(enableAnimBuffer);
+    Serial.println(deviceState.enableAnimBuffer);
     // Save the updated setting to JSON
     configService.saveGuiConfig(FlashFS, GUI_FILE, guiConfig);
   }
@@ -2288,9 +2312,9 @@ bool checkBoltInvoice() {
 
     const char *inv = doc["invoice"];
     if (inv && strlen(inv) > 0) {
-      strlcpy(boltInvoice, inv, sizeof(boltInvoice));
+      strlcpy(sessionState.boltInvoice, inv, sizeof(sessionState.boltInvoice));
       Serial.print("Bolt Invoice received: ");
-      Serial.println(boltInvoice);
+      Serial.println(sessionState.boltInvoice);
       http.end();
       return true;
     } else {
@@ -2313,7 +2337,7 @@ bool checkBoltInvoice() {
  * @param boltInvoice The Bolt invoice to be sent as part of the request
  * payload.
  */
-void getBlinkLnURL(const char *boltInvoice) {
+void getBlinkLnURL(const char *invoice) {
   http.begin(graphqlEndpoint); // Initialize with the API endpoint
   http.addHeader("Content-Type", "application/json"); // Set content type
   http.addHeader("X-API-KEY",
@@ -2336,7 +2360,7 @@ void getBlinkLnURL(const char *boltInvoice) {
   DynamicJsonDocument doc(1024);
   doc["query"] = graphqlQuery;
   doc["variables"]["input"]["walletId"] = blinkwalletid;
-  doc["variables"]["input"]["paymentRequest"] = boltInvoice;
+  doc["variables"]["input"]["paymentRequest"] = invoice;
   doc["variables"]["input"]["memo"] = "LightningATM payout";
 
   String requestBody;
@@ -2347,7 +2371,7 @@ void getBlinkLnURL(const char *boltInvoice) {
   String responsePayload = http.getString(); // Get the response payload
 
   Serial.print("Modified LNURL: ");
-  Serial.println(modifiedLnURLgen);
+  Serial.println(sessionState.modifiedLnURLgen);
   Serial.print("HTTP Status Code: ");
   Serial.println(httpCode);
   Serial.print("Response Payload: ");
@@ -2420,19 +2444,20 @@ void createLNURLWithdraw() {
   }
 
   if (httpCode == 200 || httpCode == 201) {
-    String payload = http.getString();
+    String responsePayload = http.getString();
     Serial.print("Blink payload: ");
-    Serial.println(payload);
+    Serial.println(responsePayload);
     // Parse JSON
     DynamicJsonDocument doc(1024);
-    deserializeJson(doc, payload);
+    deserializeJson(doc, responsePayload);
 
     // Get balance from parsed JSON
     strlcpy(lnURLgen, doc["lnurl"] | "", sizeof(lnURLgen));
     if (strlen(lnURLgen) > 10) {
-      strlcpy(modifiedLnURLgen, lnURLgen + 10, sizeof(modifiedLnURLgen));
+      strlcpy(sessionState.modifiedLnURLgen, lnURLgen + 10,
+              sizeof(sessionState.modifiedLnURLgen));
     } else {
-      modifiedLnURLgen[0] = '\0';
+      sessionState.modifiedLnURLgen[0] = '\0';
     }
     strlcpy(callback, doc["callback"] | "", sizeof(callback));
   } else {
@@ -2583,7 +2608,7 @@ void getLNURL() {
   // \" + result + \", \"max_withdrawable\": \" + result + \" , \"uses\": \"1\",
   // \"wait_time\": \"1\", \"is_unique\": \"true\", \"webhook_url\": \"\"}"); //
   // Send the request
-  String payloadon = http.getString(); // Get the response payload
+  String responsePayload = http.getString(); // Get the response payload
 
   // Serial.println(httpCode);   // Print HTTP return code
   Serial.print("Temp: ");
@@ -2593,18 +2618,19 @@ void getLNURL() {
   Serial.print("ResultSTR: ");
   Serial.println(resultStr);
   Serial.print("Payload: ");
-  Serial.println(payloadon); // Print request response payload
+  Serial.println(responsePayload); // Print request response payload
 
   // Parse JSON
   DynamicJsonDocument doc(1024);
-  deserializeJson(doc, payloadon);
+  deserializeJson(doc, responsePayload);
 
   // Get balance from parsed JSON
   strlcpy(lnURLgen, doc["lnurl"] | "", sizeof(lnURLgen));
 
   Serial.print("LNURL: ");
   Serial.println(lnURLgen);
-  strlcpy(modifiedLnURLgen, lnURLgen, sizeof(modifiedLnURLgen));
+  strlcpy(sessionState.modifiedLnURLgen, lnURLgen,
+          sizeof(sessionState.modifiedLnURLgen));
 
   http.end(); // Close connection
   // lv_task_handler();
@@ -2784,7 +2810,7 @@ void showQRCodeLVGL(const char *data) {
     return;
   }
 
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
     lv_label_set_text(label, "TAP ON SCREEN WHEN FINISHED");
   } else {
     lv_label_set_text(label, "SCAN AND WAIT FOR CONFIRMATION");
@@ -2942,7 +2968,7 @@ void handleUiStateMachine() {
       if (checkBoltInvoice()) {
         // Invoice received! Process it and show thank you screen
         Serial.println("Blink invoice received => processing payment");
-        getBlinkLnURL(boltInvoice);
+        getBlinkLnURL(sessionState.boltInvoice);
         uiController.deleteQRCodeScreen();
         createThankYouScreen();
         lv_task_handler();
@@ -3045,7 +3071,8 @@ void loop() {
                                 " " + currencySelected;
         String totalString = "Total: " + String(total) + " " + currencySelected;
         String maxString = "MAX: " + String(maxamountSelected) + " " +
-                           currencySelected + " from " + fundingSourceBuffer;
+                           currencySelected + " from " +
+                           deviceState.fundingSourceBuffer;
 
         lv_label_set_text(labelLastInserted, lastBillString.c_str());
         lv_label_set_text(labelTotalAmount, totalString.c_str());
@@ -3084,7 +3111,7 @@ void loop() {
         stateEnterTime = millis();
         qrDebounceDone = false;
       } else {
-        if (paymentService.isBlink(fundingSourceBuffer)) {
+        if (paymentService.isBlink(deviceState.fundingSourceBuffer)) {
           uiController.deleteInsertMoneyScreen();
           Serial.println("deleteInsertMoneyScreen() - Blink online");
           createLNURLWithdraw();
@@ -3102,7 +3129,7 @@ void loop() {
           qrDebounceDone = false;
           isBlinkFlow = true; // Mark that we're in Blink flow
         }
-        if (strcmp(fundingSourceBuffer, "LNbits") == 0) {
+        if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
           if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
             uiController.deleteInsertMoneyScreen();
             Serial.println("deleteInsertMoneyScreen() - LNbits online");
