@@ -1,9 +1,11 @@
-//= == == == == == == == == == == == == == == == == == == == == == == == == == == == = //
+//= == == == == == == == == == == == == == == == == == == == == == == == == ==
+//== == = //
 //============EDIT IF USING DIFFERENT HARDWARE============//
 //========================================================//
 // v0.1
 
-bool format = false; // true for formatting FOSSA memory, use once, then make false and reflash
+bool format = false; // true for formatting FOSSA memory, use once, then make
+                     // false and reflash
 
 #define BTN1 39 // Screen tap button
 
@@ -23,40 +25,37 @@ bool format = false; // true for formatting FOSSA memory, use once, then make fa
 #include <LovyanGFX.hpp> // main library
 static LGFX lcd;         // declare display variable
 
-#include <lvgl.h>
 #include "lv_conf.h"
 #include "lv_font_montserrat_bold_60.c"
 #include "lv_font_the_bold_48.c"
-lv_color_t colors[] = {
-    LV_COLOR_PURPLE,
-    LV_COLOR_RED,
-    LV_COLOR_ORANGE,
-    LV_COLOR_YELLOW,
-    LV_COLOR_GREEN,
-    LV_COLOR_BLUE};
+#include <lvgl.h>
 
-#include <WiFi.h>
-#include <WebServer.h>
+lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_ORANGE,
+                       LV_COLOR_YELLOW, LV_COLOR_GREEN, LV_COLOR_BLUE};
+
 #include <FS.h>
 #include <SPIFFS.h>
+#include <WebServer.h>
+#include <WiFi.h>
 #include <Wire.h>
+
 using WebServerClass = WebServer;
 fs::SPIFFSFS &FlashFS = SPIFFS;
 #define FORMAT_ON_FAIL true
 
 #include <AutoConnect.h>
 #define AUTOCONNECT_USE_LOG 1
-#include <SPI.h>
-#include <HardwareSerial.h>
 #include <ArduinoJson.h>
+#include <HardwareSerial.h>
 #include <JC_Button.h>
+#include <SPI.h>
 
-#include <Hash.h>
 #include <Bitcoin.h>
 #include <HTTPClient.h>
+#include <Hash.h>
 
-#include <vector>
 #include <iostream>
+#include <vector>
 
 #include <cstring> // For memset
 char Buf[200];     // Buffer for the encrypted data
@@ -73,13 +72,17 @@ LV_IMG_DECLARE(blink);
 #include "lnbits.c"
 LV_IMG_DECLARE(lnbits);
 
-std::vector<int> billAmountIntOne;
-std::vector<int> billAmountIntTwo;
-std::vector<int> billAmountIntThree;
+#include "DeviceState.h"
+#include "SessionState.h"
+#include "services/ConfigService.h"
+#include "services/PaymentService.h"
+#include "services/UiController.h"
 
-size_t originalSizeOne = 0;
-size_t originalSizeTwo = 0;
-size_t originalSizeThree = 0;
+// Global device state (persistent configuration)
+static DeviceState deviceState;
+
+// Global session state (runtime state)
+static SessionState sessionState;
 
 HTTPClient http; // Declare object of class HTTPClient
 
@@ -89,93 +92,120 @@ HTTPClient http; // Declare object of class HTTPClient
 #define THIRD_FILE "/third.json"
 #define GUI_FILE "/gui.json"
 
-String qrData;
-String password = "changeme"; // default WiFi AP password
-String lnurl;
-String lnurl2;
-String lnurl3;
-String baseURLATM1;
-String baseURLATM = baseURLATM1;
-String baseURLATM2;
-String baseURLATM3;
-String secretATM1;
-String secretATM = secretATM1;
-String secretATM2;
-String secretATM3;
-String currencyATM;
-String currencyATM2;
-String currencyATM3;
-String currencyOne;
-String currencyTwo;
-String currencyThree;
-String currencySelected = currencyOne;
+// Convenience macros for compatibility (point to deviceState/sessionState)
+#define qrData sessionState.qrData
+// Note: password is used in config.password assignment
+// Use deviceState.password directly
+#define lnurl deviceState.lnurl
+#define lnurl2 deviceState.lnurl2
+#define lnurl3 deviceState.lnurl3
+#define baseURLATM1 deviceState.baseURLATM1
+#define baseURLATM sessionState.baseURLATM
+#define baseURLATM2 deviceState.baseURLATM2
+#define baseURLATM3 deviceState.baseURLATM3
+#define secretATM1 deviceState.secretATM1
+#define secretATM sessionState.secretATM
+#define secretATM2 deviceState.secretATM2
+#define secretATM3 deviceState.secretATM3
+// Note: currencyATM, currencyATM2, currencyATM3 are used as struct field names
+// Use deviceState.currencyATM, deviceState.currencyATM2,
+// deviceState.currencyATM3 directly
+#define currencyOne deviceState.currencyOne
+#define currencyTwo deviceState.currencyTwo
+#define currencyThree deviceState.currencyThree
+#define currencySelected sessionState.currencySelected
 
 lv_obj_t *btn1; // Currencies buttons
 lv_obj_t *btn2;
 lv_obj_t *btn3;
 
-lv_obj_t *burnTextLabel; 
+lv_obj_t *burnTextLabel;
 
-String atmtitle = "FIAT HELL";
-String atmsubtitle;
-String atmdesc = "";
-String blinkapikey;
-String blinkwalletid;
+// More convenience macros
+#define atmtitle deviceState.atmtitle
+#define atmsubtitle deviceState.atmsubtitle
+#define atmdesc deviceState.atmdesc
+#define blinkapikey deviceState.blinkapikey
+#define blinkwalletid deviceState.blinkwalletid
+#define lnbitsURL deviceState.lnbitsURL
+#define adminkey deviceState.adminkey
+#define readkey deviceState.readkey
+#define lnURLgen sessionState.lnURLgen
+#define callback sessionState.callback
+#define paymentRequest sessionState.paymentRequest
+// Note: payload, boltInvoice, modifiedLnURLgen are used as local
+// variables/parameters Use sessionState.payload, sessionState.boltInvoice,
+// sessionState.modifiedLnURLgen directly
 
-String lnbitsURL;
-String adminkey;
-String readkey;
+// Temporary buffers (remain global for now)
+char totalStr[64] = {0};
 
-String lnURLgen;
-String modifiedLnURLgen;
-String callback;
-String boltInvoice;
-String totalStr;
+// Note: fundingSourceBuffer, rateSourceBuffer, enableAnimBuffer are used in
+// sizeof() and strlcpy() Use deviceState.fundingSourceBuffer,
+// deviceState.rateSourceBuffer, deviceState.enableAnimBuffer directly
+#define bills sessionState.bills
+#define coins sessionState.coins
+#define total sessionState.total
+#define maxamount deviceState.maxamount
+#define maxamountSelected sessionState.maxamountSelected
+#define maxamount2 deviceState.maxamount2
+#define maxamount3 deviceState.maxamount3
+#define charge1 deviceState.charge1
+#define charge2 deviceState.charge2
+#define charge3 deviceState.charge3
+#define chargeSelected sessionState.chargeSelected
+#define fiatBalance sessionState.fiatBalance
+#define fiatValue sessionState.fiatValue
+#define tempCharge sessionState.tempCharge
+#define result sessionState.result
+#define isInsertingMoney sessionState.isInsertingMoney
+#define previousMillis sessionState.previousMillis
+#define balanceSats sessionState.balanceSats
+#define initialCheck sessionState.initialCheck
 
-String paymentRequest;
-String payload;
+// Compatibility pointers for const char* usage
+const char *fundingsource = deviceState.fundingSourceBuffer;
+const char *ratesource = deviceState.rateSourceBuffer;
+const char *animated = deviceState.enableAnimBuffer;
 
-static char fundingSourceBuffer[100] = {0}; // Ensure this buffer is large enough for possible values
-const char *fundingsource = fundingSourceBuffer;
-static char rateSourceBuffer[100] = {0}; // Ensure this buffer is large enough for possible values
-const char *ratesource = rateSourceBuffer;
-static char enableAnimBuffer[100] = {0}; // Ensure this buffer is large enough for possible values
-const char *animated = enableAnimBuffer;
+// UI objects (remain global as they're LVGL objects)
+lv_obj_t *balanceValueLabel = nullptr;
+lv_obj_t *fiatValueLabel = nullptr;
+lv_obj_t *chargeValueLabel = nullptr;
 
-int bills;
-float coins;
-float total;
-float maxamount = 100;
-float maxamountSelected = maxamount;
-float maxamount2;
-float maxamount3;
-int charge1;
-int charge2;
-int charge3;
-int chargeSelected = charge1;
-float fiatBalance; // balance in fiat
-float fiatValue;
-float tempCharge;
-long result;
+// Temporary buffers
 char buffer[32];
-lv_obj_t *balanceValueLabel = nullptr; // Make this global so you can update it later
-lv_obj_t *fiatValueLabel = nullptr;    // initialize globally
-lv_obj_t *chargeValueLabel = nullptr;  // initialize globally
-bool isInsertingMoney = false;
 
 const long interval = 300000; // 5 minutes in milliseconds
-unsigned long previousMillis = 0;
-long balanceSats = 0; // Assuming it's a long or an appropriate type
-bool initialCheck = true;
+
+// UI State Machine - now defined in SessionState.h
+#define currentUiState sessionState.currentUiState
+#define stateEnterTime sessionState.stateEnterTime
+#define qrDebounceDone sessionState.qrDebounceDone
+#define isBlinkFlow sessionState.isBlinkFlow
+#define lastBlinkPollTime sessionState.lastBlinkPollTime
+
+// Bill acceptor configuration
+#define billAmountIntOne deviceState.billAmountIntOne
+#define billAmountIntTwo deviceState.billAmountIntTwo
+#define billAmountIntThree deviceState.billAmountIntThree
+#define originalSizeOne deviceState.originalSizeOne
+#define originalSizeTwo deviceState.originalSizeTwo
+#define originalSizeThree deviceState.originalSizeThree
 
 const char *graphqlEndpoint = "https://api.blink.sv/graphql";
 const char *primaryApiEndpoint = "https://api.lnbc.sk/v1/lnurl";
 const char *secondaryApiEndpoint = "https://api.lnurlproxy.me/v1/lnurl";
-const String coingeckoConversionAPI = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=";
-const String exchangeapiConversionAPI = "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/btc.json"; // https://github.com/fawazahmed0/exchange-api
+const String coingeckoConversionAPI =
+    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=";
+const String exchangeapiConversionAPI =
+    "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/"
+    "currencies/btc.json"; // https://github.com/fawazahmed0/exchange-api
 const String cuexConversionAPI = "https://api.cuex.com/v1/exchanges/btc";
-const String cuexApiKey = "3b71e5d431b2331acb65f2d484d423e5"; // Replace with your actual API key
-const String alternativeConversionAPI = "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=";
+const String cuexApiKey =
+    "3b71e5d431b2331acb65f2d484d423e5"; // Replace with your actual API key
+const String alternativeConversionAPI =
+    "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=";
 
 WiFiClientSecure secureClient;
 
@@ -184,14 +214,24 @@ HardwareSerial SerialPort2(2);
 
 Button BTNA(BTN1);
 
-lv_obj_t *screen_logo, *screen_portal, *screen_api, *screen_thx, *screen_main, *screen_insert_money, *screen_qr, *screen_currency;
+lv_obj_t *screen_logo, *screen_portal, *screen_api, *screen_thx, *screen_main,
+    *screen_insert_money, *screen_qr, *screen_currency;
 lv_obj_t *labelbtn;
 lv_obj_t *fiathell;
 lv_obj_t *labelLastInserted = nullptr;
 lv_obj_t *labelTotalAmount = nullptr;
 lv_obj_t *labelMaxAmount = nullptr;
+lv_obj_t *wait_label = nullptr; // Status label on currency screen
+//lv_obj_t *btn_reset = nullptr;   // Back button on currency screen
 
 lv_obj_t *loadingLabel;
+
+static GuiConfig guiConfig;
+static ConfigService configService;
+static PaymentService paymentService;
+static UiController uiController(screen_logo, screen_portal, screen_api,
+                                 screen_thx, screen_main, screen_insert_money,
+                                 screen_qr, screen_currency);
 
 // Switch fundingsource
 lv_obj_t *switch_label;
@@ -202,8 +242,7 @@ lv_obj_t *anim_label;
 lv_obj_t *img_blink;
 lv_obj_t *img_lnbits;
 
-void checkStackUsage()
-{
+void checkStackUsage() {
   UBaseType_t highWaterMark = uxTaskGetStackHighWaterMark(NULL);
   Serial.printf("Stack high water mark: %u bytes\n", highWaterMark);
 }
@@ -216,11 +255,11 @@ bool triggerAp = false;
 
 String content = "<h1>ATM Access-point</br>For easy variable setting</h1>";
 
-#include "pageone.h"
 #include "pagefirst.h"
+#include "pagegui.h"
+#include "pageone.h"
 #include "pagesecond.h"
 #include "pagethird.h"
-#include "pagegui.h"
 
 WebServerClass server;
 AutoConnect portal(server);
@@ -252,19 +291,16 @@ static int32_t x, y;
 #endif
 
 /*** Function declaration ***/
-void display_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p);
+void display_flush(lv_disp_drv_t *disp, const lv_area_t *area,
+                   lv_color_t *color_p);
 void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data);
 void createLogoScreen();
-void deleteLogoScreen();
 void createPortalScreen();
 void createAPIScreen();
 void createMainScreen();
-void deleteMainScreen();
-void createCurrencyScreen(const String &currency, float rate, float balance, float charge);
-void deleteCurrencyScreen();
+void createCurrencyScreen(const char *currency, float rate, float balance,
+                          float charge);
 void createInsertMoneyScreen();
-void deleteInsertMoneyScreen();
-void deleteAllScreens();
 void createSwitch(lv_obj_t *parent);
 void lv_button_currency();
 void updateBurnText();
@@ -273,18 +309,19 @@ void checkPrice();
 void checkPriceCoinGecko();
 void checkPriceExchangeApi();
 void checkBalance();
-bool isBlink();
 bool isLNbits();
 bool wifiStatus();
 void showQRCodeLVGL(const char *data);
-int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen, uint8_t *nonce, size_t nonce_len, uint64_t pin, uint64_t amount_in_cents);
+int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen,
+                uint8_t *nonce, size_t nonce_len, uint64_t pin,
+                uint64_t amount_in_cents);
 
 void checkNetworkAndDeviceStatus();
 void startConfigPortal();
-void btn_back_event_handler(lv_event_t *e);
-static void saveSettingsToFile();
+//void btn_reset_event_handler(lv_event_t *e);
+void handleUiStateMachine();
 
-void createBackButton(lv_obj_t *parent);
+//void createResetButton(lv_obj_t *parent);
 void printHeapStatus();
 void createLoadingIndicator();
 void showLoadingIndicator();
@@ -292,22 +329,21 @@ void hideLoadingIndicator();
 void enableAcceptor();
 
 /**
- * @brief The String class provides a way to manipulate and store strings of text in Arduino.
+ * @brief The String class provides a way to manipulate and store strings of
+ * text in Arduino.
  *
- * The String class enables you to work with strings of text in Arduino sketches. It provides various methods
- * for manipulating and accessing string data. The String class is based on the C++ `String` class and provides
+ * The String class enables you to work with strings of text in Arduino
+ * sketches. It provides various methods for manipulating and accessing string
+ * data. The String class is based on the C++ `String` class and provides
  * similar functionality.
  */
-String getValue(String data, char separator, int index)
-{
+String getValue(String data, char separator, int index) {
   int found = 0;
   int strIndex[] = {0, -1};
   const int maxIndex = data.length() - 1;
 
-  for (int i = 0; i <= maxIndex && found <= index; i++)
-  {
-    if (data.charAt(i) == separator || i == maxIndex)
-    {
+  for (int i = 0; i <= maxIndex && found <= index; i++) {
+    if (data.charAt(i) == separator || i == maxIndex) {
       found++;
       strIndex[0] = strIndex[1] + 1;
       strIndex[1] = (i == maxIndex) ? i + 1 : i;
@@ -317,19 +353,15 @@ String getValue(String data, char separator, int index)
   return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
 }
 
-void to_upper(char *arr)
-{
-  for (size_t i = 0; i < strlen(arr); i++)
-  {
-    if (arr[i] >= 'a' && arr[i] <= 'z')
-    {
+void to_upper(char *arr) {
+  for (size_t i = 0; i < strlen(arr); i++) {
+    if (arr[i] >= 'a' && arr[i] <= 'z') {
       arr[i] = arr[i] - 'a' + 'A';
     }
   }
 }
 
-void setup()
-{
+void setup() {
   /*********************/
   /*** Init display ***/
   /*********************/
@@ -337,8 +369,7 @@ void setup()
   lv_init();  // Initialize lvgl
 
   // Set orientation (landscape)
-  if (lcd.width() < lcd.height())
-  {
+  if (lcd.width() < lcd.height()) {
     lcd.setRotation(lcd.getRotation() ^ 1);
   }
 
@@ -378,18 +409,16 @@ void setup()
 
   secureClient.setInsecure();
 
-  int timer = 0;
-  while (timer < 2000)
-  {
+  // Start logo wait state (non-blocking)
+  currentUiState = UI_LOGO_WAIT;
+  stateEnterTime = millis();
+
+  // Non-blocking wait for tap during logo screen
+  // Keep checking for tap while loading config
+  while (currentUiState == UI_LOGO_WAIT) {
     lv_task_handler();
-    BTNA.read();
-    if (BTNA.wasPressed())
-    {
-      timer = 5000;
-      triggerAp = true;
-    }
-    timer = timer + 100;
-    delay(100);
+    handleUiStateMachine();
+    yield(); // Allow other tasks to run
   }
 
   /******************************************/
@@ -397,553 +426,310 @@ void setup()
   /******************************************/
   FlashFS.begin(FORMAT_ON_FAIL);
   SPIFFS.begin(true);
-  if (format == true)
-  {
+  if (format == true) {
     SPIFFS.format();
   }
   // get the saved details and store in global variables
   File paramFile = FlashFS.open(PARAM_FILE, "r");
-  if (paramFile)
-  {
-    StaticJsonDocument<2400> conf;
-    DeserializationError error = deserializeJson(conf, paramFile.readString());
+  if (paramFile) {
+    DynamicJsonDocument conf(2400);
+    DeserializationError error = deserializeJson(conf, paramFile);
 
     const JsonObject conf0 = conf[0];
     const char *conf0Char = conf0["value"];
-    password = conf0Char;
+    strlcpy(deviceState.password, conf0Char, sizeof(deviceState.password));
 
     const JsonObject conf1 = conf[1];
     const char *conf1Char = conf1["value"];
-    atmdesc = conf1Char;
+    strlcpy(atmdesc, conf1Char, sizeof(atmdesc));
 
     const JsonObject conf2 = conf[2];
     const char *conf2Char = conf2["value"];
-    atmsubtitle = conf2Char;
+    strlcpy(atmsubtitle, conf2Char, sizeof(atmsubtitle));
 
     const JsonObject conf3 = conf[3];
     const char *conf3Char = conf3["value"];
-    atmtitle = conf3Char;
-  }
-  else
-  {
-    triggerAp = true;
+    strlcpy(atmtitle, conf3Char, sizeof(atmtitle));
+    //} else {
+    // triggerAp = true;
   }
   paramFile.close();
 
-  server.on("/", []()
-            {
+  server.on("/", []() {
     content += AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", content); });
+    server.send(200, "text/html", content);
+  });
 
   elementsAux.load(FPSTR(PAGE_ELEMENTS));
-  elementsAux.on([](AutoConnectAux &aux, PageArgument &arg)
-                 {
+  elementsAux.on([](AutoConnectAux &aux, PageArgument &arg) {
     File param = FlashFS.open(PARAM_FILE, "r");
-    if (param)
-    {
-      aux.loadElement(param, {"password", "atmdesc", "atmsubtitle", "atmtitle"});
+    if (param) {
+      aux.loadElement(param,
+                      {"password", "atmdesc", "atmsubtitle", "atmtitle"});
       param.close();
     }
 
-    if (portal.where() == "/config")
-    {
+    if (portal.where() == "/config") {
       File param = FlashFS.open(PARAM_FILE, "r");
-      if (param)
-      {
-        aux.loadElement(param, {"password", "atmdesc", "atmsubtitle", "atmtitle"});
+      if (param) {
+        aux.loadElement(param,
+                        {"password", "atmdesc", "atmsubtitle", "atmtitle"});
         param.close();
       }
     }
-    return String(); });
+    return String();
+  });
 
   // First page start
   //  get the saved details and store in global variables
-  File firstFile = FlashFS.open(FIRST_FILE, "r");
-  if (firstFile)
-  {
-    StaticJsonDocument<2400> docFirst;
-    DeserializationError error = deserializeJson(docFirst, firstFile.readString());
-
-    const JsonObject docFirst0 = docFirst[0];
-    const char *docFirst0Char = docFirst0["value"];
-    blinkapikey = docFirst0Char;
-
-    const JsonObject docFirst1 = docFirst[1];
-    const char *docFirst1Char = docFirst1["value"];
-    blinkwalletid = docFirst1Char;
-
-    const JsonObject docFirst2 = docFirst[2];
-    const char *docFirst2Char = docFirst2["value"];
-    const String lnurlATM = docFirst2Char;
-    baseURLATM1 = getValue(lnurlATM, ',', 0);
-    secretATM1 = getValue(lnurlATM, ',', 1);
-    currencyATM = getValue(lnurlATM, ',', 2);
-
-    const JsonObject docFirst3 = docFirst[3];
-    const char *docFirst3Char = docFirst3["value"];
-    adminkey = docFirst3Char;
-
-    const JsonObject docFirst4 = docFirst[4];
-    const char *docFirst4Char = docFirst4["value"];
-    readkey = docFirst4Char;
-
-    const JsonObject docFirst5 = docFirst[5];
-    const char *docFirst5Char = docFirst5["value"];
-    currencyOne = docFirst5Char;
-
-    const JsonObject docFirst6 = docFirst[6];
-    const char *docFirst6Char = docFirst6["value"];
-    const String billmech = docFirst6Char;
-    if (billmech != "")
-    {
-      int startPos = 0;
-      int commaPos = billmech.indexOf(',', startPos);
-
-      while (commaPos != -1)
-      {
-        String value = billmech.substring(startPos, commaPos);
-        billAmountIntOne.push_back(value.toInt());
-
-        startPos = commaPos + 1;
-        commaPos = billmech.indexOf(',', startPos);
-      }
-
-      // Don't forget the last value after the last comma
-      String value = billmech.substring(startPos);
-      billAmountIntOne.push_back(value.toInt());
-    }
-
-    const JsonObject docFirst7 = docFirst[7];
-    const char *docFirst7Char = docFirst7["value"];
-    const String maxamountstr = docFirst7Char;
-    maxamount = maxamountstr.toInt();
-
-    const JsonObject docFirst8 = docFirst[8];
-    const char *docFirst8Char = docFirst8["value"];
-    const String chargestr = docFirst8Char;
-    charge1 = chargestr.toInt();
+  FirstConfig firstCfg;
+  if (configService.loadFirst(FlashFS, FIRST_FILE, firstCfg)) {
+    strlcpy(blinkapikey, firstCfg.blinkApiKey, sizeof(blinkapikey));
+    strlcpy(blinkwalletid, firstCfg.blinkWalletId, sizeof(blinkwalletid));
+    strlcpy(baseURLATM1, firstCfg.baseUrl, sizeof(baseURLATM1));
+    strlcpy(secretATM1, firstCfg.secret, sizeof(secretATM1));
+    strlcpy(deviceState.currencyATM, firstCfg.currencyATM,
+            sizeof(deviceState.currencyATM));
+    strlcpy(adminkey, firstCfg.adminKey, sizeof(adminkey));
+    strlcpy(readkey, firstCfg.readKey, sizeof(readkey));
+    strlcpy(currencyOne, firstCfg.currencyLabel, sizeof(currencyOne));
+    billAmountIntOne = firstCfg.billMech;
+    maxamount = firstCfg.maxAmount;
+    charge1 = firstCfg.charge;
+    //} else {
+    // triggerAp = true;
   }
-  else
-  {
-    triggerAp = true;
-  }
-  firstFile.close();
-
-  server.on("/", []()
-            {
-    content += AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", content); });
 
   firstAux.load(FPSTR(PAGE_FIRST));
-  firstAux.on([](AutoConnectAux &aux, PageArgument &arg)
-              {
-    File paramFirst = FlashFS.open(FIRST_FILE, "r");
-    if (paramFirst)
-    {
-      aux.loadElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyOne", "billmech", "maxamount", "charge1"});
-      paramFirst.close();
-    }
+  firstAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    configService.loadAuxConfig(FlashFS, FIRST_FILE, aux,
+                                {"blinkapikey", "blinkwalletid", "lnurl",
+                                 "adminkey", "readkey", "currencyOne",
+                                 "billmech", "maxamount", "charge1"});
 
-    if (portal.where() == "/first")
-    {
-      File paramFirst = FlashFS.open(FIRST_FILE, "r");
-      if (paramFirst)
-      {
-        aux.loadElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyOne", "billmech", "maxamount", "charge1"});
-        paramFirst.close();
-      }
+    if (portal.where() == "/first") {
+      configService.loadAuxConfig(FlashFS, FIRST_FILE, aux,
+                                  {"blinkapikey", "blinkwalletid", "lnurl",
+                                   "adminkey", "readkey", "currencyOne",
+                                   "billmech", "maxamount", "charge1"});
     }
-    return String(); });
+    return String();
+  });
 
   // Second page start
   // get the saved details and store in global variables
-  File secondFile = FlashFS.open(SECOND_FILE, "r");
-  if (secondFile)
-  {
-    StaticJsonDocument<2400> docSecond;
-    DeserializationError error = deserializeJson(docSecond, secondFile.readString());
-
-    const JsonObject docSecond0 = docSecond[0];
-    const char *docSecond0Char = docSecond0["value"];
-    currencyTwo = docSecond0Char;
-
-    const JsonObject docSecond1 = docSecond[1];
-    const char *docSecond1Char = docSecond1["value"];
-    const String lnurlATM2 = docSecond1Char;
-    baseURLATM2 = getValue(lnurlATM2, ',', 0);
-    secretATM2 = getValue(lnurlATM2, ',', 1);
-    currencyATM2 = getValue(lnurlATM2, ',', 2);
-
-    const JsonObject docSecond2 = docSecond[2];
-    const char *docSecond2Char = docSecond2["value"];
-    const String billmech2 = docSecond2Char;
-
-    if (billmech2 != "")
-    {
-      int startPos = 0;
-      int commaPos = billmech2.indexOf(',', startPos);
-
-      while (commaPos != -1)
-      {
-        String value = billmech2.substring(startPos, commaPos);
-        billAmountIntTwo.push_back(value.toInt());
-
-        startPos = commaPos + 1;
-        commaPos = billmech2.indexOf(',', startPos);
-      }
-
-      // Don't forget the last value after the last comma
-      String value = billmech2.substring(startPos);
-      billAmountIntTwo.push_back(value.toInt());
-    }
-
-    const JsonObject docSecond3 = docSecond[3];
-    const char *docSecond3Char = docSecond3["value"];
-    const String maxamountstrtwo = docSecond3Char;
-    maxamount2 = maxamountstrtwo.toInt();
-
-    const JsonObject docSecond4 = docSecond[4];
-    const char *docSecond4Char = docSecond4["value"];
-    const String chargestrtwo = docSecond4Char;
-    charge2 = chargestrtwo.toInt();
+  SecondConfig secondCfg;
+  if (configService.loadSecond(FlashFS, SECOND_FILE, secondCfg)) {
+    strlcpy(currencyTwo, secondCfg.currencyLabel, sizeof(currencyTwo));
+    strlcpy(baseURLATM2, secondCfg.baseUrl, sizeof(baseURLATM2));
+    strlcpy(secretATM2, secondCfg.secret, sizeof(secretATM2));
+    strlcpy(deviceState.currencyATM2, secondCfg.currencyATM,
+            sizeof(deviceState.currencyATM2));
+    billAmountIntTwo = secondCfg.billMech;
+    maxamount2 = secondCfg.maxAmount;
+    charge2 = secondCfg.charge;
+    //} else {
+    // triggerAp = true;
   }
-  else
-  {
-    triggerAp = true;
-  }
-  secondFile.close();
-  server.on("/", []()
-            {
-    content += AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", content); });
 
   secondAux.load(FPSTR(PAGE_SECOND));
-  secondAux.on([](AutoConnectAux &aux, PageArgument &arg)
-               {
-    File paramSecond = FlashFS.open(SECOND_FILE, "r");
-    if (paramSecond)
-    {
-      aux.loadElement(paramSecond, {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
-      paramSecond.close();
+  secondAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    configService.loadAuxConfig(
+        FlashFS, SECOND_FILE, aux,
+        {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
+    if (portal.where() == "/second") {
+      configService.loadAuxConfig(
+          FlashFS, SECOND_FILE, aux,
+          {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
     }
-
-    if (portal.where() == "/second")
-    {
-      File paramSecond = FlashFS.open(SECOND_FILE, "r");
-      if (paramSecond)
-      {
-        aux.loadElement(paramSecond, {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
-        paramSecond.close();
-      }
-    }
-    return String(); });
+    return String();
+  });
 
   //*
   //*
   //*
   // get the saved details and store in global variables
-  File thirdFile = FlashFS.open(THIRD_FILE, "r");
-  if (thirdFile)
-  {
-    StaticJsonDocument<2400> docThird;
-    DeserializationError error = deserializeJson(docThird, thirdFile.readString());
-
-    const JsonObject docThird0 = docThird[0];
-    const char *docThird0Char = docThird0["value"];
-    currencyThree = docThird0Char;
-
-    const JsonObject docThird1 = docThird[1];
-    const char *docThird1Char = docThird1["value"];
-    const String lnurlATM3 = docThird1Char;
-    baseURLATM3 = getValue(lnurlATM3, ',', 0);
-    secretATM3 = getValue(lnurlATM3, ',', 1);
-    currencyATM3 = getValue(lnurlATM3, ',', 2);
-
-    const JsonObject docThird2 = docThird[2];
-    const char *docThird2Char = docThird2["value"];
-    const String billmech3 = docThird2Char;
-
-    if (billmech3 != "")
-    {
-      int startPos = 0;
-      int commaPos = billmech3.indexOf(',', startPos);
-
-      while (commaPos != -1)
-      {
-        String value = billmech3.substring(startPos, commaPos);
-        billAmountIntThree.push_back(value.toInt());
-
-        startPos = commaPos + 1;
-        commaPos = billmech3.indexOf(',', startPos);
-      }
-
-      // Don't forget the last value after the last comma
-      String value = billmech3.substring(startPos);
-      billAmountIntThree.push_back(value.toInt());
-    }
-
-    const JsonObject docThird3 = docThird[3];
-    const char *docThird3Char = docThird3["value"];
-    const String maxamountstrthree = docThird3Char;
-    maxamount3 = maxamountstrthree.toInt();
-
-    const JsonObject docThird4 = docThird[4];
-    const char *docThird4Char = docThird4["value"];
-    const String chargestrthree = docThird4Char;
-    charge3 = chargestrthree.toInt();
+  ThirdConfig thirdCfg;
+  if (configService.loadThird(FlashFS, THIRD_FILE, thirdCfg)) {
+    strlcpy(currencyThree, thirdCfg.currencyLabel, sizeof(currencyThree));
+    strlcpy(baseURLATM3, thirdCfg.baseUrl, sizeof(baseURLATM3));
+    strlcpy(secretATM3, thirdCfg.secret, sizeof(secretATM3));
+    strlcpy(deviceState.currencyATM3, thirdCfg.currencyATM,
+            sizeof(deviceState.currencyATM3));
+    billAmountIntThree = thirdCfg.billMech;
+    maxamount3 = thirdCfg.maxAmount;
+    charge3 = thirdCfg.charge;
+    //} else {
+    // triggerAp = true;
   }
-  else
-  {
-    triggerAp = true;
-  }
-  thirdFile.close();
-  server.on("/", []()
-            {
-    content += AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", content); });
 
   thirdAux.load(FPSTR(PAGE_THIRD));
-  thirdAux.on([](AutoConnectAux &aux, PageArgument &arg)
-              {
-    File paramThird = FlashFS.open(THIRD_FILE, "r");
-    if (paramThird)
-    {
-      aux.loadElement(paramThird, {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
-      paramThird.close();
+  thirdAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    configService.loadAuxConfig(
+        FlashFS, THIRD_FILE, aux,
+        {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
+    if (portal.where() == "/third") {
+      configService.loadAuxConfig(
+          FlashFS, THIRD_FILE, aux,
+          {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
     }
-
-    if (portal.where() == "/third")
-    {
-      File paramThird = FlashFS.open(THIRD_FILE, "r");
-      if (paramThird)
-      {
-        aux.loadElement(paramThird, {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
-        paramThird.close();
-      }
-    }
-    return String(); });
+    return String();
+  });
 
   FlashFS.begin(FORMAT_ON_FAIL);
   SPIFFS.begin(true);
-  if (format == true)
-  {
+  if (format == true) {
     SPIFFS.format();
   }
 
-  // Gui page start
-  // get the saved details and store in global variables
-  File guiFile = FlashFS.open(GUI_FILE, "r");
-  if (guiFile)
-  {
-    StaticJsonDocument<2400> docGui;
-    DeserializationError error = deserializeJson(docGui, guiFile.readString());
-
-    const JsonObject docGui0 = docGui[0];
-    const char *docGui0Char = docGui0["name"];
-    JsonArray valuesFundingSource = docGui0["value"];
-    int checkedIndex = docGui0["checked"];
-
-    if (checkedIndex > 0 && checkedIndex <= valuesFundingSource.size())
-    {
-      // Copy the selected funding source to the global buffer
-      strlcpy(fundingSourceBuffer, valuesFundingSource[checkedIndex - 1], sizeof(fundingSourceBuffer));
-      fundingsource = fundingSourceBuffer; // Point fundingsource to the global buffer
-
-      Serial.print(docGui0Char);
-      Serial.print(": ");
-      Serial.println(fundingSourceBuffer);
+  // Gui page start - use ConfigService to load persisted GUI settings
+  if (configService.loadGuiConfig(FlashFS, GUI_FILE, guiConfig)) {
+    if (guiConfig.fundingSource[0] != '\0') {
+      strlcpy(deviceState.fundingSourceBuffer, guiConfig.fundingSource,
+              sizeof(deviceState.fundingSourceBuffer));
+      fundingsource = deviceState.fundingSourceBuffer;
+      Serial.print("fundingsource: ");
+      Serial.println(deviceState.fundingSourceBuffer);
     }
 
-    const JsonObject docGui1 = docGui[1];
-    const char *docGui1Char = docGui1["name"];
-    JsonArray valuesRateSource = docGui1["value"];
-    int checkedIndexSwitch = docGui1["checked"];
-
-    if (checkedIndexSwitch > 0 && checkedIndexSwitch <= valuesRateSource.size())
-    {
-      // Copy the selected funding source to the global buffer
-      strlcpy(rateSourceBuffer, valuesRateSource[checkedIndexSwitch - 1], sizeof(rateSourceBuffer));
-      ratesource = rateSourceBuffer; // Point fundingsource to the global buffer
-
-      Serial.print(docGui1Char);
-      Serial.print(": ");
+    if (guiConfig.rateSource[0] != '\0') {
+      strlcpy(deviceState.rateSourceBuffer, guiConfig.rateSource,
+              sizeof(deviceState.rateSourceBuffer));
+      ratesource = deviceState.rateSourceBuffer;
+      Serial.print("ratesource: ");
       Serial.println(ratesource);
     }
 
-    const JsonObject docGui2 = docGui[2];
-    const char *docGui2Char = docGui2["name"];
-    JsonArray valuesEnableAnim = docGui2["value"];
-    int checkedIndexAnim = docGui2["checked"];
-
-    if (checkedIndexAnim > 0 && checkedIndexAnim <= valuesEnableAnim.size())
-    {
-      // Copy the selected funding source to the global buffer
-      strlcpy(enableAnimBuffer, valuesEnableAnim[checkedIndexAnim - 1], sizeof(enableAnimBuffer));
-      animated = enableAnimBuffer; // Point fundingsource to the global buffer
-
-      Serial.print(docGui2Char);
-      Serial.print(": ");
+    if (guiConfig.animated[0] != '\0') {
+      strlcpy(deviceState.enableAnimBuffer, guiConfig.animated,
+              sizeof(deviceState.enableAnimBuffer));
+      animated = deviceState.enableAnimBuffer;
+      Serial.print("animated: ");
       Serial.println(animated);
     }
+    //} else {
+    // triggerAp = true;
   }
-  else
-  {
-    triggerAp = true;
-  }
-  guiFile.close();
-  server.on("/", []()
-            {
-    content += AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", content); });
 
   guiAux.load(FPSTR(PAGE_GUI));
-  guiAux.on([](AutoConnectAux &aux, PageArgument &arg)
-            {
+  guiAux.on([](AutoConnectAux &aux, PageArgument &arg) {
     File paramGui = FlashFS.open(GUI_FILE, "r");
-    if (paramGui)
-    {
-        aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
-        paramGui.close();
+    if (paramGui) {
+      aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
+      paramGui.close();
     }
 
-    if (portal.where() == "/gui")
-    {
-        File paramGui = FlashFS.open(GUI_FILE, "r");
-        if (paramGui)
-        {
-            aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
-            paramGui.close();
-        }
+    if (portal.where() == "/gui") {
+      File paramGui = FlashFS.open(GUI_FILE, "r");
+      if (paramGui) {
+        aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
+        paramGui.close();
+      }
     }
-    return String(); });
+    return String();
+  });
 
   //*
   //*
   //*
   // Save page one
   saveAux.load(FPSTR(PAGE_SAVE));
-  saveAux.on([](AutoConnectAux &aux, PageArgument &arg)
-             {
+  saveAux.on([](AutoConnectAux &aux, PageArgument &arg) {
     aux["caption"].value = PARAM_FILE;
     File param = FlashFS.open(PARAM_FILE, "w");
-    if (param)
-    {
+    if (param) {
       // save as a loadable set for parameters.
-      elementsAux.saveElement(param, {"password", "atmdesc", "atmsubtitle", "atmtitle"});
+      elementsAux.saveElement(
+          param, {"password", "atmdesc", "atmsubtitle", "atmtitle"});
       param.close();
       // read the saved elements again to display.
       param = FlashFS.open(PARAM_FILE, "r");
       aux["echo"].value = param.readString();
       param.close();
-    }
-    else
-    {
+    } else {
       aux["echo"].value = "Filesystem failed to open.";
     }
-    return String(); });
+    return String();
+  });
 
   // Save first page
   savefirstAux.load(FPSTR(FIRST_SAVE));
-  savefirstAux.on([](AutoConnectAux &aux, PageArgument &arg)
-                  {
+  savefirstAux.on([](AutoConnectAux &aux, PageArgument &arg) {
     aux["caption"].value = FIRST_FILE;
-    File paramFirst = FlashFS.open(FIRST_FILE, "w");
-    if (paramFirst)
-    {
-      // save as a loadable set for parameters.
-      firstAux.saveElement(paramFirst, {"blinkapikey", "blinkwalletid", "lnurl", "adminkey", "readkey", "currencyOne", "billmech", "maxamount", "charge1"});
-      paramFirst.close();
-      // read the saved elements again to display.
-      paramFirst = FlashFS.open(FIRST_FILE, "r");
-      aux["echo"].value = paramFirst.readString();
-      paramFirst.close();
-    }
-    else
-    {
+    String echo;
+    if (configService.saveAuxConfig(FlashFS, FIRST_FILE, firstAux,
+                                    {"blinkapikey", "blinkwalletid", "lnurl",
+                                     "adminkey", "readkey", "currencyOne",
+                                     "billmech", "maxamount", "charge1"},
+                                    echo)) {
+      aux["echo"].value = echo;
+    } else {
       aux["echo"].value = "Filesystem failed to open.";
     }
-    return String(); });
+    return String();
+  });
 
   // Save second page
   savesecondAux.load(FPSTR(SECOND_SAVE));
-  savesecondAux.on([](AutoConnectAux &aux, PageArgument &arg)
-                   {
+  savesecondAux.on([](AutoConnectAux &aux, PageArgument &arg) {
     aux["caption"].value = SECOND_FILE;
-    File paramSecond = FlashFS.open(SECOND_FILE, "w");
-    if (paramSecond)
-    {
-      // save as a loadable set for parameters.
-      secondAux.saveElement(paramSecond, {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
-      paramSecond.close();
-      // read the saved elements again to display.
-      paramSecond = FlashFS.open(SECOND_FILE, "r");
-      aux["echo"].value = paramSecond.readString();
-      paramSecond.close();
-    }
-    else
-    {
+    String echo;
+    if (configService.saveAuxConfig(
+            FlashFS, SECOND_FILE, secondAux,
+            {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"},
+            echo)) {
+      aux["echo"].value = echo;
+    } else {
       aux["echo"].value = "Filesystem failed to open.";
     }
-    return String(); });
+    return String();
+  });
 
   // Save third page
   savethirdAux.load(FPSTR(THIRD_SAVE));
-  savethirdAux.on([](AutoConnectAux &aux, PageArgument &arg)
-                  {
+  savethirdAux.on([](AutoConnectAux &aux, PageArgument &arg) {
     aux["caption"].value = THIRD_FILE;
-    File paramThird = FlashFS.open(THIRD_FILE, "w");
-    if (paramThird)
-    {
-      // save as a loadable set for parameters.
-      thirdAux.saveElement(paramThird, {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
-      paramThird.close();
-      // read the saved elements again to display.
-      paramThird = FlashFS.open(THIRD_FILE, "r");
-      aux["echo"].value = paramThird.readString();
-      paramThird.close();
-    }
-    else
-    {
+    String echo;
+    if (configService.saveAuxConfig(
+            FlashFS, THIRD_FILE, thirdAux,
+            {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"},
+            echo)) {
+      aux["echo"].value = echo;
+    } else {
       aux["echo"].value = "Filesystem failed to open.";
     }
-    return String(); });
+    return String();
+  });
 
   // Save gui page
   saveguiAux.load(FPSTR(GUI_SAVE));
-  saveguiAux.on([](AutoConnectAux &aux, PageArgument &arg)
-                {
+  saveguiAux.on([](AutoConnectAux &aux, PageArgument &arg) {
     aux["caption"].value = GUI_FILE;
-    File paramGui = FlashFS.open(GUI_FILE, "w");
-    if (paramGui)
-    {
-        // save as a loadable set for parameters.
-        guiAux.saveElement(paramGui, {"fundingsource", "ratesource", "animated"});
-        paramGui.close();
-        // read the saved elements again to display.
-        paramGui = FlashFS.open(GUI_FILE, "r");
-        aux["echo"].value = paramGui.readString();
-        paramGui.close();
+    String echo;
+    if (configService.saveAuxConfig(FlashFS, GUI_FILE, guiAux,
+                                    {"fundingsource", "ratesource", "animated"},
+                                    echo)) {
+      aux["echo"].value = echo;
+    } else {
+      aux["echo"].value = "Filesystem failed to open.";
     }
-    else
-    {
-        aux["echo"].value = "Filesystem failed to open.";
-    }
-    return String(); });
+    return String();
+  });
 
   originalSizeOne = billAmountIntOne.size();
   originalSizeTwo = billAmountIntTwo.size();
   originalSizeThree = billAmountIntThree.size();
 
   // First merge billAmountIntOne and billAmountIntTwo
-  if (currencyATM2 != "" || currencyTwo != "")
-  {
-    billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntTwo.begin(), billAmountIntTwo.end());
+  if ((deviceState.currencyATM2[0] != '\0') || (currencyTwo[0] != '\0')) {
+    billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntTwo.begin(),
+                            billAmountIntTwo.end());
   }
   // Check if currencyATM3 is not empty
-  if (currencyATM3 != "" || currencyThree != "")
-  {
+  if ((deviceState.currencyATM3[0] != '\0') || (currencyThree[0] != '\0')) {
     // Then merge billAmountIntThree into the now-extended billAmountIntOne
-    billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntThree.begin(), billAmountIntThree.end());
+    billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntThree.begin(),
+                            billAmountIntThree.end());
   }
 
   /*********************************************************/
@@ -953,22 +739,22 @@ void setup()
   config.authScope = AC_AUTHSCOPE_AUX;
   config.ticker = true;
   config.autoReconnect = true;
+  config.autoRise = false; // set dynamically during startup based on mode
   config.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  config.psk = password; // Password for AP
-  config.menuItems = AC_MENUITEM_CONFIGNEW | AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET;
+  config.psk = deviceState.password; // Password for AP
+  config.menuItems =
+      AC_MENUITEM_CONFIGNEW | AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET;
   config.title = "LN ATM";
   config.reconnectInterval = 1;
-  config.immediateStart = false; // If we don't have WiFi saved, it will start AP
+  config.immediateStart =
+      false; // If we don't have WiFi saved, it will start AP
   // To define a username/password for the Basic Auth portal, you can use:
-  config.username = password;
-  config.password = password;
+  config.username = deviceState.password;
+  config.password = deviceState.password;
 
   // Register all Aux pages to the portal
-  portal.join({elementsAux, saveAux,
-               firstAux, savefirstAux,
-               secondAux, savesecondAux,
-               thirdAux, savethirdAux,
-               guiAux, saveguiAux});
+  portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
+               savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux});
 
   // Apply config
   portal.config(config);
@@ -1018,132 +804,88 @@ void setup()
   /***  Starting AutoConnect - connection attempt or AP (portal)         ***/
   /**************************************************************************/
 
-  bool connected = false; // Helper variable to hold the result of the WiFi connection
+  const bool isBlinkMode =
+      (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0);
+  const bool wifiRequired = isBlinkMode;
+  const bool userWantsPortal = triggerAp; // tap during logo window
 
-  // 1) Decision by fundingsourceBuffer
-  if (strcmp(fundingSourceBuffer, "Blink") == 0)
-  {
-    // Blink => zariadenie potrebuje internet
+  const bool apiDataMissing =
+      ((strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 &&
+        (deviceState.currencyATM[0] == '\0' || adminkey[0] == '\0' ||
+         readkey[0] == '\0')) ||
+       (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0 &&
+        (blinkapikey[0] == '\0' || blinkwalletid[0] == '\0')) ||
+       (currencyOne[0] == '\0'));
+
+  // Decide portal behavior once, then call portal.begin() once.
+  config.immediateStart = (userWantsPortal || apiDataMissing);
+  config.autoRise = (userWantsPortal || apiDataMissing || wifiRequired);
+
+  if (isBlinkMode) {
     Serial.println("Blink mode => Internet needed");
+  } else {
+    Serial.println("LNbits mode => offline possible");
+  }
 
-    // If the user pressed the button, we want the AP to immediately
-    if (triggerAp)
-    {
-      config.immediateStart = true;
-      Serial.println("User pressed button => immediateStart = true");
-    }
-    else
-    {
-      config.immediateStart = false;
-      Serial.println("No button => immediateStart = false");
-    }
+  if (userWantsPortal) {
+    Serial.println("User tap => start AP portal immediately");
+  } else if (apiDataMissing) {
+    Serial.println("API data missing => start AP portal immediately");
+  } else {
+    Serial.println("No tap => try STA first");
+  }
 
-    portal.config(config);
-    Serial.println("Attempting to connect via AutoConnect...");
-    connected = portal.begin(); // Will try to connect to a saved WiFi or start an AP
-    if (connected)
-    {
-      Serial.println("Blink: WiFi connected! IP: " + WiFi.localIP().toString());
-      // (Optional) if you don't want to leave the AP on, switch to STA only
+  portal.config(config);
+  Serial.println("Attempting to connect via AutoConnect...");
+  (void)portal.begin(); // may connect STA or start AP depending on config
+
+  if (wifiStatus()) {
+    Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
+    if (wifiRequired) {
+      // If you don't want to leave the AP on, switch to STA only
       WiFi.mode(WIFI_STA);
     }
-    else
-    {
-      Serial.println("Blink: No WiFi => AP mode active. AP Name: " + config.apid);
-      //createPortalScreen();
-      //lv_task_handler();
+  } else {
+    Serial.println("WiFi not connected.");
+    if (config.autoRise) {
+      Serial.println("Portal available. AP Name: " + config.apid);
       digitalWrite(11, LOW);
-      Serial.println(F("Entered Config Portal (Blink) because WiFi not connected"));
-    }
-  }
-  else if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-  {
-    // LNbits => can work offline
-    Serial.println("LNbits mode => offline possible");
-
-    if (triggerAp)
-    {
-      // User pressed the button => we want to start the AP for configuration
-      config.immediateStart = true;
-      Serial.println("User pressed button => immediateStart = true (LNbits)");
-
-      portal.config(config);
-      Serial.println("Attempting to start config portal for LNbits...");
-      connected = portal.begin(); // Run AP
-      if (connected)
-      {
-        Serial.println("LNbits: WiFi connected (optional). IP: " + WiFi.localIP().toString());
-        // We can, but don't have to, put WiFi.mode(WIFI_STA)
-      }
-      else
-      {
-        Serial.println("LNbits: AP mode active. AP Name: " + config.apid);
-        //createPortalScreen();
-        //lv_task_handler();
-        digitalWrite(11, LOW);
-        Serial.println(F("Entered Config Portal (LNbits) because user forced it"));
-      }
-    }
-    else
-    {
-      // LNbits offline => we don't try WiFi at all
-      Serial.println("LNbits offline => skipping portal.begin()");
-      connected = false;
     }
   }
 
-  // 2) Checking if API data is entered
-  // (common for both branches - LNbits and Blink)
-  if ((strcmp(fundingSourceBuffer, "LNbits") == 0 && (currencyATM == "" || adminkey == "" || readkey == "")) ||
-      (strcmp(fundingSourceBuffer, "Blink") == 0 && (blinkapikey == "" || blinkwalletid == "")) ||
-      (currencyOne == ""))
-  {
-    // Data is missing, we will run the API screen to add it
-    Serial.println("API data missing => createAPIScreen");
-    //createAPIScreen();
-    //lv_task_handler();
-    digitalWrite(11, LOW);
-
-    Serial.println("Launching Config Portal for missing API data...");
-    config.immediateStart = true; // Run AP immediately
-    portal.config(config);
-    bool started = portal.begin(); // Now the AP will start (if WiFi credentials were not saved)
-    if (!started)
-    {
-      Serial.println("ConfigPortal in AP mode. WiFi not connected.");
-    }
-    else
-    {
-      Serial.println("WiFi got connected, but user may update data.");
-    }
+  // If portal is required (tap / missing data / Blink no-wifi), stay in portal.
+  if (userWantsPortal || apiDataMissing || (wifiRequired && !wifiStatus())) {
     return;
   }
-  else
-  {
-    // 3) Everything is fine - we launch the main screen
-    Serial.println("All API data present => launching main screen");
-    createMainScreen();
-    lv_task_handler();
-  }
 
-  // Extract "https://your.lnbits.com" from baseURLATM "https://your.lnbits.com/lnurldevice/api/v1/lnurl/<id>";
+  // Otherwise we can continue (LNbits offline allowed).
+  Serial.println("Proceeding to main screen");
+  createMainScreen();
+  lv_task_handler();
+
+  // Extract "https://your.lnbits.com" from baseURLATM
+  // "https://your.lnbits.com/lnurldevice/api/v1/lnurl/<id>";
   int thirdSlash = 0;
   int count = 0;
 
-  for (int i = 0; i < baseURLATM.length(); i++)
-  {
-    if (baseURLATM.charAt(i) == '/')
-    {
+  for (int i = 0; i < strlen(baseURLATM); i++) {
+    if (baseURLATM[i] == '/') {
       count++;
-      if (count == 3)
-      {
+      if (count == 3) {
         thirdSlash = i;
         break;
       }
     }
   }
 
-  lnbitsURL = baseURLATM.substring(0, thirdSlash);
+  if (thirdSlash > 0 && thirdSlash < sizeof(lnbitsURL)) {
+    strncpy(lnbitsURL, baseURLATM, thirdSlash);
+    lnbitsURL[thirdSlash] = '\0';
+  } else {
+    // Fallback if structure not matched, though usually should match if valid
+    // URL
+    strlcpy(lnbitsURL, baseURLATM, sizeof(lnbitsURL));
+  }
   Serial.print(F("lnbitsURL: "));
   Serial.println(lnbitsURL); // This should print "https://your.lnbits.com"
   Serial.print("ESP Free heap (Setup end): ");
@@ -1157,10 +899,8 @@ void setup()
  *
  * @return The byte read from the SerialPort1, or -1 if no data is available.
  */
-int nonBlockingRead()
-{
-  if (SerialPort1.available())
-  {
+int nonBlockingRead() {
+  if (SerialPort1.available()) {
     return SerialPort1.read();
   }
   return -1; // No data available
@@ -1173,8 +913,7 @@ int nonBlockingRead()
  * @param obj Pointer to the LVGL arc object.
  * @param v The angle value to set.
  */
-static void set_angle(void *obj, int32_t v)
-{
+static void set_angle(void *obj, int32_t v) {
   lv_arc_set_value((lv_obj_t *)obj, v);
 }
 
@@ -1182,36 +921,38 @@ static void set_angle(void *obj, int32_t v)
  * Checks the status of the WiFi connection.
  * @return true if the WiFi is connected, false otherwise.
  */
-bool wifiStatus()
-{
-  return (WiFi.status() == WL_CONNECTED);
-}
+bool wifiStatus() { return (WiFi.status() == WL_CONNECTED); }
 
 /**
- * @brief Creates a logo screen with a logo, URL label, arc animation, and an image.
- * This function creates a new screen and adds various graphical elements to it, including a logo,
- * a URL label, an arc animation, and an image. The logo screen is then loaded and displayed.
- * @note The function assumes that the necessary resources (e.g., fonts, images) have been properly
- *       initialized and loaded beforehand.
+ * @brief Creates a logo screen with a logo, URL label, arc animation, and an
+ * image. This function creates a new screen and adds various graphical elements
+ * to it, including a logo, a URL label, an arc animation, and an image. The
+ * logo screen is then loaded and displayed.
+ * @note The function assumes that the necessary resources (e.g., fonts, images)
+ * have been properly initialized and loaded beforehand.
  */
-void createLogoScreen()
-{
+void createLogoScreen() {
   screen_logo = lv_obj_create(NULL); // Create a new screen
 
-  // Put your logo creation code here, but replace `lv_scr_act()` with `screen_logo`
+  // Put your logo creation code here, but replace `lv_scr_act()` with
+  // `screen_logo`
   String LVGL_ATMURL = "ATM.LNPAY.EU";
-  lv_obj_t *atmurl = lv_label_create(screen_logo); // use screen_logo as the parent
+  lv_obj_t *atmurl =
+      lv_label_create(screen_logo); // use screen_logo as the parent
   lv_label_set_text(atmurl, LVGL_ATMURL.c_str());
   lv_obj_align(atmurl, LV_ALIGN_TOP_MID, 0, 20);
-  lv_obj_set_style_text_font(atmurl, &lv_font_montserrat_28, 0); // Set font (replace with appropriate font)
+  lv_obj_set_style_text_font(atmurl, &lv_font_montserrat_28,
+                             0); // Set font (replace with appropriate font)
   lv_obj_set_style_text_color(atmurl, LV_COLOR_PURPLE, 0);
 
   /*Create an Arc*/
   lv_obj_t *arc = lv_arc_create(screen_logo); // Create the arc on screen_logo
   lv_arc_set_rotation(arc, 270);
   lv_arc_set_bg_angles(arc, 0, 360);
-  lv_obj_remove_style(arc, NULL, LV_PART_KNOB);  /*Be sure the knob is not displayed*/
-  lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE); /*To not allow adjusting by click*/
+  lv_obj_remove_style(arc, NULL,
+                      LV_PART_KNOB); /*Be sure the knob is not displayed*/
+  lv_obj_clear_flag(arc,
+                    LV_OBJ_FLAG_CLICKABLE); /*To not allow adjusting by click*/
   lv_obj_center(arc);
 
   lv_anim_t a;
@@ -1225,8 +966,11 @@ void createLogoScreen()
   lv_anim_start(&a);
 
   lv_obj_t *img1 = lv_img_create(screen_logo); // Create an image object
-  lv_img_set_src(img1, &btcSmallImg);          // Set the image source to your converted image (my_image)
-  lv_obj_align(img1, LV_ALIGN_CENTER, 0, 0);   // Align the image to the center of the screen
+  lv_img_set_src(
+      img1,
+      &btcSmallImg); // Set the image source to your converted image (my_image)
+  lv_obj_align(img1, LV_ALIGN_CENTER, 0,
+               0); // Align the image to the center of the screen
 
   lv_scr_load(screen_logo);
 }
@@ -1234,132 +978,177 @@ void createLogoScreen()
 // Create the portal screen
 /**
  * @brief Creates the portal screen.
- * This function creates a new screen and adds various labels to display instructions for connecting to a Wi-Fi network.
- * @note The function assumes that the necessary fonts have been loaded and the screen_portal object has been declared globally.
- * @note The labels are aligned vertically and centered horizontally on the screen.
+ * This function creates a new screen and adds various labels to display
+ * instructions for connecting to a Wi-Fi network.
+ * @note The function assumes that the necessary fonts have been loaded and the
+ * screen_portal object has been declared globally.
+ * @note The labels are aligned vertically and centered horizontally on the
+ * screen.
  * @note The text for the labels is set using predefined string constants.
  * @note The font styles for the labels are set using predefined font objects.
  * @note The screen_portal object is loaded as the active screen.
  */
-void createPortalScreen()
-{
+void createPortalScreen() {
   screen_portal = lv_obj_create(NULL); // Create a new screen
 
   String LVGL_PORTAL_ON = "Config launched";
-  lv_obj_t *portalon = lv_label_create(screen_portal);             // full screen as the parent
-  lv_label_set_text(portalon, LVGL_PORTAL_ON.c_str());             // set label text
-  lv_obj_align(portalon, LV_ALIGN_TOP_MID, 0, 20);                 // Center but 20 from the top
-  lv_obj_set_style_text_font(portalon, &lv_font_montserrat_48, 0); // Use the large font
+  lv_obj_t *portalon =
+      lv_label_create(screen_portal); // full screen as the parent
+  lv_label_set_text(portalon, LVGL_PORTAL_ON.c_str()); // set label text
+  lv_obj_align(portalon, LV_ALIGN_TOP_MID, 0, 20); // Center but 20 from the top
+  lv_obj_set_style_text_font(portalon, &lv_font_montserrat_48,
+                             0); // Use the large font
   lv_obj_set_style_text_color(portalon, LV_COLOR_WHITE, 0);
 
   String LVGL_CONNECT_TO_WIFI = "Connect with your phone via Wi-Fi.";
-  lv_obj_t *connecttowifi = lv_label_create(screen_portal);             // full screen as the parent
-  lv_label_set_text(connecttowifi, LVGL_CONNECT_TO_WIFI.c_str());       // set label text
-  lv_obj_align(connecttowifi, LV_ALIGN_TOP_MID, 0, 80);                 // Center but 20 from the top
-  lv_obj_set_style_text_font(connecttowifi, &lv_font_montserrat_24, 0); // Use the large font
+  lv_obj_t *connecttowifi =
+      lv_label_create(screen_portal); // full screen as the parent
+  lv_label_set_text(connecttowifi,
+                    LVGL_CONNECT_TO_WIFI.c_str()); // set label text
+  lv_obj_align(connecttowifi, LV_ALIGN_TOP_MID, 0,
+               80); // Center but 20 from the top
+  lv_obj_set_style_text_font(connecttowifi, &lv_font_montserrat_24,
+                             0); // Use the large font
   // lv_obj_set_style_text_color(atmurl, LV_COLOR_WHITE, 0);
 
   String LVGL_PORTAL_TEXT_ONE = "Find new Wi-Fi network 'LN ATM-xxxx' ";
-  lv_obj_t *portaltextone = lv_label_create(screen_portal);             // full screen as the parent
-  lv_label_set_text(portaltextone, LVGL_PORTAL_TEXT_ONE.c_str());       // set label text
-  lv_obj_align(portaltextone, LV_ALIGN_TOP_MID, 0, 120);                // Center but 20 from the top
-  lv_obj_set_style_text_font(portaltextone, &lv_font_montserrat_22, 0); // Use the large font
+  lv_obj_t *portaltextone =
+      lv_label_create(screen_portal); // full screen as the parent
+  lv_label_set_text(portaltextone,
+                    LVGL_PORTAL_TEXT_ONE.c_str()); // set label text
+  lv_obj_align(portaltextone, LV_ALIGN_TOP_MID, 0,
+               120); // Center but 20 from the top
+  lv_obj_set_style_text_font(portaltextone, &lv_font_montserrat_22,
+                             0); // Use the large font
 
   String LVGL_PORTAL_TEXT_TWO = "in your phone and connect to it. After ";
-  lv_obj_t *portaltexttwo = lv_label_create(screen_portal);             // full screen as the parent
-  lv_label_set_text(portaltexttwo, LVGL_PORTAL_TEXT_TWO.c_str());       // set label text
-  lv_obj_align(portaltexttwo, LV_ALIGN_TOP_MID, 0, 160);                // Center but 20 from the top
-  lv_obj_set_style_text_font(portaltexttwo, &lv_font_montserrat_22, 0); // Use the large font
+  lv_obj_t *portaltexttwo =
+      lv_label_create(screen_portal); // full screen as the parent
+  lv_label_set_text(portaltexttwo,
+                    LVGL_PORTAL_TEXT_TWO.c_str()); // set label text
+  lv_obj_align(portaltexttwo, LV_ALIGN_TOP_MID, 0,
+               160); // Center but 20 from the top
+  lv_obj_set_style_text_font(portaltexttwo, &lv_font_montserrat_22,
+                             0); // Use the large font
 
   String LVGL_PORTAL_TEXT_THREE = "you are connected, open ATM settings ";
-  lv_obj_t *portaltextthree = lv_label_create(screen_portal);             // full screen as the parent
-  lv_label_set_text(portaltextthree, LVGL_PORTAL_TEXT_THREE.c_str());     // set label text
-  lv_obj_align(portaltextthree, LV_ALIGN_TOP_MID, 0, 200);                // Center but 20 from the top
-  lv_obj_set_style_text_font(portaltextthree, &lv_font_montserrat_22, 0); // Use the large font
+  lv_obj_t *portaltextthree =
+      lv_label_create(screen_portal); // full screen as the parent
+  lv_label_set_text(portaltextthree,
+                    LVGL_PORTAL_TEXT_THREE.c_str()); // set label text
+  lv_obj_align(portaltextthree, LV_ALIGN_TOP_MID, 0,
+               200); // Center but 20 from the top
+  lv_obj_set_style_text_font(portaltextthree, &lv_font_montserrat_22,
+                             0); // Use the large font
 
   String LVGL_PORTAL_TEXT_FOUR = "and set your preferences";
-  lv_obj_t *portaltextfour = lv_label_create(screen_portal);             // full screen as the parent
-  lv_label_set_text(portaltextfour, LVGL_PORTAL_TEXT_FOUR.c_str());      // set label text
-  lv_obj_align(portaltextfour, LV_ALIGN_TOP_MID, 0, 240);                // Center but 20 from the top
-  lv_obj_set_style_text_font(portaltextfour, &lv_font_montserrat_22, 0); // Use the large font
+  lv_obj_t *portaltextfour =
+      lv_label_create(screen_portal); // full screen as the parent
+  lv_label_set_text(portaltextfour,
+                    LVGL_PORTAL_TEXT_FOUR.c_str()); // set label text
+  lv_obj_align(portaltextfour, LV_ALIGN_TOP_MID, 0,
+               240); // Center but 20 from the top
+  lv_obj_set_style_text_font(portaltextfour, &lv_font_montserrat_22,
+                             0); // Use the large font
 
   lv_scr_load(screen_portal);
 }
 
 /**
  * @brief Creates the API screen.
- * This function creates a new screen and adds various labels to display API information.
- * The labels include the API title, restart instructions, connection instructions, and preference instructions.
+ * This function creates a new screen and adds various labels to display API
+ * information. The labels include the API title, restart instructions,
+ * connection instructions, and preference instructions.
  * @note The API data is currently set to "API DATA MISSING".
  * @note The labels are aligned and styled using different fonts.
  * @note The screen is loaded after all the labels are created.
  */
-void createAPIScreen()
-{
+void createAPIScreen() {
   screen_api = lv_obj_create(NULL); // Create a new screen
 
   String LVGL_API = "API DATA MISSING";
-  lv_obj_t *apititle = lv_label_create(screen_api);                // full screen as the parent
-  lv_label_set_text(apititle, LVGL_API.c_str());                   // set label text
-  lv_obj_align(apititle, LV_ALIGN_TOP_MID, 0, 20);                 // Center but 20 from the top
-  lv_obj_set_style_text_font(apititle, &lv_font_montserrat_48, 0); // Use the large font
+  lv_obj_t *apititle = lv_label_create(screen_api); // full screen as the parent
+  lv_label_set_text(apititle, LVGL_API.c_str());    // set label text
+  lv_obj_align(apititle, LV_ALIGN_TOP_MID, 0, 20); // Center but 20 from the top
+  lv_obj_set_style_text_font(apititle, &lv_font_montserrat_48,
+                             0); // Use the large font
   lv_obj_set_style_text_color(apititle, LV_COLOR_WHITE, 0);
 
   String LVGL_CONNECT_TO_WIFI = "Connect with your phone via Wi-Fi.";
-  lv_obj_t *connecttowifi = lv_label_create(screen_api);                // full screen as the parent
-  lv_label_set_text(connecttowifi, LVGL_CONNECT_TO_WIFI.c_str());       // set label text
-  lv_obj_align(connecttowifi, LV_ALIGN_TOP_MID, 0, 80);                 // Center but 20 from the top
-  lv_obj_set_style_text_font(connecttowifi, &lv_font_montserrat_24, 0); // Use the large font
+  lv_obj_t *connecttowifi =
+      lv_label_create(screen_api); // full screen as the parent
+  lv_label_set_text(connecttowifi,
+                    LVGL_CONNECT_TO_WIFI.c_str()); // set label text
+  lv_obj_align(connecttowifi, LV_ALIGN_TOP_MID, 0,
+               80); // Center but 20 from the top
+  lv_obj_set_style_text_font(connecttowifi, &lv_font_montserrat_24,
+                             0); // Use the large font
   // lv_obj_set_style_text_color(atmurl, LV_COLOR_WHITE, 0);
 
   String LVGL_PORTAL_TEXT_ONE = "Find new Wi-Fi network 'LN ATM-xxxx' ";
-  lv_obj_t *portaltextone = lv_label_create(screen_api);                // full screen as the parent
-  lv_label_set_text(portaltextone, LVGL_PORTAL_TEXT_ONE.c_str());       // set label text
-  lv_obj_align(portaltextone, LV_ALIGN_TOP_MID, 0, 120);                // Center but 20 from the top
-  lv_obj_set_style_text_font(portaltextone, &lv_font_montserrat_22, 0); // Use the large font
+  lv_obj_t *portaltextone =
+      lv_label_create(screen_api); // full screen as the parent
+  lv_label_set_text(portaltextone,
+                    LVGL_PORTAL_TEXT_ONE.c_str()); // set label text
+  lv_obj_align(portaltextone, LV_ALIGN_TOP_MID, 0,
+               120); // Center but 20 from the top
+  lv_obj_set_style_text_font(portaltextone, &lv_font_montserrat_22,
+                             0); // Use the large font
 
   String LVGL_PORTAL_TEXT_TWO = "in your phone and connect to it. After ";
-  lv_obj_t *portaltexttwo = lv_label_create(screen_api);                // full screen as the parent
-  lv_label_set_text(portaltexttwo, LVGL_PORTAL_TEXT_TWO.c_str());       // set label text
-  lv_obj_align(portaltexttwo, LV_ALIGN_TOP_MID, 0, 160);                // Center but 20 from the top
-  lv_obj_set_style_text_font(portaltexttwo, &lv_font_montserrat_22, 0); // Use the large font
+  lv_obj_t *portaltexttwo =
+      lv_label_create(screen_api); // full screen as the parent
+  lv_label_set_text(portaltexttwo,
+                    LVGL_PORTAL_TEXT_TWO.c_str()); // set label text
+  lv_obj_align(portaltexttwo, LV_ALIGN_TOP_MID, 0,
+               160); // Center but 20 from the top
+  lv_obj_set_style_text_font(portaltexttwo, &lv_font_montserrat_22,
+                             0); // Use the large font
 
   String LVGL_PORTAL_TEXT_THREE = "you are connected, open ATM settings ";
-  lv_obj_t *portaltextthree = lv_label_create(screen_api);                // full screen as the parent
-  lv_label_set_text(portaltextthree, LVGL_PORTAL_TEXT_THREE.c_str());     // set label text
-  lv_obj_align(portaltextthree, LV_ALIGN_TOP_MID, 0, 200);                // Center but 20 from the top
-  lv_obj_set_style_text_font(portaltextthree, &lv_font_montserrat_22, 0); // Use the large font
+  lv_obj_t *portaltextthree =
+      lv_label_create(screen_api); // full screen as the parent
+  lv_label_set_text(portaltextthree,
+                    LVGL_PORTAL_TEXT_THREE.c_str()); // set label text
+  lv_obj_align(portaltextthree, LV_ALIGN_TOP_MID, 0,
+               200); // Center but 20 from the top
+  lv_obj_set_style_text_font(portaltextthree, &lv_font_montserrat_22,
+                             0); // Use the large font
 
   String LVGL_PORTAL_TEXT_FOUR = "and set your preferences";
-  lv_obj_t *portaltextfour = lv_label_create(screen_api);                // full screen as the parent
-  lv_label_set_text(portaltextfour, LVGL_PORTAL_TEXT_FOUR.c_str());      // set label text
-  lv_obj_align(portaltextfour, LV_ALIGN_TOP_MID, 0, 240);                // Center but 20 from the top
-  lv_obj_set_style_text_font(portaltextfour, &lv_font_montserrat_22, 0); // Use the large font
+  lv_obj_t *portaltextfour =
+      lv_label_create(screen_api); // full screen as the parent
+  lv_label_set_text(portaltextfour,
+                    LVGL_PORTAL_TEXT_FOUR.c_str()); // set label text
+  lv_obj_align(portaltextfour, LV_ALIGN_TOP_MID, 0,
+               240); // Center but 20 from the top
+  lv_obj_set_style_text_font(portaltextfour, &lv_font_montserrat_22,
+                             0); // Use the large font
 
   lv_scr_load(screen_api);
 }
 
 /**
- * Checks the network and device status based on the funding source and other conditions.
- * If the funding source is "Blink" and there is no network connection available, it prints a message and optionally triggers a screen update or indicator.
- * If the funding source is "LNbits" and any of the required data (currencyATM, adminkey, readkey) is missing, it prints a message.
+ * Checks the network and device status based on the funding source and other
+ * conditions. If the funding source is "Blink" and there is no network
+ * connection available, it prints a message and optionally triggers a screen
+ * update or indicator. If the funding source is "LNbits" and any of the
+ * required data (currencyATM, adminkey, readkey) is missing, it prints a
+ * message.
  */
-void checkNetworkAndDeviceStatus()
-{
-  if (strcmp(fundingSourceBuffer, "Blink") == 0)
-  {
-    if (!wifiStatus())
-    {
+void checkNetworkAndDeviceStatus() {
+  if (paymentService.isBlink(deviceState.fundingSourceBuffer)) {
+    if (!wifiStatus()) {
       Serial.println("No network connection available. Checking again soon...");
-      // Optionally, trigger a screen update or indicator that network is required but unavailable
+      // Optionally, trigger a screen update or indicator that network is
+      // required but unavailable
       SerialPort1.write(185);
       digitalWrite(INHIBITMECH, LOW);
     }
-  }
-  else if (strcmp(fundingSourceBuffer, "LNbits") == 0 && (currencyATM == "" || adminkey == "" || readkey == ""))
-  {
-    if (!wifiStatus())
-    {
+  } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 &&
+             (deviceState.currencyATM[0] == '\0' || adminkey[0] == '\0' ||
+              readkey[0] == '\0')) {
+    if (!wifiStatus()) {
       Serial.println("Network not needed, but missing data for LNbits...");
       // SerialPort1.write(184);
     }
@@ -1367,35 +1156,13 @@ void checkNetworkAndDeviceStatus()
 }
 
 /**
- * Checks if the device is configured for Blink payments.
- * @return true if the device is configured for Blink payments, false otherwise.
- */
-bool isBlink()
-{
-  if (strcmp(fundingSourceBuffer, "Blink") == 0)
-  {
-    return true;
-  }
-  else
-  {
-    return false;
-  }
-  Serial.print("isBlink: ");
-  Serial.println(isBlink());
-}
-
-/**
  * Checks if the funding source is LNbits.
  * @return true if the funding source is LNbits, false otherwise.
  */
-bool isLNbits()
-{
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-  {
+bool isLNbits() {
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
     return true;
-  }
-  else
-  {
+  } else {
     return false;
   }
   Serial.print("isLNbits: ");
@@ -1406,41 +1173,43 @@ bool isLNbits()
  * @brief Creates a thank you screen.
  *
  * This function creates a new screen with a thank you message and description.
- * The screen includes a title and a description label, both centered on the screen.
- * The title label uses a large font and green text color.
- * The description label uses a smaller font and green text color.
- * @note The screen_thx global variable must be defined before calling this function.
+ * The screen includes a title and a description label, both centered on the
+ * screen. The title label uses a large font and green text color. The
+ * description label uses a smaller font and green text color.
+ * @note The screen_thx global variable must be defined before calling this
+ * function.
  */
-void createThankYouScreen()
-{
+void createThankYouScreen() {
   screen_thx = lv_obj_create(NULL); // Create a new screen
 
   String LVGL_THX = "THANK YOU!";
-  lv_obj_t *thxTitle = lv_label_create(screen_thx);                // full screen as the parent
-  lv_label_set_text(thxTitle, LVGL_THX.c_str());                   // set label text
-  lv_obj_align(thxTitle, LV_ALIGN_CENTER, 0, 0);                   // Center but 20 from the top
-  lv_obj_set_style_text_font(thxTitle, &lv_font_montserrat_48, 0); // Use the large font
+  lv_obj_t *thxTitle = lv_label_create(screen_thx); // full screen as the parent
+  lv_label_set_text(thxTitle, LVGL_THX.c_str());    // set label text
+  lv_obj_align(thxTitle, LV_ALIGN_CENTER, 0, 0); // Center but 20 from the top
+  lv_obj_set_style_text_font(thxTitle, &lv_font_montserrat_48,
+                             0); // Use the large font
   lv_obj_set_style_text_color(thxTitle, LV_COLOR_GREEN, 0);
 
   String LVGL_THX_DESC = "START OVER TO BURN MORE!";
-  lv_obj_t *thxDesc = lv_label_create(screen_thx);                // full screen as the parent
-  lv_label_set_text(thxDesc, LVGL_THX_DESC.c_str());              // set label text
-  lv_obj_align(thxDesc, LV_ALIGN_CENTER, 0, 60);                  // Center but 20 from the top
-  lv_obj_set_style_text_font(thxDesc, &lv_font_montserrat_16, 0); // Use the large font
+  lv_obj_t *thxDesc = lv_label_create(screen_thx); // full screen as the parent
+  lv_label_set_text(thxDesc, LVGL_THX_DESC.c_str()); // set label text
+  lv_obj_align(thxDesc, LV_ALIGN_CENTER, 0, 60); // Center but 20 from the top
+  lv_obj_set_style_text_font(thxDesc, &lv_font_montserrat_16,
+                             0); // Use the large font
   lv_obj_set_style_text_color(thxDesc, LV_COLOR_GREEN, 0);
 
   lv_scr_load(screen_thx);
 }
 
 /**
- * @brief Updates the burn text label with the combined text of "BURN YOUR {currencySelected} FOR SATS".
- *        It also checks the network and device status, price, balance, and updates the main screen label.
+ * @brief Updates the burn text label with the combined text of "BURN YOUR
+ * {currencySelected} FOR SATS". It also checks the network and device status,
+ * price, balance, and updates the main screen label.
  * @note This function assumes that the burnTextLabel has been created.
  * @param None
  * @return None
  */
-void updateBurnText()
-{
+void updateBurnText() {
   Serial.print("Free heap (updateBurnText Start): ");
   Serial.println(ESP.getFreeHeap());
   if (burnTextLabel) // Ensure the label has been created
@@ -1449,8 +1218,8 @@ void updateBurnText()
     lv_label_set_text(burnTextLabel, combinedText.c_str());
 
     checkNetworkAndDeviceStatus();
-    //checkPrice();
-    //checkBalance();
+    // checkPrice();
+    // checkBalance();
     updateMainScreenLabel();
   }
   Serial.print("Free heap (updateBurnText end): ");
@@ -1464,76 +1233,84 @@ const int UNINHIBIT_START = 151;
  * Sets the currency to the specified value.
  * @param newCurrency The new currency to set.
  */
-void setCurrency(const String &newCurrency)
-{
-  Serial.println("setCurrency Currency set to " + newCurrency);
-  currencySelected = newCurrency;
-  //updateBurnText(); // Update the label text when the currency changes
-  //checkPrice();
+/**
+ * @brief Sets the currency and configures bill acceptor channels.
+ *
+ * @param newCurrency The currency to set (currencyOne, currencyTwo, or
+ * currencyThree)
+ * @param skipInhibit If true, skip the inhibit/uninhibit process (useful at
+ * startup when acceptor is off)
+ */
+void setCurrency(const char *newCurrency, bool skipInhibit = false) {
+  Serial.print("setCurrency Currency set to ");
+  Serial.println(newCurrency);
+  strlcpy(currencySelected, newCurrency, sizeof(currencySelected));
+
+  // Skip inhibit/uninhibit if acceptor is not enabled (e.g., at startup)
+  if (skipInhibit) {
+    Serial.println("setCurrency: Skipping inhibit (acceptor not enabled)");
+    return;
+  }
 
   // Clear all channels before setting the new ones
-  for (int i = 0; i < 16; i++)
-  {
+  // Reduced delay - bill acceptor should respond faster
+  // Most bill acceptors can handle commands much faster than 200ms
+  for (int i = 0; i < 16; i++) {
     SerialPort1.write(INHIBIT_START + i); // Inhibit all initially
-    delay(200);
+    delay(5); // Reduced from 200ms to 5ms - much faster
   }
 
   // Determine which channels to uninhibit based on the selected currency
   int startChannel = 0;
   int currencySize = 0;
 
-  if (currencySelected == currencyOne)
-  {
+  if (strcmp(currencySelected, currencyOne) == 0) {
     startChannel = 0;
     currencySize = originalSizeOne;
-  }
-  else if (currencySelected == currencyTwo)
-  {
+  } else if (strcmp(currencySelected, currencyTwo) == 0) {
     startChannel = originalSizeOne;
     currencySize = originalSizeTwo;
-  }
-  else if (currencySelected == currencyThree)
-  {
+  } else if (strcmp(currencySelected, currencyThree) == 0) {
     startChannel = originalSizeOne + originalSizeTwo;
     currencySize = originalSizeThree;
   }
 
   // Uninhibit channels for the selected currency
-  for (int i = 0; i < currencySize; i++)
-  {
+  // Reduced delay - commands can be sent faster
+  for (int i = 0; i < currencySize; i++) {
     int channelCode = UNINHIBIT_START + startChannel + i;
-    Serial.print("Sending value allow " + currencySelected + ": ");
+    Serial.print("Sending value allow ");
+    Serial.print(currencySelected);
+    Serial.print(": ");
     Serial.println(channelCode);
     SerialPort1.write(channelCode);
-    delay(20);
+    delay(
+        2); // Reduced from 20ms to 2ms - minimal delay for serial communication
   }
 }
 
-void checkPrice()
-{
-  if (strcmp(rateSourceBuffer, "ExchangeApi") == 0)
-  {
+void checkPrice() {
+  if (strcmp(deviceState.rateSourceBuffer, "ExchangeApi") == 0) {
     checkPriceExchangeApi();
-  }
-  else if (strcmp(rateSourceBuffer, "Coingecko") == 0)
-  {
+  } else if (strcmp(deviceState.rateSourceBuffer, "Coingecko") == 0) {
     checkPriceCoinGecko();
   }
 }
 
-void checkPriceCoinGecko()
-{
-  http.begin(coingeckoConversionAPI + currencySelected); // Specify request destination
+void checkPriceCoinGecko() {
+  http.begin(coingeckoConversionAPI +
+             currencySelected); // Specify request destination
 
   int httpCode = http.GET(); // Send the request
 
   if (httpCode == 200 || httpCode == 201) // Check the returning code
   {
-    String payload = http.getString(); // Get the request response payload
-    // Serial.println(payload);
+    String responsePayload =
+        http.getString(); // Get the request response payload
+    // Serial.println(responsePayload);
     //  Parse JSON
     DynamicJsonDocument doc(1024);
-    deserializeJson(doc, payload);
+    deserializeJson(doc, responsePayload);
 
     String tempCurrency = currencySelected;
     tempCurrency.toLowerCase();
@@ -1542,9 +1319,7 @@ void checkPriceCoinGecko()
     fiatValue = doc["bitcoin"][tempCurrency.c_str()];
     Serial.print(F("HTTP (checkPriceCoinGecko): "));
     Serial.println(httpCode);
-  }
-  else
-  {
+  } else {
     Serial.print(F("Error (checkPriceCoinGecko): "));
     Serial.println(httpCode);
   }
@@ -1553,45 +1328,40 @@ void checkPriceCoinGecko()
   http.end(); // Close connection
 }
 
-void checkPriceExchangeApi()
-{
+void checkPriceExchangeApi() {
   http.begin(exchangeapiConversionAPI);
   int httpResponseCode = http.GET();
 
-  if (httpResponseCode == 200 || httpResponseCode == 201)
-  {
-    String payload = http.getString();
-    Serial.println(payload);
+  if (httpResponseCode == 200 || httpResponseCode == 201) {
+    String responsePayload = http.getString();
+    Serial.println(responsePayload);
 
-    DynamicJsonDocument doc(16384); // Increased buffer size for large JSON response
-    DeserializationError error = deserializeJson(doc, payload);
+    DynamicJsonDocument doc(
+        16384); // Increased buffer size for large JSON response
+    DeserializationError error = deserializeJson(doc, responsePayload);
 
     String tempCurrency = currencySelected;
     tempCurrency.toLowerCase();
 
-    if (!error)
-    {
+    if (!error) {
       String date = doc["date"];
       fiatValue = doc["btc"][tempCurrency];
 
-      if (!fiatValue)
-      {
-        Serial.println("Error: Rate not found for the specified currency" + currencySelected);
-      }
-      else
-      {
+      if (!fiatValue) {
+        Serial.print("Error: Rate not found for the specified currency");
+        Serial.println(currencySelected);
+      } else {
         Serial.println("Date: " + date);
-        Serial.println("Exchange Rate for BTC to " + currencySelected + ": " + String(fiatValue, 6));
+        Serial.print("Exchange Rate for BTC to ");
+        Serial.print(currencySelected);
+        Serial.print(": ");
+        Serial.println(fiatValue, 6);
       }
-    }
-    else
-    {
+    } else {
       Serial.print("deserializeJson() failed: ");
       Serial.println(error.c_str());
     }
-  }
-  else
-  {
+  } else {
     Serial.print("Error in HTTP request: ");
     Serial.println(httpResponseCode);
   }
@@ -1600,60 +1370,54 @@ void checkPriceExchangeApi()
 }
 
 /**
- * Checks the balance of the selected currency from the specified funding source.
- * If the funding source is "LNbits", it sends an HTTP GET request to the LNbits API
- * to retrieve the wallet balance. If the funding source is "Blink", it sends a
- * GraphQL query to the Blink API to fetch the wallet information.
- * The balance is then parsed from the response and converted to the corresponding
- * fiat currency value.
+ * Checks the balance of the selected currency from the specified funding
+ * source. If the funding source is "LNbits", it sends an HTTP GET request to
+ * the LNbits API to retrieve the wallet balance. If the funding source is
+ * "Blink", it sends a GraphQL query to the Blink API to fetch the wallet
+ * information. The balance is then parsed from the response and converted to
+ * the corresponding fiat currency value.
  */
-void checkBalance()
-{
-  if (currencySelected == currencyATM || currencySelected == currencyOne)
-  {
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-    {
-      baseURLATM = baseURLATM1;
-      secretATM = secretATM1;
+void checkBalance() {
+  if (strcmp(currencySelected, deviceState.currencyATM) == 0 ||
+      strcmp(currencySelected, currencyOne) == 0) {
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+      strlcpy(baseURLATM, baseURLATM1, sizeof(baseURLATM));
+      strlcpy(secretATM, secretATM1, sizeof(secretATM));
     }
     chargeSelected = charge1;
     maxamountSelected = maxamount;
-  }
-  else if (currencySelected == currencyATM2 || currencySelected == currencyTwo)
-  {
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-    {
-      baseURLATM = baseURLATM2;
-      secretATM = secretATM2;
+  } else if (strcmp(currencySelected, deviceState.currencyATM2) == 0 ||
+             strcmp(currencySelected, currencyTwo) == 0) {
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+      strlcpy(baseURLATM, baseURLATM2, sizeof(baseURLATM));
+      strlcpy(secretATM, secretATM2, sizeof(secretATM));
     }
     chargeSelected = charge2;
     maxamountSelected = maxamount2;
-  }
-  else if (currencySelected == currencyATM3 || currencySelected == currencyThree)
-  {
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-    {
-      baseURLATM = baseURLATM3;
-      secretATM = secretATM3;
+  } else if (strcmp(currencySelected, deviceState.currencyATM3) == 0 ||
+             strcmp(currencySelected, currencyThree) == 0) {
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+      strlcpy(baseURLATM, baseURLATM3, sizeof(baseURLATM));
+      strlcpy(secretATM, secretATM3, sizeof(secretATM));
     }
     chargeSelected = charge3;
     maxamountSelected = maxamount3;
   }
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-  {
-    http.begin(lnbitsURL + "/api/v1/wallet"); // Specify request destination
-    http.addHeader("X-Api-Key", readkey);     // Specify API key header
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+    http.begin(String(lnbitsURL) +
+               "/api/v1/wallet");         // Specify request destination
+    http.addHeader("X-Api-Key", readkey); // Specify API key header
 
     int httpCode = http.GET(); // Send the request
 
-    if (httpCode == 200 || httpCode == 201)
-    {                                      // Check the returning code
-      String payloadon = http.getString(); // Get the request response payload
-      Serial.println(payloadon);
+    if (httpCode == 200 || httpCode == 201) { // Check the returning code
+      String responsePayload =
+          http.getString(); // Get the request response payload
+      Serial.println(responsePayload);
 
       // Parse JSON
       DynamicJsonDocument doc(1024);
-      deserializeJson(doc, payloadon);
+      deserializeJson(doc, responsePayload);
 
       // Get balance from parsed JSON
       balanceSats = doc["balance"];
@@ -1683,15 +1447,11 @@ void checkBalance()
       Serial.println(httpCode);
       Serial.print("Free heap (checkBalance): ");
       Serial.println(ESP.getFreeHeap());*/
-    }
-    else
-    {
+    } else {
       Serial.print(F("Error (checkBalance): "));
       Serial.println(httpCode);
     }
-  }
-  else if (strcmp(fundingSourceBuffer, "Blink") == 0)
-  {
+  } else if (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0) {
     http.begin(graphqlEndpoint); // API endpoint
     http.addHeader("Content-Type", "application/json");
     http.addHeader("X-API-KEY", String(blinkapikey)); // Correct API key header
@@ -1716,7 +1476,8 @@ void checkBalance()
     jsonDoc["query"] = query;
 
     String requestBody;
-    serializeJson(jsonDoc, requestBody); // Serialize the JSON object to a string
+    serializeJson(jsonDoc,
+                  requestBody); // Serialize the JSON object to a string
 
     // Send the POST request
     int httpCode = http.POST(requestBody);
@@ -1730,10 +1491,11 @@ void checkBalance()
     // Deserialize JSON response and extract wallet information
     DynamicJsonDocument respDoc(4096); // Adjust size based on expected response
     deserializeJson(respDoc, responsePayload);
-    if (httpCode == 200)
-    {
-      JsonObject me = respDoc["data"]["me"]["defaultAccount"]["wallets"][0]; // Assuming you want the first wallet
-      String blinkwalletid = me["id"].as<String>();
+    if (httpCode == 200) {
+      JsonObject me = respDoc["data"]["me"]["defaultAccount"]["wallets"]
+                             [0]; // Assuming you want the first wallet
+      String walletIdStr = me["id"].as<String>();
+      strlcpy(blinkwalletid, walletIdStr.c_str(), sizeof(blinkwalletid));
       String walletCurrency = me["walletCurrency"].as<String>();
       balanceSats = me["balance"];
 
@@ -1748,9 +1510,7 @@ void checkBalance()
       Serial.println(balanceSats);
       Serial.print("Fiat balance: ");
       Serial.println(fiatBalance);*/
-    }
-    else
-    {
+    } else {
       Serial.println("Failed to fetch wallet information");
     }
   }
@@ -1758,73 +1518,97 @@ void checkBalance()
   http.end(); // Close connection
 }
 
-void createLoadingIndicator()
-{
+void createLoadingIndicator() {
   loadingLabel = lv_label_create(lv_scr_act());
   lv_label_set_text(loadingLabel, "Loading...");
   lv_obj_center(loadingLabel);
-  lv_obj_set_style_text_font(loadingLabel, &lv_font_montserrat_22, 0); // Optional: set font size
-  lv_obj_add_flag(loadingLabel, LV_OBJ_FLAG_HIDDEN);                   // Initially hidden
+  lv_obj_set_style_text_font(loadingLabel, &lv_font_montserrat_22,
+                             0);                     // Optional: set font size
+  lv_obj_add_flag(loadingLabel, LV_OBJ_FLAG_HIDDEN); // Initially hidden
   Serial.println("Loading indicator created");
 }
 
-void showLoadingIndicator()
-{
+void showLoadingIndicator() {
   lv_obj_clear_flag(loadingLabel, LV_OBJ_FLAG_HIDDEN); // Show loading indicator
-  lv_refr_now(NULL);                                   // Force immediate refresh of LVGL
-  // delay(100);                                          // Small delay to ensure the display updates
+  lv_refr_now(NULL); // Force immediate refresh of LVGL
+  // delay(100);                                          // Small delay to
+  // ensure the display updates
   Serial.println("Loading indicator shown");
 }
 
-void hideLoadingIndicator()
-{
+void hideLoadingIndicator() {
   lv_obj_add_flag(loadingLabel, LV_OBJ_FLAG_HIDDEN); // Hide loading indicator
-  lv_refr_now(NULL);                                 // Force immediate refresh of LVGL
+  lv_refr_now(NULL); // Force immediate refresh of LVGL
   Serial.println("Loading indicator hidden");
 }
 
 /**
  * @brief Event handler for button 1.
  *
- * This function is called when button 1 is clicked. It sets the currency to currencyOne,
- * updates the base URL and secret if the funding source is "LNbits", and updates the charge
- * and max amount variables. It then shows the currency screen with the updated values.
+ * This function is called when button 1 is clicked. It sets the currency to
+ * currencyOne, updates the base URL and secret if the funding source is
+ * "LNbits", and updates the charge and max amount variables. It then shows the
+ * currency screen with the updated values.
  *
  * @param e The event object.
  */
-static void btn1_event_handler(lv_event_t *e)
-{
+static void btn1_event_handler(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_CLICKED)
-  {
+  if (code == LV_EVENT_CLICKED) {
     showLoadingIndicator();
 
+    // Set currency first (fast operation)
     setCurrency(currencyOne);
-    checkPrice();
-    checkBalance();
-    // update_button_states(lv_event_get_target(e));
-    Serial.println("Currency set to " + currencyOne);
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-    {
-      baseURLATM = baseURLATM1;
-      secretATM = secretATM1;
+
+    // Update config variables
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+      strlcpy(baseURLATM, baseURLATM1, sizeof(baseURLATM));
+      strlcpy(secretATM, secretATM1, sizeof(secretATM));
     }
     chargeSelected = charge1;
     maxamountSelected = maxamount;
-    createCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected); // Show the new screen
+
+    // Show screen immediately with current values (may be slightly outdated)
+    createCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected);
     lv_task_handler();
     hideLoadingIndicator();
+
+    // Update price and balance in background (these are slow HTTP requests)
+    // This happens after screen is shown, so user sees response immediately
+    checkPrice();
+    checkBalance();
+
+    // Update screen with new values after they're fetched
+    createCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected);
+    lv_task_handler();
+
+    // Enable acceptor only after currency is set, price and balance are loaded,
+    // and inhibit channels are configured
+    enableAcceptor();
+
+    // Update status label to "READY" with green color
+    if (wait_label != nullptr) {
+      lv_label_set_text(wait_label, "READY");
+      lv_obj_set_style_text_color(wait_label, lv_color_hex(0x00FF00),
+                                  0); // Green color
+      lv_task_handler();
+    }
+
+    Serial.print("Currency set to ");
+    Serial.println(currencyOne);
   }
 }
 
 /**
  * @brief Event handler for button 2.
  *
- * This function is called when button 2 is clicked. It performs the following actions:
+ * This function is called when button 2 is clicked. It performs the following
+ * actions:
  * 1. Shows a loading indicator.
  * 2. Sets the currency to currencyTwo.
  * 3. Prints a message to the serial monitor indicating the currency set.
- * 4. Updates the baseURLATM and secretATM variables based on the funding source buffer.
+ * 4. Updates the baseURLATM and secretATM variables based on the funding source
+ * buffer.
  * 5. Sets the chargeSelected variable to charge2.
  * 6. Sets the maxamountSelected variable to maxamount2.
  * 7. Shows the currency screen with the updated values.
@@ -1832,59 +1616,102 @@ static void btn1_event_handler(lv_event_t *e)
  *
  * @param e The event object.
  */
-static void btn2_event_handler(lv_event_t *e)
-{
+static void btn2_event_handler(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_CLICKED)
-  {
+  if (code == LV_EVENT_CLICKED) {
     showLoadingIndicator();
 
+    // Set currency first (fast operation)
     setCurrency(currencyTwo);
-    checkPrice();
-    checkBalance();
-    // update_button_states(lv_event_get_target(e));
-    Serial.println("Currency set to " + currencyTwo);
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-    {
-      baseURLATM = baseURLATM2;
-      secretATM = secretATM2;
+
+    // Update config variables
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+      strlcpy(baseURLATM, baseURLATM2, sizeof(baseURLATM));
+      strlcpy(secretATM, secretATM2, sizeof(secretATM));
     }
     chargeSelected = charge2;
     maxamountSelected = maxamount2;
-    createCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected); // Show the new screen
+
+    // Show screen immediately with current values (may be slightly outdated)
+    createCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected);
     lv_task_handler();
     hideLoadingIndicator();
+
+    // Update price and balance in background (these are slow HTTP requests)
+    checkPrice();
+    checkBalance();
+
+    // Update screen with new values after they're fetched
+    createCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected);
+    lv_task_handler();
+
+    // Enable acceptor only after currency is set, price and balance are loaded,
+    // and inhibit channels are configured
+    enableAcceptor();
+
+    // Update status label to "READY" with green color
+    if (wait_label != nullptr) {
+      lv_label_set_text(wait_label, "READY");
+      lv_obj_set_style_text_color(wait_label, lv_color_hex(0x00FF00),
+                                  0); // Green color
+      lv_task_handler();
+    }
+
+    Serial.print("Currency set to ");
+    Serial.println(currencyTwo);
   }
 }
 
 /**
  * Event handler for button 3.
  * This function is called when button 3 is clicked.
- * It sets the currency to currencyThree, updates the base URL and secret if the funding source is LNbits,
- * sets the chargeSelected and maxamountSelected variables, and shows the currency screen with the new values.
+ * It sets the currency to currencyThree, updates the base URL and secret if the
+ * funding source is LNbits, sets the chargeSelected and maxamountSelected
+ * variables, and shows the currency screen with the new values.
  */
-static void btn3_event_handler(lv_event_t *e)
-{
+static void btn3_event_handler(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_CLICKED)
-  {
+  if (code == LV_EVENT_CLICKED) {
     showLoadingIndicator();
 
+    // Set currency first (fast operation)
     setCurrency(currencyThree);
-    checkPrice();
-    checkBalance();
-    // update_button_states(lv_event_get_target(e));
-    Serial.println("Currency set to " + currencyThree);
-    if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-    {
-      baseURLATM = baseURLATM3;
-      secretATM = secretATM3;
+
+    // Update config variables
+    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+      strlcpy(baseURLATM, baseURLATM3, sizeof(baseURLATM));
+      strlcpy(secretATM, secretATM3, sizeof(secretATM));
     }
     chargeSelected = charge3;
     maxamountSelected = maxamount3;
-    createCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected); // Show the new screen
+
+    // Show screen immediately with current values (may be slightly outdated)
+    createCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected);
     lv_task_handler();
     hideLoadingIndicator();
+
+    // Update price and balance in background (these are slow HTTP requests)
+    checkPrice();
+    checkBalance();
+
+    // Update screen with new values after they're fetched
+    createCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected);
+    lv_task_handler();
+
+    // Enable acceptor only after currency is set, price and balance are loaded,
+    // and inhibit channels are configured
+    enableAcceptor();
+
+    // Update status label to "READY" with green color
+    if (wait_label != nullptr) {
+      lv_label_set_text(wait_label, "READY");
+      lv_obj_set_style_text_color(wait_label, lv_color_hex(0x00FF00),
+                                  0); // Green color
+      lv_task_handler();
+    }
+
+    Serial.print("Currency set to ");
+    Serial.println(currencyThree);
   }
 }
 
@@ -1892,76 +1719,74 @@ static void btn3_event_handler(lv_event_t *e)
 /**
  * @brief Callback function for color animation.
  *
- * This function is called during a color animation and updates the text color of an object.
- * It takes a pointer to the object and an integer value as parameters.
- * The integer value represents the progress of the animation (0 to 255).
- * The function calculates the index in the colors array based on the progress value,
- * and sets the text color of the object to the corresponding color from the array.
+ * This function is called during a color animation and updates the text color
+ * of an object. It takes a pointer to the object and an integer value as
+ * parameters. The integer value represents the progress of the animation (0 to
+ * 255). The function calculates the index in the colors array based on the
+ * progress value, and sets the text color of the object to the corresponding
+ * color from the array.
  *
  * @param var Pointer to the object.
  * @param v Integer value representing the progress of the animation.
  */
-void color_anim_cb(void *var, int32_t v)
-{
+void color_anim_cb(void *var, int32_t v) {
   lv_obj_t *obj = (lv_obj_t *)var;
   int num_colors = sizeof(colors) / sizeof(colors[0]);
 
-  int idx = (v * num_colors) / 256; // This will convert v (0 to 255) to an index in the colors array.
+  int idx =
+      (v * num_colors) /
+      256; // This will convert v (0 to 255) to an index in the colors array.
   lv_color_t color = colors[idx];
 
   lv_obj_set_style_text_color(obj, color, 0);
 }
 
 /**
- * @brief Updates the main screen label with the current balance, fiat value, and charge value.
+ * @brief Updates the main screen label with the current balance, fiat value,
+ * and charge value.
  *
- * This function checks if the balanceValueLabel, fiatValueLabel, and chargeValueLabel have been created
- * and initialized. If the WiFi status is offline, it sets the labels to display "OFFLINE" and changes the
- * text color to red. Otherwise, it formats and sets the text of the labels with the appropriate values
- * and changes the text color accordingly. The balanceValueLabel text color is set to white by default,
- * but if the fiat balance is less than the maximum amount selected, it changes the text color to red.
+ * This function checks if the balanceValueLabel, fiatValueLabel, and
+ * chargeValueLabel have been created and initialized. If the WiFi status is
+ * offline, it sets the labels to display "OFFLINE" and changes the text color
+ * to red. Otherwise, it formats and sets the text of the labels with the
+ * appropriate values and changes the text color accordingly. The
+ * balanceValueLabel text color is set to white by default, but if the fiat
+ * balance is less than the maximum amount selected, it changes the text color
+ * to red.
  *
- * @note The labels must be created and initialized before calling this function.
+ * @note The labels must be created and initialized before calling this
+ * function.
  */
-void updateMainScreenLabel()
-{
+void updateMainScreenLabel() {
   Serial.print("Free heap (updateMainScreenLabel Start): ");
   Serial.println(ESP.getFreeHeap());
-  if (balanceValueLabel)
-  { // Ensure the label has been created
-    if (!wifiStatus())
-    {
+  if (balanceValueLabel) { // Ensure the label has been created
+    if (!wifiStatus()) {
       lv_label_set_text(balanceValueLabel, "OFFLINE");
-    }
-    else
-    {
+    } else {
       char buffer[32];
-      snprintf(buffer, sizeof(buffer), "%.2f %s", fiatBalance, currencySelected);
+      snprintf(buffer, sizeof(buffer), "%.2f %s", fiatBalance,
+               currencySelected);
       lv_label_set_text(balanceValueLabel, buffer);
       lv_obj_set_style_text_color(balanceValueLabel, LV_COLOR_WHITE, 0);
-      if (fiatBalance < maxamountSelected)
-      {
+      if (fiatBalance < maxamountSelected) {
         lv_obj_set_style_text_color(balanceValueLabel, LV_COLOR_RED, 0);
       }
     }
   }
-  if (fiatValueLabel)
-  { // Check if it has been initialized
-    if (!wifiStatus())
-    {
+  if (fiatValueLabel) { // Check if it has been initialized
+    if (!wifiStatus()) {
       lv_label_set_text(fiatValueLabel, "OFFLINE");
       lv_obj_set_style_text_color(fiatValueLabel, LV_COLOR_RED, 0);
-    }
-    else
-    {
+    } else {
       char buffer[32];
-      snprintf(buffer, sizeof(buffer), "%ld %s", (long)fiatValue, currencySelected);
+      snprintf(buffer, sizeof(buffer), "%ld %s", (long)fiatValue,
+               currencySelected);
       lv_label_set_text(fiatValueLabel, buffer);
       lv_obj_set_style_text_color(fiatValueLabel, LV_COLOR_GREEN, 0);
     }
   }
-  if (chargeValueLabel)
-  { // Check if it has been initialized
+  if (chargeValueLabel) { // Check if it has been initialized
     char buffer[32];
     snprintf(buffer, sizeof(buffer), "%ld %%", chargeSelected);
     lv_label_set_text(chargeValueLabel, buffer);
@@ -1974,17 +1799,18 @@ void updateMainScreenLabel()
 /**
  * @brief Creates the main screen of the ATM.
  *
- * This function initializes and configures various UI elements such as labels, images, and buttons
- * to create the main screen of the ATM. It sets the text, alignment, and font styles of the labels,
- * and loads the screen onto the display. It also handles the creation of additional UI elements
- * based on certain conditions, such as the presence of animated text or specific subtitle values.
+ * This function initializes and configures various UI elements such as labels,
+ * images, and buttons to create the main screen of the ATM. It sets the text,
+ * alignment, and font styles of the labels, and loads the screen onto the
+ * display. It also handles the creation of additional UI elements based on
+ * certain conditions, such as the presence of animated text or specific
+ * subtitle values.
  *
- * @note This function assumes that the necessary LVGL library and display configurations have been
- * properly set up beforehand.
+ * @note This function assumes that the necessary LVGL library and display
+ * configurations have been properly set up beforehand.
  */
-void createMainScreen()
-{
-  deleteCurrencyScreen();
+void createMainScreen() {
+  uiController.deleteCurrencyScreen();
   lv_task_handler();
   SerialPort1.write(185); // Command to turn off the acceptor
   digitalWrite(INHIBITMECH, LOW);
@@ -1997,8 +1823,7 @@ void createMainScreen()
   Serial.println("createMainScreen: Screen created");
 
   String LVGL_Atm_desc = "BITCOIN LIGHTNING ATM ";
-  if (atmdesc != "")
-  {
+  if (atmdesc[0] != '\0') {
     LVGL_Atm_desc = atmdesc;
   };
   lv_obj_t *label = lv_label_create(screen_main);  // full screen as the parent
@@ -2007,38 +1832,39 @@ void createMainScreen()
   lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
 
   String LVGL_Zero_Title = "";
-  if (atmsubtitle != "")
-  {
+  if (atmsubtitle[0] != '\0') {
     LVGL_Zero_Title = atmsubtitle;
   };
-  lv_obj_t *zeroline = lv_label_create(screen_main);    // full screen as the parent
+  lv_obj_t *zeroline =
+      lv_label_create(screen_main); // full screen as the parent
   lv_label_set_text(zeroline, LVGL_Zero_Title.c_str()); // set label text
-  lv_obj_align(zeroline, LV_ALIGN_TOP_MID, 0, 45);      // Center but 20 from the top
-  if (atmsubtitle == "AMITY" || atmsubtitle == "Amity")
-  {
+  lv_obj_align(zeroline, LV_ALIGN_TOP_MID, 0, 45); // Center but 20 from the top
+  if (strcmp(atmsubtitle, "AMITY") == 0 || strcmp(atmsubtitle, "Amity") == 0) {
     lv_label_set_text(zeroline, ""); // set label text
   }
-  if (atmsubtitle == "DVADSATJEDEN" || atmsubtitle == "Dvadsatjeden" || atmsubtitle == "21")
-  {
-    lv_obj_set_style_text_font(zeroline, &lv_font_the_bold_48, 0); // Assuming lv_font_montserrat_22 is a bold font.
-  }
-  else
-  {
+  if (strcmp(atmsubtitle, "DVADSATJEDEN") == 0 ||
+      strcmp(atmsubtitle, "Dvadsatjeden") == 0 ||
+      strcmp(atmsubtitle, "21") == 0) {
+    lv_obj_set_style_text_font(
+        zeroline, &lv_font_the_bold_48,
+        0); // Assuming lv_font_montserrat_22 is a bold font.
+  } else {
     lv_obj_set_style_text_font(zeroline, &lv_font_montserrat_48, 0);
   }
 
   String LVGL_Fiat_Hell = "FIAT HELL";
-  if (atmtitle != "")
-  {
+  if (atmtitle[0] != '\0') {
     LVGL_Fiat_Hell = atmtitle;
   };
-  lv_obj_t *fiathell = lv_label_create(screen_main);                    // full screen as the parent
-  lv_label_set_text(fiathell, LVGL_Fiat_Hell.c_str());                  // set label text
-  lv_obj_align(fiathell, LV_ALIGN_TOP_MID, 0, 95);                      // Center but 95 from the top
-  lv_obj_set_style_text_font(fiathell, &lv_font_montserrat_bold_60, 0); // Assuming lv_font_montserrat_22 is a bold font.
+  lv_obj_t *fiathell =
+      lv_label_create(screen_main); // full screen as the parent
+  lv_label_set_text(fiathell, LVGL_Fiat_Hell.c_str()); // set label text
+  lv_obj_align(fiathell, LV_ALIGN_TOP_MID, 0, 95); // Center but 95 from the top
+  lv_obj_set_style_text_font(
+      fiathell, &lv_font_montserrat_bold_60,
+      0); // Assuming lv_font_montserrat_22 is a bold font.
 
-  if (strcmp(animated, "Yes") == 0)
-  {
+  if (strcmp(animated, "Yes") == 0) {
     lv_anim_t a;
     lv_anim_init(&a);
     lv_anim_set_var(&a, fiathell);
@@ -2048,9 +1874,7 @@ void createMainScreen()
     lv_anim_set_exec_cb(&a, color_anim_cb);
     lv_anim_start(&a);
     Serial.println("createMainScreen: Animation started");
-  }
-  else
-  {
+  } else {
     lv_obj_set_style_text_color(fiathell, LV_COLOR_ORANGE, 0);
   }
 
@@ -2058,63 +1882,87 @@ void createMainScreen()
   burnTextLabel = lv_label_create(screen_main); // Assign it to global variable
   String combinedText = "BURN YOUR SHITCOIN FOR SATS";
   lv_label_set_text(burnTextLabel, combinedText.c_str());
-  lv_obj_set_style_text_font(burnTextLabel, &lv_font_montserrat_24, 0); // Use the large font
-  lv_obj_align(burnTextLabel, LV_ALIGN_TOP_MID, 0, 163);                // Center but 163 from the top
+  lv_obj_set_style_text_font(burnTextLabel, &lv_font_montserrat_24,
+                             0); // Use the large font
+  lv_obj_align(burnTextLabel, LV_ALIGN_TOP_MID, 0,
+               163); // Center but 163 from the top
   Serial.println("createMainScreen: burnTextLabel created");
 
-  if (atmsubtitle == "DVADSATJEDEN" || atmsubtitle == "21")
-  {
-    lv_obj_t *img1 = lv_img_create(screen_main);   // Create an image object
-    lv_img_set_src(img1, &btcSmallImg);            // Set the image source to your converted image (my_image)
-    lv_obj_align(img1, LV_ALIGN_TOP_MID, 180, 70); // Align the image to the center of the screen
+  if (strcmp(atmsubtitle, "DVADSATJEDEN") == 0 ||
+      strcmp(atmsubtitle, "21") == 0) {
+    lv_obj_t *img1 = lv_img_create(screen_main); // Create an image object
+    lv_img_set_src(img1, &btcSmallImg);          // Set the image source to your
+                                                 // converted image (my_image)
+    lv_obj_align(img1, LV_ALIGN_TOP_MID, 180,
+                 70); // Align the image to the center of the screen
     Serial.println("createMainScreen: btc logo added");
   }
 
-  if (atmsubtitle == "AMITY" || atmsubtitle == "Amity")
-  {
+  if (strcmp(atmsubtitle, "AMITY") == 0 || strcmp(atmsubtitle, "Amity") == 0) {
     lv_obj_t *img1 = lv_img_create(screen_main); // Create an image object
-    lv_img_set_src(img1, &amityImg);             // Set the image source to your converted image (my_image)
-    lv_obj_align(img1, LV_ALIGN_TOP_MID, 0, 15); // Align the image to the center of the screen
+    lv_img_set_src(
+        img1,
+        &amityImg); // Set the image source to your converted image (my_image)
+    lv_obj_align(img1, LV_ALIGN_TOP_MID, 0,
+                 15); // Align the image to the center of the screen
     Serial.println("createMainScreen: amity logo added");
   }
 
-  lv_obj_t *labelBalance = lv_label_create(screen_main);     // full screen as the parent
-  lv_label_set_text(labelBalance, "BALANCE");                // set label text
-  lv_obj_align(labelBalance, LV_ALIGN_BOTTOM_LEFT, 30, -40); // Center but 20 from the top
+  lv_obj_t *labelBalance =
+      lv_label_create(screen_main);           // full screen as the parent
+  lv_label_set_text(labelBalance, "BALANCE"); // set label text
+  lv_obj_align(labelBalance, LV_ALIGN_BOTTOM_LEFT, 30,
+               -40); // Center but 20 from the top
   lv_obj_set_style_text_font(labelBalance, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: labelBalance created");
 
-  lv_obj_t *labelPrice = lv_label_create(screen_main);   // full screen as the parent
-  lv_label_set_text(labelPrice, "PRICE");                // set label text
-  lv_obj_align(labelPrice, LV_ALIGN_BOTTOM_MID, 0, -40); // Center but 20 from the top
+  lv_obj_t *labelPrice =
+      lv_label_create(screen_main);       // full screen as the parent
+  lv_label_set_text(labelPrice, "PRICE"); // set label text
+  lv_obj_align(labelPrice, LV_ALIGN_BOTTOM_MID, 0,
+               -40); // Center but 20 from the top
   lv_obj_set_style_text_font(labelPrice, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: labelPrice created");
 
-  lv_obj_t *labelCharge = lv_label_create(screen_main);       // full screen as the parent
-  lv_label_set_text(labelCharge, "FEE");                      // set label text
-  lv_obj_align(labelCharge, LV_ALIGN_BOTTOM_RIGHT, -30, -40); // Center but 20 from the top
+  lv_obj_t *labelCharge =
+      lv_label_create(screen_main);      // full screen as the parent
+  lv_label_set_text(labelCharge, "FEE"); // set label text
+  lv_obj_align(labelCharge, LV_ALIGN_BOTTOM_RIGHT, -30,
+               -40); // Center but 20 from the top
   lv_obj_set_style_text_font(labelCharge, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: labelCharge created");
 
   char buffer[32];
-  snprintf(buffer, sizeof(buffer), "%.2f %s", fiatBalance, currencySelected.c_str()); // Limiting to 2 decimal places and append the currency
-  balanceValueLabel = lv_label_create(screen_main);                                   // full screen as the parent
-  lv_label_set_text(balanceValueLabel, buffer);                                       // set label text now that balanceValueLabel is created
-  lv_obj_align(balanceValueLabel, LV_ALIGN_BOTTOM_LEFT, 30, -20);                     // Center but 20 from the top
+  snprintf(
+      buffer, sizeof(buffer), "%.2f %s", fiatBalance,
+      currencySelected); // Limiting to 2 decimal places and append the currency
+  balanceValueLabel = lv_label_create(screen_main); // full screen as the parent
+  lv_label_set_text(
+      balanceValueLabel,
+      buffer); // set label text now that balanceValueLabel is created
+  lv_obj_align(balanceValueLabel, LV_ALIGN_BOTTOM_LEFT, 30,
+               -20); // Center but 20 from the top
   lv_obj_set_style_text_font(balanceValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: balanceValueLabel created");
 
-  snprintf(buffer, sizeof(buffer), "%ld %s", (long)fiatValue, currencySelected.c_str()); // Display as whole number and append the currency
-  fiatValueLabel = lv_label_create(screen_main);                                         // Create it on your main screen
-  lv_label_set_text(fiatValueLabel, buffer);                                             // Initial text
-  lv_obj_align(fiatValueLabel, LV_ALIGN_BOTTOM_MID, 0, -20);                             // Position it as you like
+  snprintf(buffer, sizeof(buffer), "%ld %s", (long)fiatValue,
+           currencySelected); // Display as whole number and append the currency
+  fiatValueLabel =
+      lv_label_create(screen_main);          // Create it on your main screen
+  lv_label_set_text(fiatValueLabel, buffer); // Initial text
+  lv_obj_align(fiatValueLabel, LV_ALIGN_BOTTOM_MID, 0,
+               -20); // Position it as you like
   lv_obj_set_style_text_font(fiatValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: fiatValueLabel created");
 
-  snprintf(buffer, sizeof(buffer), "%d %%", chargeSelected);       // Convert the int to a char array
-  chargeValueLabel = lv_label_create(screen_main);                 // Create it on your main screen
-  lv_label_set_text(chargeValueLabel, buffer);                     // Set the label text using the buffer
-  lv_obj_align(chargeValueLabel, LV_ALIGN_BOTTOM_RIGHT, -30, -20); // Position it as you like
+  snprintf(buffer, sizeof(buffer), "%d %%",
+           chargeSelected); // Convert the int to a char array
+  chargeValueLabel =
+      lv_label_create(screen_main); // Create it on your main screen
+  lv_label_set_text(chargeValueLabel,
+                    buffer); // Set the label text using the buffer
+  lv_obj_align(chargeValueLabel, LV_ALIGN_BOTTOM_RIGHT, -30,
+               -20); // Position it as you like
   lv_obj_set_style_text_font(chargeValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: chargeValueLabel created");
 
@@ -2122,22 +1970,23 @@ void createMainScreen()
   Serial.println("createMainScreen: lv_button_currency created");
   //}
   img_blink = lv_img_create(screen_main);
-  lv_img_set_src(img_blink, &blink); // 'blink' must be a properly defined LVGL image variable
+  lv_img_set_src(
+      img_blink,
+      &blink); // 'blink' must be a properly defined LVGL image variable
   lv_obj_align(img_blink, LV_ALIGN_TOP_LEFT, 10, 10);
   lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
 
   img_lnbits = lv_img_create(screen_main);
-  lv_img_set_src(img_lnbits, &lnbits); // 'lnbits' must be a properly defined LVGL image variable
+  lv_img_set_src(
+      img_lnbits,
+      &lnbits); // 'lnbits' must be a properly defined LVGL image variable
   lv_obj_align(img_lnbits, LV_ALIGN_TOP_LEFT, 10, 10);
   lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
 
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-  {
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
     lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
-  }
-  else if (strcmp(fundingSourceBuffer, "Blink") == 0)
-  {
+  } else if (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0) {
     lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
   }
@@ -2149,18 +1998,28 @@ void createMainScreen()
 }
 
 /**
- * Displays the currency screen with the given currency, rate, balance, and charge.
+ * Displays the currency screen with the given currency, rate, balance, and
+ * charge.
  *
  * @param currency The selected currency.
  * @param rate The rate of the currency in BTC.
  * @param balance The balance in the selected currency.
  * @param charge The fee percentage.
  */
-void createCurrencyScreen(const String &currency, float rate, float balance, float charge)
-{
-  lv_obj_t *screen_currency = lv_obj_create(NULL);
+void createCurrencyScreen(const char *currency, float rate, float balance,
+                          float charge) {
+  // Delete existing currency screen if it exists
+  if (screen_currency != nullptr) {
+    lv_obj_del(screen_currency);
+    screen_currency = nullptr;
+    wait_label = nullptr; // Reset wait_label reference
+    //btn_reset = nullptr;   // Reset btn_reset reference
+  }
 
-  String currency_text = "Selected Currency: " + currency;
+  // Create new currency screen
+  screen_currency = lv_obj_create(NULL);
+
+  String currency_text = "Selected Currency: " + String(currency);
   lv_obj_t *currency_label = lv_label_create(screen_currency);
   lv_label_set_text(currency_label, currency_text.c_str());
   lv_obj_align(currency_label, LV_ALIGN_TOP_MID, 0, 20);
@@ -2184,28 +2043,46 @@ void createCurrencyScreen(const String &currency, float rate, float balance, flo
   lv_obj_align(charge_label, LV_ALIGN_TOP_MID, 0, 110);
   lv_obj_set_style_text_font(charge_label, &lv_font_montserrat_16, 0);
 
-  String insert_text = "INSERT " + currency + " SHITCOIN";
+  String insert_text = "INSERT " + String(currency) + " SHITCOIN";
   lv_obj_t *insert_label = lv_label_create(screen_currency);
   lv_label_set_text(insert_label, insert_text.c_str());
   lv_obj_align(insert_label, LV_ALIGN_CENTER, 0, 0);
   lv_obj_set_style_text_font(insert_label, &lv_font_montserrat_24, 0);
 
-  //createBackButton(screen_currency);
+  // Create status label (WAITING FOR ACCEPTOR... / READY)
+  // Delete existing wait_label if it exists
+  if (wait_label != nullptr) {
+    lv_obj_del(wait_label);
+    wait_label = nullptr;
+  }
+
+  String wait_text = "WAITING FOR ACCEPTOR...";
+  wait_label = lv_label_create(screen_currency);
+  lv_label_set_text(wait_label, wait_text.c_str());
+  lv_obj_align(wait_label, LV_ALIGN_TOP_MID, 0, 200);
+  lv_obj_set_style_text_font(wait_label, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(wait_label, LV_COLOR_ORANGE, 0);
+
+  //createResetkButton(screen_currency);
+
+  // Enable reset button when currency screen is created (in case it was
+  // disabled)
+  /*if (btn_reset != nullptr) {
+    lv_obj_clear_state(btn_reset, LV_STATE_DISABLED);
+  }*/
 
   lv_scr_load(screen_currency);
 
-  enableAcceptor(); // Enable the acceptor and uninhibit currencies
+  // Note: enableAcceptor() is now called in button handlers after all data is
+  // loaded
 }
 
-void enableAcceptor()
-{
-  if ((isBlink()) && (!wifiStatus()))
-  {
+void enableAcceptor() {
+  if (paymentService.isBlink(deviceState.fundingSourceBuffer) &&
+      (!wifiStatus())) {
     Serial.println("Error: Blink API is selected but the device is offline");
     return;
-  }
-  else
-  {
+  } else {
     SerialPort1.write(184);          // Enable acceptor
     digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
   }
@@ -2214,14 +2091,16 @@ void enableAcceptor()
 /**
  * @brief Creates the insert money screen.
  *
- * This function creates a new screen and adds labels for displaying the money inserted, total amount, prompt, and maximum amount.
- * It also sets the necessary styles for the labels.
- * @note This function assumes that the main screen has already been deleted and the global variable `isInsertingMoney` has been set to `true`.
+ * This function creates a new screen and adds labels for displaying the money
+ * inserted, total amount, prompt, and maximum amount. It also sets the
+ * necessary styles for the labels.
+ * @note This function assumes that the main screen has already been deleted and
+ * the global variable `isInsertingMoney` has been set to `true`.
  * @note This function prints the free heap size to the serial monitor.
  */
-void createInsertMoneyScreen()
-{
-  deleteCurrencyScreen(); // Properly manage deletion of the previous screen
+void createInsertMoneyScreen() {
+  uiController.deleteCurrencyScreen(); // Properly manage deletion of the
+                                       // previous screen
 
   isInsertingMoney = true;
 
@@ -2232,61 +2111,48 @@ void createInsertMoneyScreen()
   // Create a new screen
   // lv_obj_t *screen_insert_money = lv_obj_create(NULL);
   screen_insert_money = lv_obj_create(NULL); // Create a new screen
-  if (!screen_insert_money)
-  {
+  if (!screen_insert_money) {
     Serial.println("Failed to create a new screen!");
     return;
   }
 
   // Create label for displaying the last inserted amount
   labelLastInserted = lv_label_create(screen_insert_money);
-  if (labelLastInserted)
-  {
+  if (labelLastInserted) {
     lv_label_set_text(labelLastInserted, ""); // Initialize with empty text
     lv_obj_align(labelLastInserted, LV_ALIGN_TOP_LEFT, 30, 50);
     lv_obj_set_style_text_font(labelLastInserted, &lv_font_montserrat_24, 0);
-  }
-  else
-  {
+  } else {
     Serial.println("Failed to create labelLastInserted!");
   }
 
   // Create label for displaying the total amount
   labelTotalAmount = lv_label_create(screen_insert_money);
-  if (labelTotalAmount)
-  {
+  if (labelTotalAmount) {
     lv_label_set_text(labelTotalAmount, ""); // Initialize with empty text
     lv_obj_align(labelTotalAmount, LV_ALIGN_TOP_LEFT, 30, 100);
     lv_obj_set_style_text_font(labelTotalAmount, &lv_font_montserrat_48, 0);
-  }
-  else
-  {
+  } else {
     Serial.println("Failed to create labelTotalAmount!");
   }
 
   // Create prompt label
   lv_obj_t *labelPrompt = lv_label_create(screen_insert_money);
-  if (labelPrompt)
-  {
+  if (labelPrompt) {
     lv_label_set_text(labelPrompt, "TAP SCREEN WHEN FINISHED");
     lv_obj_align(labelPrompt, LV_ALIGN_BOTTOM_MID, 0, -50);
     lv_obj_set_style_text_font(labelPrompt, &lv_font_montserrat_16, 0);
-  }
-  else
-  {
+  } else {
     Serial.println("Failed to create labelPrompt!");
   }
 
   // Create label for displaying the maximum amount
   labelMaxAmount = lv_label_create(screen_insert_money);
-  if (labelMaxAmount)
-  {
+  if (labelMaxAmount) {
     lv_label_set_text(labelMaxAmount, ""); // Initialize with empty text
     lv_obj_align(labelMaxAmount, LV_ALIGN_TOP_LEFT, 30, 220);
     lv_obj_set_style_text_font(labelMaxAmount, &lv_font_montserrat_16, 0);
-  }
-  else
-  {
+  } else {
     Serial.println("Failed to create labelMaxAmount!");
   }
 
@@ -2294,24 +2160,21 @@ void createInsertMoneyScreen()
   lv_scr_load(screen_insert_money);
 }
 
-static void switch_animation_event_handler(lv_event_t *e)
-{
+static void switch_animation_event_handler(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
   lv_obj_t *switch_obj = lv_event_get_target(e);
-  if (code == LV_EVENT_VALUE_CHANGED)
-  {
-    if (lv_obj_has_state(switch_obj, LV_STATE_CHECKED))
-    {
-      strcpy(enableAnimBuffer, "Yes");
+  if (code == LV_EVENT_VALUE_CHANGED) {
+    if (lv_obj_has_state(switch_obj, LV_STATE_CHECKED)) {
+      strcpy(deviceState.enableAnimBuffer, "Yes");
+    } else {
+      strcpy(deviceState.enableAnimBuffer, "No");
     }
-    else
-    {
-      strcpy(enableAnimBuffer, "No");
-    }
+    strlcpy(guiConfig.animated, deviceState.enableAnimBuffer,
+            sizeof(guiConfig.animated));
     Serial.print("Animation enabled: ");
-    Serial.println(enableAnimBuffer);
+    Serial.println(deviceState.enableAnimBuffer);
     // Save the updated setting to JSON
-    saveSettingsToFile();
+    configService.saveGuiConfig(FlashFS, GUI_FILE, guiConfig);
   }
 }
 
@@ -2319,12 +2182,13 @@ static void switch_animation_event_handler(lv_event_t *e)
  * @brief Function to create and initialize currency buttons.
  *
  * This function creates and initializes currency buttons (up to 3 currencies).
- * It sets the position, size, and text of each button based on the currency values.
- * It also sets the button style for the checked state and sets the initial currency.
- * @note This function assumes that the variables currencyATM3, currencyThree, currencyOne, currencyTwo, and currencySelected are defined and accessible.
+ * It sets the position, size, and text of each button based on the currency
+ * values. It also sets the button style for the checked state and sets the
+ * initial currency.
+ * @note This function assumes that the variables currencyATM3, currencyThree,
+ * currencyOne, currencyTwo, and currencySelected are defined and accessible.
  */
-void lv_button_currency()
-{
+void lv_button_currency() {
   lv_obj_t *labelbtn;
 
   // Initialize styles
@@ -2344,11 +2208,11 @@ void lv_button_currency()
 
   // Calculate positions based on the number of buttons
   int num_buttons = 0;
-  if (!currencyOne.isEmpty())
+  if (currencyOne[0] != '\0')
     num_buttons++;
-  if (!currencyTwo.isEmpty())
+  if (currencyTwo[0] != '\0')
     num_buttons++;
-  if (!currencyThree.isEmpty())
+  if (currencyThree[0] != '\0')
     num_buttons++;
 
   int screen_width = 480;
@@ -2356,26 +2220,25 @@ void lv_button_currency()
   int btn_height = 50;
   int spacing = 20;
 
-  int start_x = (screen_width - (num_buttons * btn_width + (num_buttons - 1) * spacing)) / 2;
+  int start_x =
+      (screen_width - (num_buttons * btn_width + (num_buttons - 1) * spacing)) /
+      2;
 
   // Create buttons and apply styles
-  if (!currencyOne.isEmpty())
-  {
+  if (currencyOne[0] != '\0') {
     btn1 = lv_btn_create(screen_main);
-    lv_obj_add_style(btn1, &style_btn_default, 0);                // Apply default style
-    lv_obj_add_style(btn1, &style_btn_pressed, LV_STATE_PRESSED); // Apply checked style
+    lv_obj_add_style(btn1, &style_btn_default, 0); // Apply default style
+    lv_obj_add_style(btn1, &style_btn_pressed,
+                     LV_STATE_PRESSED); // Apply checked style
     lv_obj_add_event_cb(btn1, btn1_event_handler, LV_EVENT_ALL, NULL);
     lv_obj_set_pos(btn1, start_x, 200);
     lv_obj_set_size(btn1, btn_width, btn_height);
     labelbtn = lv_label_create(btn1);
 
-    if (currencyTwo.isEmpty() && currencyThree.isEmpty())
-    {
+    if (currencyTwo[0] == '\0' && currencyThree[0] == '\0') {
       lv_label_set_text(labelbtn, "START");
-    }
-    else
-    {
-      lv_label_set_text(labelbtn, currencyOne.c_str());
+    } else {
+      lv_label_set_text(labelbtn, currencyOne);
     }
 
     lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
@@ -2384,8 +2247,7 @@ void lv_button_currency()
     start_x += btn_width + spacing;
   }
 
-  if (!currencyTwo.isEmpty())
-  {
+  if (currencyTwo[0] != '\0') {
     btn2 = lv_btn_create(screen_main);
     lv_obj_add_style(btn2, &style_btn_default, 0);
     lv_obj_add_style(btn2, &style_btn_pressed, LV_STATE_PRESSED);
@@ -2393,15 +2255,14 @@ void lv_button_currency()
     lv_obj_set_pos(btn2, start_x, 200);
     lv_obj_set_size(btn2, btn_width, btn_height);
     labelbtn = lv_label_create(btn2);
-    lv_label_set_text(labelbtn, currencyTwo.c_str());
+    lv_label_set_text(labelbtn, currencyTwo);
     lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
     lv_obj_center(labelbtn);
 
     start_x += btn_width + spacing;
   }
 
-  if (!currencyThree.isEmpty())
-  {
+  if (currencyThree[0] != '\0') {
     btn3 = lv_btn_create(screen_main);
     lv_obj_add_style(btn3, &style_btn_default, 0);
     lv_obj_add_style(btn3, &style_btn_pressed, LV_STATE_PRESSED);
@@ -2409,29 +2270,31 @@ void lv_button_currency()
     lv_obj_set_pos(btn3, start_x, 200);
     lv_obj_set_size(btn3, btn_width, btn_height);
     labelbtn = lv_label_create(btn3);
-    lv_label_set_text(labelbtn, currencyThree.c_str());
+    lv_label_set_text(labelbtn, currencyThree);
     lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
     lv_obj_center(labelbtn);
   }
 
-  // Set initial currency
-  setCurrency(currencyOne);
+  // Set initial currency (skip inhibit since acceptor is not enabled yet)
+  setCurrency(currencyOne, true);
 }
 
 /*** Display callback to flush the buffer to screen ***/
 /**
- * @brief Flushes the display with the provided color data in the specified area.
+ * @brief Flushes the display with the provided color data in the specified
+ * area.
  *
- * This function is responsible for updating the display with the provided color data
- * in the specified area. It uses the startWrite(), setAddrWindow(), pushPixels(), and
- * endWrite() functions of the lcd object to perform the display update.
+ * This function is responsible for updating the display with the provided color
+ * data in the specified area. It uses the startWrite(), setAddrWindow(),
+ * pushPixels(), and endWrite() functions of the lcd object to perform the
+ * display update.
  *
  * @param disp Pointer to the display driver structure.
  * @param area Pointer to the area structure specifying the region to update.
  * @param color_p Pointer to the color data array.
  */
-void display_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
-{
+void display_flush(lv_disp_drv_t *disp, const lv_area_t *area,
+                   lv_color_t *color_p) {
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
 
@@ -2444,17 +2307,13 @@ void display_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color
 }
 
 /*** Touchpad callback to read the touchpad ***/
-void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
-{
+void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
   uint16_t touchX, touchY;
   bool touched = lcd.getTouch(&touchX, &touchY);
 
-  if (!touched)
-  {
+  if (!touched) {
     data->state = LV_INDEV_STATE_REL;
-  }
-  else
-  {
+  } else {
     data->state = LV_INDEV_STATE_PR;
 
     /*Set the coordinates*/
@@ -2466,64 +2325,78 @@ void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data)
 }
 
 /**
- * Retrieves a Bolt invoice from a specified URL and stores it in the 'boltInvoice' variable.
- * The URL is assumed to be provided in the 'callback' variable.
- * If the request is successful, the invoice is extracted from the JSON response and printed to the Serial monitor.
- * If the invoice is not found in the JSON response, an appropriate message is printed.
- * If the HTTP GET request fails, the function will retry after a delay of 3 seconds.
+ * Retrieves a Bolt invoice from a specified URL and stores it in the
+ * 'boltInvoice' variable. The URL is assumed to be provided in the 'callback'
+ * variable. If the request is successful, the invoice is extracted from the
+ * JSON response and printed to the Serial monitor. If the invoice is not found
+ * in the JSON response, an appropriate message is printed. If the HTTP GET
+ * request fails, the function will retry after a delay of 3 seconds.
  */
-void getBoltInvoice()
-{
-  // Assuming 'callback' is the URL where the invoice can be fetched
-  http.begin(callback);                               // Initialize the connection to the URL
+/**
+ * @brief Non-blocking function to check for Bolt invoice from callback URL.
+ *
+ * This function polls the callback URL to check if an invoice is available.
+ * Returns true if invoice was found, false otherwise.
+ *
+ * @return true if invoice was successfully retrieved, false otherwise
+ */
+bool checkBoltInvoice() {
+  if (callback[0] == '\0') {
+    Serial.println("Error: callback URL is empty");
+    return false;
+  }
+
+  http.begin(callback); // Initialize the connection to the URL
   http.addHeader("Content-Type", "application/json"); // Set header for JSON
+  http.setTimeout(5000); // Set timeout to 5 seconds
 
   int httpCode = http.GET(); // Perform the GET request
 
-  if (httpCode == 200)
-  {                                             // Check if the request was successful
+  if (httpCode == 200) { // Check if the request was successful
     String responseCallback = http.getString(); // Get the response as a string
 
     DynamicJsonDocument doc(1024);
-    deserializeJson(doc, responseCallback); // Parse the JSON response into the document
+    DeserializationError error = deserializeJson(doc, responseCallback);
 
-    boltInvoice = doc["invoice"].as<String>(); // Extract the invoice from the JSON document
-
-    if (!boltInvoice.isEmpty())
-    {
-      Serial.print("Bolt Invoice: ");
-      Serial.println(boltInvoice);
+    if (error) {
+      Serial.print("JSON parse error: ");
+      Serial.println(error.c_str());
+      http.end();
+      return false;
     }
-    else
-    {
+
+    const char *inv = doc["invoice"];
+    if (inv && strlen(inv) > 0) {
+      strlcpy(sessionState.boltInvoice, inv, sizeof(sessionState.boltInvoice));
+      Serial.print("Bolt Invoice received: ");
+      Serial.println(sessionState.boltInvoice);
+      http.end();
+      return true;
+    } else {
       Serial.println("Invoice not found in the JSON response.");
+      http.end();
+      return false;
     }
-  }
-  else
-  {
-    Serial.print("HTTP GET failed, error: ");
-    Serial.println(httpCode); // Print the HTTP error code
+  } else {
+    // Not ready yet, this is normal - invoice hasn't been generated
     http.end();
-    delay(5000);
-    Serial.print("Waiting for Bolt11: ");
-    Serial.println(ESP.getFreeHeap());
-    getBoltInvoice();
+    return false;
   }
-
-  http.end(); // Close the connection
 }
 
 /**
- * Sends a POST request to the GraphQL API endpoint with the provided Bolt invoice.
- * The request includes the necessary headers and payload to process the payment.
+ * Sends a POST request to the GraphQL API endpoint with the provided Bolt
+ * invoice. The request includes the necessary headers and payload to process
+ * the payment.
  *
- * @param boltInvoice The Bolt invoice to be sent as part of the request payload.
+ * @param boltInvoice The Bolt invoice to be sent as part of the request
+ * payload.
  */
-void getBlinkLnURL(const String &boltInvoice)
-{
-  http.begin(graphqlEndpoint);                        // Initialize with the API endpoint
+void getBlinkLnURL(const char *invoice) {
+  http.begin(graphqlEndpoint); // Initialize with the API endpoint
   http.addHeader("Content-Type", "application/json"); // Set content type
-  http.addHeader("X-API-KEY", blinkapikey);           // Add the API key in the Authorization header
+  http.addHeader("X-API-KEY",
+                 blinkapikey); // Add the API key in the Authorization header
 
   // Prepare the GraphQL mutation as a string
   String graphqlQuery = R"(
@@ -2542,7 +2415,7 @@ void getBlinkLnURL(const String &boltInvoice)
   DynamicJsonDocument doc(1024);
   doc["query"] = graphqlQuery;
   doc["variables"]["input"]["walletId"] = blinkwalletid;
-  doc["variables"]["input"]["paymentRequest"] = boltInvoice;
+  doc["variables"]["input"]["paymentRequest"] = invoice;
   doc["variables"]["input"]["memo"] = "LightningATM payout";
 
   String requestBody;
@@ -2553,7 +2426,7 @@ void getBlinkLnURL(const String &boltInvoice)
   String responsePayload = http.getString(); // Get the response payload
 
   Serial.print("Modified LNURL: ");
-  Serial.println(modifiedLnURLgen);
+  Serial.println(sessionState.modifiedLnURLgen);
   Serial.print("HTTP Status Code: ");
   Serial.println(httpCode);
   Serial.print("Response Payload: ");
@@ -2563,32 +2436,32 @@ void getBlinkLnURL(const String &boltInvoice)
 }
 
 /**
- * @brief Creates a LNURL withdrawal request and sends it to the specified API endpoint.
+ * @brief Creates a LNURL withdrawal request and sends it to the specified API
+ * endpoint.
  *
- * This function calculates the withdrawal amount in satoshis based on the total amount and fiat value.
- * If a charge percentage is specified, it deducts the charge from the withdrawal amount.
- * Then, it sends a POST request to the primary API endpoint. If the request fails, it tries the secondary endpoint.
- * If the request is successful, it parses the response JSON and extracts the LNURL and callback URL.
+ * This function calculates the withdrawal amount in satoshis based on the total
+ * amount and fiat value. If a charge percentage is specified, it deducts the
+ * charge from the withdrawal amount. Then, it sends a POST request to the
+ * primary API endpoint. If the request fails, it tries the secondary endpoint.
+ * If the request is successful, it parses the response JSON and extracts the
+ * LNURL and callback URL.
  *
- * @note This function requires the `http` library and the `primaryApiEndpoint` and `secondaryApiEndpoint` variables to be defined.
+ * @note This function requires the `http` library and the `primaryApiEndpoint`
+ * and `secondaryApiEndpoint` variables to be defined.
  *
  * @param None
  * @return None
  */
-void createLNURLWithdraw()
-{
+void createLNURLWithdraw() {
   float temp = ((total / 100.0) / fiatValue * 1e8);
 
   Serial.print("Temp (satoshis): ");
   Serial.println(temp);
 
-  if (chargeSelected > 0)
-  {
+  if (chargeSelected > 0) {
     tempCharge = ((total / 100.0) / fiatValue * 1e8) * chargeSelected / 100;
     result = round(temp) - tempCharge;
-  }
-  else
-  {
+  } else {
     result = round(temp);
   }
 
@@ -2614,8 +2487,7 @@ void createLNURLWithdraw()
   Serial.println(requestBody);
 
   int httpCode = http.POST(requestBody);
-  if (httpCode != 200 && httpCode != 201)
-  {
+  if (httpCode != 200 && httpCode != 201) {
     // Primary service failed, try secondary service
     Serial.println("Primary service failed with code: " + String(httpCode));
     Serial.println("Attempting to connect to secondary service...");
@@ -2626,22 +2498,24 @@ void createLNURLWithdraw()
     httpCode = http.POST(requestBody);
   }
 
-  if (httpCode == 200 || httpCode == 201)
-  {
-    String payload = http.getString();
+  if (httpCode == 200 || httpCode == 201) {
+    String responsePayload = http.getString();
     Serial.print("Blink payload: ");
-    Serial.println(payload);
+    Serial.println(responsePayload);
     // Parse JSON
     DynamicJsonDocument doc(1024);
-    deserializeJson(doc, payload);
+    deserializeJson(doc, responsePayload);
 
     // Get balance from parsed JSON
-    lnURLgen = doc["lnurl"].as<String>();
-    modifiedLnURLgen = lnURLgen.substring(10);
-    callback = doc["callback"].as<String>();
-  }
-  else
-  {
+    strlcpy(lnURLgen, doc["lnurl"] | "", sizeof(lnURLgen));
+    if (strlen(lnURLgen) > 10) {
+      strlcpy(sessionState.modifiedLnURLgen, lnURLgen + 10,
+              sizeof(sessionState.modifiedLnURLgen));
+    } else {
+      sessionState.modifiedLnURLgen[0] = '\0';
+    }
+    strlcpy(callback, doc["callback"] | "", sizeof(callback));
+  } else {
     Serial.println("Failed to generate LNURL: " + String(httpCode));
   }
 
@@ -2651,15 +2525,18 @@ void createLNURLWithdraw()
 /**
  * @brief Retrieves the Blink LNURL and executes an operation using the LNURL.
  *
- * This function retrieves the Blink LNURL and performs an operation using the LNURL. It calculates the total amount in cents,
- * the EUR value (price of 1 Bitcoin in euros), and the charge. It then converts the total amount to satoshis and subtracts the charge
- * if applicable. Finally, it sends a POST request to the API endpoint with the LNURL and retrieves the response from Blink.
+ * This function retrieves the Blink LNURL and performs an operation using the
+ * LNURL. It calculates the total amount in cents, the EUR value (price of 1
+ * Bitcoin in euros), and the charge. It then converts the total amount to
+ * satoshis and subtracts the charge if applicable. Finally, it sends a POST
+ * request to the API endpoint with the LNURL and retrieves the response from
+ * Blink.
  *
- * @note Make sure to set the appropriate values for `total`, `fiatValue`, `chargeSelected`, `graphqlEndpoint`, `blinkapikey`, and `lnurl`
- * before calling this function.
+ * @note Make sure to set the appropriate values for `total`, `fiatValue`,
+ * `chargeSelected`, `graphqlEndpoint`, `blinkapikey`, and `lnurl` before
+ * calling this function.
  */
-void getBlinkLNURL()
-{
+void getBlinkLNURL() {
   Serial.print("Total (cents): ");
   Serial.println(total);
   Serial.print("EUR Value (price of 1 Bitcoin in euros): ");
@@ -2672,13 +2549,10 @@ void getBlinkLNURL()
   Serial.print("Temp (satoshis): ");
   Serial.println(temp);
 
-  if (chargeSelected > 0)
-  {
+  if (chargeSelected > 0) {
     tempCharge = ((total / 100.0) / fiatValue * 1e8) * chargeSelected / 100;
     result = round(temp) - tempCharge;
-  }
-  else
-  {
+  } else {
     result = round(temp);
   }
 
@@ -2710,14 +2584,12 @@ void getBlinkLNURL()
   String requestBody;
   serializeJson(doc, requestBody);
   int httpCode = http.POST(requestBody);
-  if (httpCode == 201)
-  {
+  if (httpCode == 201) {
     String response = http.getString();
     Serial.println("Response from Blink: " + response);
-  }
-  else
-  {
-    Serial.println("Failed to execute operation via Blink: " + String(httpCode));
+  } else {
+    Serial.println("Failed to execute operation via Blink: " +
+                   String(httpCode));
   }
 
   http.end();
@@ -2726,14 +2598,15 @@ void getBlinkLNURL()
 /**
  * @brief Retrieves the LNURL from the server based on the provided parameters.
  *
- * This function calculates the LNURL based on the total amount, EUR value, and charge selected.
- * It then sends a POST request to the server to retrieve the LNURL.
- * The LNURL is parsed from the response and stored in the lnURLgen variable.
+ * This function calculates the LNURL based on the total amount, EUR value, and
+ * charge selected. It then sends a POST request to the server to retrieve the
+ * LNURL. The LNURL is parsed from the response and stored in the lnURLgen
+ * variable.
  *
- * @note This function assumes that the necessary variables (total, fiatValue, chargeSelected, lnbitsURL, adminkey) have been properly initialized.
+ * @note This function assumes that the necessary variables (total, fiatValue,
+ * chargeSelected, lnbitsURL, adminkey) have been properly initialized.
  */
-void getLNURL()
-{
+void getLNURL() {
   Serial.print("Total (cents): ");
   Serial.println(total);
   Serial.print("EUR Value (price of 1 Bitcoin in euros): ");
@@ -2746,13 +2619,10 @@ void getLNURL()
   Serial.print("Temp (satoshis): ");
   Serial.println(temp);
 
-  if (chargeSelected > 0)
-  {
+  if (chargeSelected > 0) {
     tempCharge = ((total / 100.0) / fiatValue * 1e8) * chargeSelected / 100;
     result = round(temp) - tempCharge;
-  }
-  else
-  {
+  } else {
     result = round(temp);
   }
 
@@ -2761,23 +2631,39 @@ void getLNURL()
   Serial.print("Result (rounded satoshis): ");
   Serial.println(result);
 
-  // Convert long to String for the POST request
+  Serial.println(result);
+
   String resultStr = String(result);
 
-  http.begin(lnbitsURL + "/withdraw/api/v1/links");   // Specify request destination
-  http.addHeader("Content-Type", "application/json"); // Specify content-type header
-  http.addHeader("X-Api-Key", adminkey);              // Specify API key header
+  if (lnbitsURL[0] == '\0') {
+    Serial.println("Error: lnbitsURL is empty in getLNURL");
+    return;
+  }
+
+  http.end(); // Ensure previous connection is closed
+
+  char requestUrl[512];
+  snprintf(requestUrl, sizeof(requestUrl), "%s/withdraw/api/v1/links",
+           lnbitsURL);
+  http.begin(requestUrl); // Specify request destination
+  http.addHeader("Content-Type",
+                 "application/json");    // Specify content-type header
+  http.addHeader("X-Api-Key", adminkey); // Specify API key header
 
   String httpRequestData = "{\"title\": \"Fiat Hell ";
   httpRequestData += "\", \"min_withdrawable\": ";
   httpRequestData += resultStr;
   httpRequestData += ", \"max_withdrawable\": ";
   httpRequestData += resultStr;
-  httpRequestData += ", \"uses\": 1, \"wait_time\": 1, \"is_unique\": 1, \"webhook_url\": \"\"}";
+  httpRequestData += ", \"uses\": 1, \"wait_time\": 1, \"is_unique\": 1, "
+                     "\"webhook_url\": \"\"}";
   int httpCode = http.POST(httpRequestData);
 
-  // int httpCode = http.POST("{\"title\": \"Fiat Hell\", \"min_withdrawable\": \" + result + \", \"max_withdrawable\": \" + result + \" , \"uses\": \"1\", \"wait_time\": \"1\", \"is_unique\": \"true\", \"webhook_url\": \"\"}");   // Send the request
-  String payloadon = http.getString(); // Get the response payload
+  // int httpCode = http.POST("{\"title\": \"Fiat Hell\", \"min_withdrawable\":
+  // \" + result + \", \"max_withdrawable\": \" + result + \" , \"uses\": \"1\",
+  // \"wait_time\": \"1\", \"is_unique\": \"true\", \"webhook_url\": \"\"}"); //
+  // Send the request
+  String responsePayload = http.getString(); // Get the response payload
 
   // Serial.println(httpCode);   // Print HTTP return code
   Serial.print("Temp: ");
@@ -2787,18 +2673,19 @@ void getLNURL()
   Serial.print("ResultSTR: ");
   Serial.println(resultStr);
   Serial.print("Payload: ");
-  Serial.println(payloadon); // Print request response payload
+  Serial.println(responsePayload); // Print request response payload
 
   // Parse JSON
   DynamicJsonDocument doc(1024);
-  deserializeJson(doc, payloadon);
+  deserializeJson(doc, responsePayload);
 
   // Get balance from parsed JSON
-  lnURLgen = doc["lnurl"].as<String>();
+  strlcpy(lnURLgen, doc["lnurl"] | "", sizeof(lnURLgen));
 
   Serial.print("LNURL: ");
   Serial.println(lnURLgen);
-  modifiedLnURLgen = lnURLgen;
+  strlcpy(sessionState.modifiedLnURLgen, lnURLgen,
+          sizeof(sessionState.modifiedLnURLgen));
 
   http.end(); // Close connection
   // lv_task_handler();
@@ -2823,20 +2710,21 @@ void getLNURL()
  *       - total: The total amount for the transaction.
  *       - qrData: The variable to store the bech32-encoded LNURL.
  */
-void makeLNURL()
-{
+void makeLNURL() {
   int randomPin = random(1000, 9999);
   byte nonce[8];
-  for (int i = 0; i < 8; i++)
-  {
+  for (int i = 0; i < 8; i++) {
     nonce[i] = random(256);
   }
 
   byte payload[51]; // 51 bytes is max one can get with xor-encryption
 
-  size_t payload_len = xor_encrypt(payload, sizeof(payload), (uint8_t *)secretATM.c_str(), secretATM.length(), nonce, sizeof(nonce), randomPin, float(total));
-  String preparedURL = baseURLATM + "?atm=1&p=";
-  preparedURL += toBase64(payload, payload_len, BASE64_URLSAFE | BASE64_NOPADDING);
+  size_t payload_len = xor_encrypt(
+      payload, sizeof(payload), (uint8_t *)secretATM, strlen(secretATM), nonce,
+      sizeof(nonce), randomPin, float(total));
+  String preparedURL = String(baseURLATM) + "?atm=1&p=";
+  preparedURL +=
+      toBase64(payload, payload_len, BASE64_URLSAFE | BASE64_NOPADDING);
 
   Serial.println(preparedURL);
   char Buf[200];
@@ -2848,7 +2736,7 @@ void makeLNURL()
   char *charLnurl = (char *)calloc(strlen(url) * 2, sizeof(byte));
   bech32_encode(charLnurl, "lnurl", data, len);
   to_upper(charLnurl);
-  qrData = charLnurl;
+  strlcpy(qrData, charLnurl, sizeof(qrData));
   Serial.print("Buf: ");
   Serial.println(Buf);
 }
@@ -2865,14 +2753,16 @@ void makeLNURL()
  * @param nonce_len The length of the nonce.
  * @param pin The PIN code to be encrypted.
  * @param amount_in_cents The amount to be encrypted.
- * @return The number of bytes written to the output buffer, or 0 if there was not enough space.
+ * @return The number of bytes written to the output buffer, or 0 if there was
+ * not enough space.
  */
-int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen, uint8_t *nonce, size_t nonce_len, uint64_t pin, uint64_t amount_in_cents)
-{
+int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen,
+                uint8_t *nonce, size_t nonce_len, uint64_t pin,
+                uint64_t amount_in_cents) {
   // check we have space for all the data:
   // <variant_byte><len|nonce><len|payload:{pin}{amount}><hmac>
-  if (outlen < 2 + nonce_len + 1 + lenVarInt(pin) + 1 + lenVarInt(amount_in_cents) + 8)
-  {
+  if (outlen <
+      2 + nonce_len + 1 + lenVarInt(pin) + 1 + lenVarInt(amount_in_cents) + 8) {
     return 0;
   }
 
@@ -2890,7 +2780,7 @@ int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen, uin
   int payload_len = lenVarInt(pin) + 1 + lenVarInt(amount_in_cents);
   output[cur] = (uint8_t)payload_len;
   cur++;
-  uint8_t *payload = output + cur;                                 // pointer to the start of the payload
+  uint8_t *payload = output + cur; // pointer to the start of the payload
   cur += writeVarInt(pin, output + cur, outlen - cur);             // pin code
   cur += writeVarInt(amount_in_cents, output + cur, outlen - cur); // amount
   cur++;
@@ -2902,8 +2792,7 @@ int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen, uin
   h.write((uint8_t *)"Round secret:", 13);
   h.write(nonce, nonce_len);
   h.endHMAC(hmacresult);
-  for (int i = 0; i < payload_len; i++)
-  {
+  for (int i = 0; i < payload_len; i++) {
     payload[i] = payload[i] ^ hmacresult[i];
   }
 
@@ -2919,19 +2808,16 @@ int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen, uin
   return cur;
 }
 
-void showMessageLVGL(String message)
-{
+void showMessageLVGL(String message) {
   // Create an LVGL label to display the message
   lv_obj_t *label = lv_label_create(screen_qr);
   lv_label_set_text(label, message.c_str());
   lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
 }
 
-void showQRCodeLVGL(const char *data)
-{
+void showQRCodeLVGL(const char *data) {
   // Properly handle screen memory
-  if (screen_qr != nullptr)
-  {
+  if (screen_qr != nullptr) {
     lv_obj_del(screen_qr); // Delete the previous screen if exists
   }
 
@@ -2943,15 +2829,14 @@ void showQRCodeLVGL(const char *data)
 
   // Create the QR code
   lv_obj_t *qr = lv_qrcode_create(screen_qr, 200, fg_color, bg_color);
-  if (qr == nullptr)
-  {
+  if (qr == nullptr) {
     Serial.println("Failed to create QR code object.");
     return;
   }
 
   // Update QR code with the given data, ensuring data is valid
-  if (data == nullptr || lv_qrcode_update(qr, data, strlen(data)) != LV_RES_OK)
-  {
+  if (data == nullptr || strlen(data) == 0 ||
+      lv_qrcode_update(qr, data, strlen(data)) != LV_RES_OK) {
     Serial.println("Failed to update QR code.");
     return;
   }
@@ -2963,30 +2848,26 @@ void showQRCodeLVGL(const char *data)
 
   // Create a label for the warning message
   lv_obj_t *labelWarning = lv_label_create(screen_qr);
-  if (labelWarning == nullptr)
-  {
+  if (labelWarning == nullptr) {
     Serial.println("Failed to create labelWarning object.");
     return;
   }
-  lv_label_set_text(labelWarning, "IN CASE OF PROBLEMS, MAKE A PHOTO AND CONTACT SUPPORT");
+  lv_label_set_text(labelWarning,
+                    "IN CASE OF PROBLEMS, MAKE A PHOTO AND CONTACT SUPPORT");
   lv_obj_set_style_text_font(labelWarning, &lv_font_montserrat_14, 0);
   lv_obj_set_style_text_color(labelWarning, lv_color_hex(0xCCCCCC), 0);
   lv_obj_align(labelWarning, LV_ALIGN_BOTTOM_MID, 0, -5);
 
   // Create a label for the confirmation message
   lv_obj_t *label = lv_label_create(screen_qr);
-  if (label == nullptr)
-  {
+  if (label == nullptr) {
     Serial.println("Failed to create label object.");
     return;
   }
 
-  if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-  {
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
     lv_label_set_text(label, "TAP ON SCREEN WHEN FINISHED");
-  }
-  else
-  {
+  } else {
     lv_label_set_text(label, "SCAN AND WAIT FOR CONFIRMATION");
   }
   lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
@@ -3003,76 +2884,7 @@ void showQRCodeLVGL(const char *data)
   printHeapStatus(); // Print heap status for debugging
 }
 
-void deleteMainScreen()
-{
-  if (screen_main != NULL)
-  { // Check if screen_main actually points to an object
-    lv_obj_del(screen_main);
-    screen_main = NULL; // Set the pointer to NULL to avoid "dangling pointers"
-    Serial.println(F("Delete: screen_main"));
-  }
-}
-void deleteLogoScreen()
-{
-  if (screen_logo != NULL)
-  { // Check if screen_logo actually points to an object
-    lv_obj_del(screen_logo);
-    screen_logo = NULL; // Set the pointer to NULL to avoid "dangling pointers"
-    Serial.println(F("Delete: screen_logo"));
-  }
-}
-
-void deleteCurrencyScreen()
-{
-  if (screen_currency != NULL)
-  { // Check if screen_currency actually points to an object
-    lv_obj_del(screen_currency);
-    screen_currency = NULL; // Set the pointer to NULL to avoid "dangling pointers"
-    Serial.println(F("Delete: screen_currency"));
-  }
-}
-
-void deleteInsertMoneyScreen()
-{
-  if (screen_insert_money != NULL)
-  { // Check if screen_qr actually points to an object
-    lv_obj_del(screen_insert_money);
-    screen_insert_money = NULL; // Set the pointer to NULL to avoid "dangling pointers"
-    Serial.println(F("Delete: screen_insert_money"));
-  }
-}
-
-void deleteQRCodeScreen()
-{
-  if (screen_qr != NULL)
-  { // Check if screen_qr actually points to an object
-    lv_obj_del(screen_qr);
-    screen_qr = NULL; // Set the pointer to NULL to avoid "dangling pointers"
-    Serial.println(F("Delete: screen_qr"));
-  }
-}
-
-void deleteThankYouScreen()
-{
-  if (screen_thx != NULL)
-  { // Check if screen_qr actually points to an object
-    lv_obj_del(screen_thx);
-    screen_thx = NULL; // Set the pointer to NULL to avoid "dangling pointers"
-    Serial.println(F("Delete: screen_thx"));
-  }
-}
-
-void deleteAllScreens()
-{
-  deleteLogoScreen();
-  deleteCurrencyScreen();
-  deleteInsertMoneyScreen();
-  deleteQRCodeScreen();
-  deleteThankYouScreen();
-}
-
-void printHeapStatus()
-{
+void printHeapStatus() {
   Serial.print("Total heap: ");
   Serial.println(ESP.getHeapSize());
   Serial.print("Free heap: ");
@@ -3080,102 +2892,71 @@ void printHeapStatus()
   Serial.print("Largest free block: ");
   Serial.println(ESP.getMaxAllocHeap());
   Serial.print("Heap fragmentation: ");
-  Serial.println((float)(ESP.getHeapSize() - ESP.getFreeHeap()) / ESP.getHeapSize() * 100.0);
+  Serial.println((float)(ESP.getHeapSize() - ESP.getFreeHeap()) /
+                 ESP.getHeapSize() * 100.0);
 }
 
-static void saveSettingsToFile()
-{
-  StaticJsonDocument<2400> docGui;
-
-  JsonObject docGui0 = docGui.createNestedObject();
-  docGui0["name"] = "fundingsource";
-  JsonArray valuesFundingSource = docGui0.createNestedArray("value");
-  valuesFundingSource.add("Blink");
-  valuesFundingSource.add("LNbits");
-  if (strcmp(fundingSourceBuffer, "Blink") == 0)
-  {
-    docGui0["checked"] = 1;
+/*void btn_reset_event_handler(lv_event_t *e) {
+  if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+    Serial.println("Back button pressed - restarting device");
+    // Restart device instead of going back to main screen
+    // This prevents issues where user inserts money and immediately presses
+    // Back, which could cause incorrect currency handling
+    ESP.restart();
   }
-  else
-  {
-    docGui0["checked"] = 2;
-  }
-
-  JsonObject docGui1 = docGui.createNestedObject();
-  docGui1["name"] = "ratesource";
-  JsonArray valuesRateSource = docGui1.createNestedArray("value");
-  valuesRateSource.add("Coingecko");
-  valuesRateSource.add("ExchangeApi");
-  if (strcmp(rateSourceBuffer, "Coingecko") == 0)
-  {
-    docGui1["checked"] = 1;
-  }
-  else
-  {
-    docGui1["checked"] = 2;
-  }
-
-  JsonObject docGui2 = docGui.createNestedObject();
-  docGui2["name"] = "animated";
-  JsonArray valuesEnableAnim = docGui2.createNestedArray("value");
-  valuesEnableAnim.add("No");
-  valuesEnableAnim.add("Yes");
-  if (strcmp(enableAnimBuffer, "No") == 0)
-  {
-    docGui2["checked"] = 1;
-  }
-  else
-  {
-    docGui2["checked"] = 2;
-  }
-
-  File guiFile = FlashFS.open(GUI_FILE, "w");
-  if (guiFile)
-  {
-    serializeJson(docGui, guiFile);
-    guiFile.close();
-    Serial.println("Settings saved to file");
-  }
-  else
-  {
-    Serial.println("Failed to open file for writing");
-  }
-}
-
-void btn_back_event_handler(lv_event_t *e)
-{
-  if (lv_event_get_code(e) == LV_EVENT_CLICKED)
-  {
-    Serial.println("Back to Main Screen");
-    createMainScreen(); // Navigate back to the main screen
-    lv_task_handler();
-  }
-}
+}*/
 
 /**
  * @brief Starts the configuration portal.
  *
- * This function is responsible for starting the configuration portal, which allows the user to configure the device settings.
- * It assumes that the 'config' and 'portal' objects have been previously defined and configured appropriately.
+ * This function is responsible for starting the configuration portal, which
+ * allows the user to configure the device settings. It assumes that the
+ * 'config' and 'portal' objects have been previously defined and configured
+ * appropriately.
  *
- * @note This function enters an infinite loop until the configuration process is completed.
+ * @note This function enters an infinite loop until the configuration process
+ * is completed.
  */
-void startConfigPortal()
-{
+void startConfigPortal() {
   Serial.println("Entered Config Portal");
 
-  // Assume config and portal are previously defined and configured appropriately
+  // Assume config and portal are previously defined and configured
+  // appropriately
   config.immediateStart = true;
-  portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux, savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux});
+  portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
+               savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux});
   portal.config(config);
   portal.begin();
-  Serial.println("Portal finished. IP2: " + WiFi.localIP().toString());
-  while (true)
-  {
-    portal.handleClient();
-  }
+  Serial.println("Portal started. IP2: " + WiFi.localIP().toString());
+  // No infinite loop; portal.handleClient() is called in the main loop
   // timer = 2000;
 }
+
+/* Back button */
+
+// Function to create a back button
+
+/*void createResetButton(lv_obj_t *parent)
+
+{
+  if (parent == NULL)
+    return; // Safety check
+
+  // Delete existing back button if it exists
+  if (btn_reset != nullptr) {
+    lv_obj_del(btn_reset);
+    btn_reset = nullptr;
+  }
+
+  btn_reset =
+      lv_btn_create(parent); // Create button on the provided parent object
+  lv_obj_set_size(btn_reset, 80, 40);
+  lv_obj_align(btn_reset, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+  lv_obj_t *btn_label_back = lv_label_create(btn_reset);
+  lv_label_set_text(btn_label_back, "Restart");
+  lv_obj_center(btn_label_back);
+  lv_obj_add_event_cb(btn_reset, btn_reset_event_handler, LV_EVENT_CLICKED, NULL);
+}*/
 
 /**
  * @brief Flag indicating whether the loop is currently reading.
@@ -3190,34 +2971,164 @@ void startConfigPortal()
 volatile bool isLoopReading = false;
 
 /**
+ * @brief Handles UI state machine transitions non-blockingly.
+ *
+ * This function processes state transitions based on current state, timestamps,
+ * and user input. It replaces blocking while/delay loops with non-blocking
+ * state checks.
+ */
+void handleUiStateMachine() {
+  unsigned long currentTime = millis();
+  BTNA.read();
+
+  switch (currentUiState) {
+  case UI_LOGO_WAIT: {
+    // Wait for 5 seconds or tap during logo screen
+    // Check both hardware button (BTNA) and touchscreen
+    bool tapDetected = false;
+
+    // Check hardware button first
+    if (BTNA.wasPressed()) {
+      tapDetected = true;
+      Serial.println("Logo tap detected (BTNA) => triggerAp = true");
+    }
+
+    // Also check touchscreen directly (for display touch)
+    uint16_t touchX, touchY;
+    if (lcd.getTouch(&touchX, &touchY)) {
+      tapDetected = true;
+      Serial.print("Logo tap detected (touchscreen) at (");
+      Serial.print(touchX);
+      Serial.print(",");
+      Serial.print(touchY);
+      Serial.println(") => triggerAp = true");
+    }
+
+    if (tapDetected) {
+      triggerAp = true;
+      currentUiState = UI_IDLE;
+    } else if (currentTime - stateEnterTime >= 2000) {
+      currentUiState = UI_IDLE;
+      Serial.println("Logo wait timeout => proceeding");
+    }
+    break;
+  }
+
+  case UI_INSERTING_MONEY:
+    // State is set when bill is detected, handled in main loop
+    // Transition to SHOWING_QR happens when total reached (handled elsewhere)
+    break;
+
+  case UI_SHOWING_QR:
+    // After QR is shown, wait for debounce (1000ms) then transition
+    if (currentTime - stateEnterTime >= 1000) {
+      if (!qrDebounceDone) {
+        qrDebounceDone = true;
+        Serial.println("QR debounce done");
+      }
+      // For Blink, transition to waiting for invoice from proxy server
+      // For LNbits, transition to waiting for tap
+      if (isBlinkFlow) {
+        currentUiState = UI_WAITING_FOR_BLINK_INVOICE;
+        stateEnterTime = currentTime;
+        lastBlinkPollTime = 0; // Reset poll timer
+        Serial.println("State: SHOWING_QR -> WAITING_FOR_BLINK_INVOICE");
+      } else {
+        currentUiState = UI_WAITING_FOR_TAP;
+        stateEnterTime = currentTime;
+        Serial.println("State: SHOWING_QR -> WAITING_FOR_TAP");
+      }
+    }
+    break;
+
+  case UI_WAITING_FOR_BLINK_INVOICE:
+    // Non-blocking polling for Blink invoice from callback URL
+    // Poll every 2 seconds
+    if (currentTime - lastBlinkPollTime >= 2000) {
+      lastBlinkPollTime = currentTime;
+      Serial.println("Polling for Blink invoice...");
+
+      if (checkBoltInvoice()) {
+        // Invoice received! Process it and show thank you screen
+        Serial.println("Blink invoice received => processing payment");
+        getBlinkLnURL(sessionState.boltInvoice);
+        uiController.deleteQRCodeScreen();
+        createThankYouScreen();
+        lv_task_handler();
+        currentUiState = UI_THANK_YOU;
+        stateEnterTime = millis();
+        isBlinkFlow = false;
+      }
+      // If no invoice yet, continue polling (will check again in 2 seconds)
+    }
+    // Optional: Add timeout (e.g., 5 minutes) to prevent infinite waiting
+    if (currentTime - stateEnterTime >= 300000) { // 5 minutes timeout
+      Serial.println("Blink invoice timeout => restarting");
+      ESP.restart();
+    }
+    break;
+
+  case UI_WAITING_FOR_TAP:
+    // Non-blocking wait for tap after QR code (for LNbits)
+    if (BTNA.wasPressed()) {
+      // Reset for the next transaction
+      coins = 0;
+      bills = 0;
+      total = 0;
+      isInsertingMoney = false;
+      currentUiState = UI_IDLE;
+      Serial.println("Tap detected => resetting and restarting");
+      ESP.restart();
+    }
+    break;
+
+  case UI_THANK_YOU:
+    // After thank you screen, wait then restart
+    if (currentTime - stateEnterTime >= 1200) {
+      Serial.println("Thank you timeout => restarting");
+      ESP.restart();
+    }
+    break;
+
+  case UI_IDLE:
+  default:
+    // Idle state - no special handling needed
+    break;
+  }
+}
+
+/**
  * @brief The main loop function that runs repeatedly in the program.
  *
- * This function is responsible for handling the GUI, checking the balance, updating the main screen label,
- * detecting the insertion of money, processing the total, and waiting for user input to go back to the main screen.
- * It also includes a delay of 5 milliseconds at the end of each iteration.
+ * This function is responsible for handling the GUI, checking the balance,
+ * updating the main screen label, detecting the insertion of money, processing
+ * the total, and waiting for user input to go back to the main screen. It also
+ * includes a delay of 5 milliseconds at the end of each iteration.
  */
-void loop()
-{
-  lv_timer_handler(); // Let the GUI do its work
-  portal.handleClient();
+void loop() {
+  lv_timer_handler();    // Let the GUI do its work
+  portal.handleClient(); // Already non‑blocking
 
-  if (initialCheck)
-  {
-    previousMillis = millis() - interval; // So that it gets executed immediately after setup
+  // Handle UI state machine
+  handleUiStateMachine();
+
+  if (initialCheck) {
+    previousMillis =
+        millis() - interval; // So that it gets executed immediately after setup
     initialCheck = false;
   }
 
   unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= interval)
-  {
+  if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
 
     checkNetworkAndDeviceStatus();
     checkPrice();
     checkBalance();          // Check the balance every 5 minutes
-    updateMainScreenLabel(); // Update the label on the main screen with the new balance
+    updateMainScreenLabel(); // Update the label on the main screen with the new
+                             // balance
     lv_task_handler();
-    delay(5);
+    // delay(5); // Removed to avoid blocking
   }
 
   // Check if user is inserting money
@@ -3225,23 +3136,32 @@ void loop()
 
   if (x != -1) // Data available
   {
-    for (int i = 0; i < billAmountIntOne.size(); i++) // Using .size() method on std::vector
+    for (int i = 0; i < billAmountIntOne.size();
+         i++) // Using .size() method on std::vector
     {
-      if ((i + 1) == x)
-      {
+      if ((i + 1) == x) {
         // A valid bill is detected
         bills = bills + billAmountIntOne[i];
         total = (coins + bills);
-        if (!isInsertingMoney)
-        {
+        if (!isInsertingMoney) {
+          // Disable back button when money insertion starts
+          /*if (btn_reset != nullptr) {
+            lv_obj_add_state(btn_reset, LV_STATE_DISABLED);
+            lv_task_handler();
+          }*/
+
           createInsertMoneyScreen();
           lv_task_handler();
-          delay(5);
           isInsertingMoney = true;
+          currentUiState = UI_INSERTING_MONEY;
+          stateEnterTime = millis();
         }
-        String lastBillString = "Last bill: " + String(billAmountIntOne[i]) + " " + currencySelected;
+        String lastBillString = "Last bill: " + String(billAmountIntOne[i]) +
+                                " " + currencySelected;
         String totalString = "Total: " + String(total) + " " + currencySelected;
-        String maxString = "MAX: " + String(maxamountSelected) + " " + currencySelected + " from " + fundingSourceBuffer;
+        String maxString = "MAX: " + String(maxamountSelected) + " " +
+                           currencySelected + " from " +
+                           deviceState.fundingSourceBuffer;
 
         lv_label_set_text(labelLastInserted, lastBillString.c_str());
         lv_label_set_text(labelTotalAmount, totalString.c_str());
@@ -3251,125 +3171,90 @@ void loop()
       }
     }
   }
-  // Check button release or total
-  BTNA.read();
-  // Serial.print("Waiting for tap 1");
-  if ((BTNA.wasPressed() && total != 0) || total >= maxamountSelected)
-  {
-    // Process the total and reset variables for the next transaction.
-    total = (coins + bills) * 100;
+  // Check button release or total (only if in INSERTING_MONEY state)
+  if (currentUiState == UI_INSERTING_MONEY) {
+    if ((BTNA.wasPressed() && total != 0) || total >= maxamountSelected) {
+      // Process the total and reset variables for the next transaction.
+      total = (coins + bills) * 100;
 
-    Serial.print(F("Total: "));
-    Serial.println(total);
+      Serial.print(F("Total: "));
+      Serial.println(total);
 
-    if (!wifiStatus())
-    {
-      deleteInsertMoneyScreen();
-      Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
-      makeLNURL();
-      printHeapStatus();
-      Serial.println("makeLNURL() - LNbits offline: ");
-      showQRCodeLVGL(qrData.c_str());
-      Serial.print("showQRCodeLVGL() - LNbits offline: ");
-      Serial.println(qrData);
-      // Turn off machines
-      SerialPort1.write(185);
-      digitalWrite(INHIBITMECH, LOW);
-      Serial.print("Free heap (makeLNURL): ");
-      Serial.println(ESP.getFreeHeap());
-      lv_task_handler();
-      Serial.println("lv_task_handler() - LNbits offline");
-      delay(5);
-    }
-    else
-    {
-      if (strcmp(fundingSourceBuffer, "Blink") == 0)
-      {
-        deleteInsertMoneyScreen();
-        Serial.println("deleteInsertMoneyScreen() - Blink online");
-        createLNURLWithdraw();
-        Serial.println("createLNURLWithdraw() - Blink online");
-        // Display the QR code for online
-        showQRCodeLVGL(lnURLgen.c_str());
-        Serial.println("showQRCodeLVGL() - Blink online");
-        lv_task_handler();
-        delay(5);
-        Serial.println("lv_task_handler() - Blink online");
+      if (!wifiStatus()) {
+        uiController.deleteInsertMoneyScreen();
+        Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
+        makeLNURL();
+        printHeapStatus();
+        Serial.println("makeLNURL() - LNbits offline: ");
+        showQRCodeLVGL(qrData);
+        Serial.print("showQRCodeLVGL() - LNbits offline: ");
+        Serial.println(qrData);
         // Turn off machines
         SerialPort1.write(185);
         digitalWrite(INHIBITMECH, LOW);
-        // delay(30000); // Wait for 30 seconds for the user to scan the QR code
-        //  bool waitForTap = true;
-        //  while (waitForTap)
-        //  {
-        //    BTNA.read();
-        //    // Serial.print("Waiting for tap 2");
-        //    if (BTNA.wasReleased())
-        //    {
-        //      waitForTap = false;
-        //      // Reset for the next transaction
-        //      // coins = 0;
-        //      // bills = 0;
-        //      // total = 0;
-        //      // isInsertingMoney = false;
-        //      // Load your main screen or perform any other desired action
-        //      getBoltInvoice();
-        //      getBlinkLnURL(boltInvoice);
-        //   }
-        // }
-        getBoltInvoice();
-        getBlinkLnURL(boltInvoice);
-        deleteQRCodeScreen();
-        createThankYouScreen();
+        Serial.print("Free heap (makeLNURL): ");
+        Serial.println(ESP.getFreeHeap());
         lv_task_handler();
-        delay(1200);
-        // createMainScreen();
-        ESP.restart();
+        Serial.println("lv_task_handler() - LNbits offline");
+        currentUiState = UI_SHOWING_QR;
+        stateEnterTime = millis();
+        qrDebounceDone = false;
+      } else {
+        if (paymentService.isBlink(deviceState.fundingSourceBuffer)) {
+          uiController.deleteInsertMoneyScreen();
+          Serial.println("deleteInsertMoneyScreen() - Blink online");
+          createLNURLWithdraw();
+          Serial.println("createLNURLWithdraw() - Blink online");
+          // Display the QR code for online
+          showQRCodeLVGL(lnURLgen);
+          Serial.println("showQRCodeLVGL() - Blink online");
+          lv_task_handler();
+          Serial.println("lv_task_handler() - Blink online");
+          // Turn off machines
+          SerialPort1.write(185);
+          digitalWrite(INHIBITMECH, LOW);
+          currentUiState = UI_SHOWING_QR;
+          stateEnterTime = millis();
+          qrDebounceDone = false;
+          isBlinkFlow = true; // Mark that we're in Blink flow
+        }
+        if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+          if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
+            uiController.deleteInsertMoneyScreen();
+            Serial.println("deleteInsertMoneyScreen() - LNbits online");
+            getLNURL();
+            Serial.println("getLNURL()");
+            // Display the QR code for online
+            showQRCodeLVGL(lnURLgen);
+            Serial.println("showQRCodeLVGL() - LNbits online");
+            lv_task_handler();
+            Serial.println("lv_task_handler() - LNbits online");
+            // Turn off machines
+            SerialPort1.write(185);
+            digitalWrite(INHIBITMECH, LOW);
+            currentUiState = UI_SHOWING_QR;
+            stateEnterTime = millis();
+            qrDebounceDone = false;
+          } else {
+            uiController.deleteInsertMoneyScreen();
+            Serial.println(
+                "deleteInsertMoneyScreen() - LNbits offline fallback");
+            makeLNURL();
+            showQRCodeLVGL(qrData);
+            lv_task_handler();
+            SerialPort1.write(185);
+            digitalWrite(INHIBITMECH, LOW);
+            currentUiState = UI_SHOWING_QR;
+            stateEnterTime = millis();
+            qrDebounceDone = false;
+          }
+        }
+        Serial.print("Free heap (showQRCodeLVGL): ");
+        Serial.println(ESP.getFreeHeap());
       }
-      if (strcmp(fundingSourceBuffer, "LNbits") == 0)
-      {
-        deleteInsertMoneyScreen();
-        Serial.println("deleteInsertMoneyScreen() - LNbits online");
-        getLNURL();
-        Serial.println("getLNURL()");
-        delay(1000);
-        // Display the QR code for online
-        showQRCodeLVGL(lnURLgen.c_str());
-        Serial.println("showQRCodeLVGL() - LNbits online");
-        lv_task_handler();
-        delay(5);
-        Serial.println("lv_task_handler() - LNbits online");
-        // Turn off machines
-        SerialPort1.write(185);
-        digitalWrite(INHIBITMECH, LOW);
-      }
-      Serial.print("Free heap (showQRCodeLVGL): ");
-      Serial.println(ESP.getFreeHeap());
     }
 
-    // Now wait for a tap to go back to the main screen or any other action
-    bool waitForTap = true;
-    while (waitForTap)
-    {
-      BTNA.read();
-      // Serial.print("Waiting for tap 2");
-      if (BTNA.wasPressed())
-      {
-        waitForTap = false;
-        // Reset for the next transaction
-        coins = 0;
-        bills = 0;
-        total = 0;
-        isInsertingMoney = false;
-        // Load your main screen or perform any other desired action
-        // deleteQRCodeScreen();
-        // deleteAllScreens();
-        // createMainScreen();
-        ESP.restart();
-      }
-    }
+    lv_task_handler(); // Call LVGL task handler
+    yield();           // Yield to other tasks (non-blocking, prevents watchdog)
   }
-
-  lv_task_handler(); // Call LVGL task handler
-  delay(5);          // Small delay to avoid watchdog reset
 }
