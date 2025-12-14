@@ -1425,7 +1425,7 @@ void checkBalance() {
       fiatBalance = ((double)balanceSats * fiatValue) / 100000000000.0;
 
       ///*** Debug ***////
-      Serial.print(F("Balance: "));
+      /*Serial.print(F("Balance: "));
       Serial.println(fiatBalance);
 
       Serial.print(F("Currency: "));
@@ -1446,7 +1446,7 @@ void checkBalance() {
       Serial.print(F("HTTP (checkBalance): "));
       Serial.println(httpCode);
       Serial.print("Free heap (checkBalance): ");
-      Serial.println(ESP.getFreeHeap());
+      Serial.println(ESP.getFreeHeap());*/
     } else {
       Serial.print(F("Error (checkBalance): "));
       Serial.println(httpCode);
@@ -1502,14 +1502,14 @@ void checkBalance() {
       fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
 
       ///*** Debug ***////
-      Serial.print("Wallet ID: ");
+      /*Serial.print("Wallet ID: ");
       Serial.println(blinkwalletid);
       Serial.print("Wallet Currency: ");
       Serial.println(walletCurrency);
       Serial.print("Wallet Balance: ");
       Serial.println(balanceSats);
       Serial.print("Fiat balance: ");
-      Serial.println(fiatBalance);
+      Serial.println(fiatBalance);*/
     } else {
       Serial.println("Failed to fetch wallet information");
     }
