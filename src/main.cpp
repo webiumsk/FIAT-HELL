@@ -478,11 +478,6 @@ void setup() {
     // triggerAp = true;
   }
 
-  server.on("/", []() {
-    content += AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", content);
-  });
-
   firstAux.load(FPSTR(PAGE_FIRST));
   firstAux.on([](AutoConnectAux &aux, PageArgument &arg) {
     configService.loadAuxConfig(FlashFS, FIRST_FILE, aux,
@@ -513,10 +508,6 @@ void setup() {
     //} else {
     // triggerAp = true;
   }
-  server.on("/", []() {
-    content += AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", content);
-  });
 
   secondAux.load(FPSTR(PAGE_SECOND));
   secondAux.on([](AutoConnectAux &aux, PageArgument &arg) {
@@ -547,10 +538,6 @@ void setup() {
     //} else {
     // triggerAp = true;
   }
-  server.on("/", []() {
-    content += AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", content);
-  });
 
   thirdAux.load(FPSTR(PAGE_THIRD));
   thirdAux.on([](AutoConnectAux &aux, PageArgument &arg) {
@@ -597,10 +584,6 @@ void setup() {
     //} else {
     // triggerAp = true;
   }
-  server.on("/", []() {
-    content += AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", content);
-  });
 
   guiAux.load(FPSTR(PAGE_GUI));
   guiAux.on([](AutoConnectAux &aux, PageArgument &arg) {
