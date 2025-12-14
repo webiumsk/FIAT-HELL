@@ -221,6 +221,8 @@ lv_obj_t *fiathell;
 lv_obj_t *labelLastInserted = nullptr;
 lv_obj_t *labelTotalAmount = nullptr;
 lv_obj_t *labelMaxAmount = nullptr;
+lv_obj_t *wait_label = nullptr; // Status label on currency screen
+//lv_obj_t *btn_reset = nullptr;   // Back button on currency screen
 
 lv_obj_t *loadingLabel;
 
@@ -316,10 +318,10 @@ int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen,
 
 void checkNetworkAndDeviceStatus();
 void startConfigPortal();
-void btn_back_event_handler(lv_event_t *e);
+//void btn_reset_event_handler(lv_event_t *e);
 void handleUiStateMachine();
 
-void createBackButton(lv_obj_t *parent);
+//void createResetButton(lv_obj_t *parent);
 void printHeapStatus();
 void createLoadingIndicator();
 void showLoadingIndicator();
@@ -1584,6 +1586,14 @@ static void btn1_event_handler(lv_event_t *e) {
     // and inhibit channels are configured
     enableAcceptor();
 
+    // Update status label to "READY" with green color
+    if (wait_label != nullptr) {
+      lv_label_set_text(wait_label, "READY");
+      lv_obj_set_style_text_color(wait_label, lv_color_hex(0x00FF00),
+                                  0); // Green color
+      lv_task_handler();
+    }
+
     Serial.print("Currency set to ");
     Serial.println(currencyOne);
   }
@@ -1639,6 +1649,14 @@ static void btn2_event_handler(lv_event_t *e) {
     // and inhibit channels are configured
     enableAcceptor();
 
+    // Update status label to "READY" with green color
+    if (wait_label != nullptr) {
+      lv_label_set_text(wait_label, "READY");
+      lv_obj_set_style_text_color(wait_label, lv_color_hex(0x00FF00),
+                                  0); // Green color
+      lv_task_handler();
+    }
+
     Serial.print("Currency set to ");
     Serial.println(currencyTwo);
   }
@@ -1683,6 +1701,14 @@ static void btn3_event_handler(lv_event_t *e) {
     // Enable acceptor only after currency is set, price and balance are loaded,
     // and inhibit channels are configured
     enableAcceptor();
+
+    // Update status label to "READY" with green color
+    if (wait_label != nullptr) {
+      lv_label_set_text(wait_label, "READY");
+      lv_obj_set_style_text_color(wait_label, lv_color_hex(0x00FF00),
+                                  0); // Green color
+      lv_task_handler();
+    }
 
     Serial.print("Currency set to ");
     Serial.println(currencyThree);
@@ -1982,7 +2008,16 @@ void createMainScreen() {
  */
 void createCurrencyScreen(const char *currency, float rate, float balance,
                           float charge) {
-  lv_obj_t *screen_currency = lv_obj_create(NULL);
+  // Delete existing currency screen if it exists
+  if (screen_currency != nullptr) {
+    lv_obj_del(screen_currency);
+    screen_currency = nullptr;
+    wait_label = nullptr; // Reset wait_label reference
+    //btn_reset = nullptr;   // Reset btn_reset reference
+  }
+
+  // Create new currency screen
+  screen_currency = lv_obj_create(NULL);
 
   String currency_text = "Selected Currency: " + String(currency);
   lv_obj_t *currency_label = lv_label_create(screen_currency);
@@ -2014,7 +2049,27 @@ void createCurrencyScreen(const char *currency, float rate, float balance,
   lv_obj_align(insert_label, LV_ALIGN_CENTER, 0, 0);
   lv_obj_set_style_text_font(insert_label, &lv_font_montserrat_24, 0);
 
-  // createBackButton(screen_currency);
+  // Create status label (WAITING FOR ACCEPTOR... / READY)
+  // Delete existing wait_label if it exists
+  if (wait_label != nullptr) {
+    lv_obj_del(wait_label);
+    wait_label = nullptr;
+  }
+
+  String wait_text = "WAITING FOR ACCEPTOR...";
+  wait_label = lv_label_create(screen_currency);
+  lv_label_set_text(wait_label, wait_text.c_str());
+  lv_obj_align(wait_label, LV_ALIGN_TOP_MID, 0, 200);
+  lv_obj_set_style_text_font(wait_label, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(wait_label, LV_COLOR_ORANGE, 0);
+
+  //createResetkButton(screen_currency);
+
+  // Enable reset button when currency screen is created (in case it was
+  // disabled)
+  /*if (btn_reset != nullptr) {
+    lv_obj_clear_state(btn_reset, LV_STATE_DISABLED);
+  }*/
 
   lv_scr_load(screen_currency);
 
@@ -2841,13 +2896,15 @@ void printHeapStatus() {
                  ESP.getHeapSize() * 100.0);
 }
 
-void btn_back_event_handler(lv_event_t *e) {
+/*void btn_reset_event_handler(lv_event_t *e) {
   if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-    Serial.println("Back to Main Screen");
-    createMainScreen(); // Navigate back to the main screen
-    lv_task_handler();
+    Serial.println("Back button pressed - restarting device");
+    // Restart device instead of going back to main screen
+    // This prevents issues where user inserts money and immediately presses
+    // Back, which could cause incorrect currency handling
+    ESP.restart();
   }
-}
+}*/
 
 /**
  * @brief Starts the configuration portal.
@@ -2874,6 +2931,32 @@ void startConfigPortal() {
   // No infinite loop; portal.handleClient() is called in the main loop
   // timer = 2000;
 }
+
+/* Back button */
+
+// Function to create a back button
+
+/*void createResetButton(lv_obj_t *parent)
+
+{
+  if (parent == NULL)
+    return; // Safety check
+
+  // Delete existing back button if it exists
+  if (btn_reset != nullptr) {
+    lv_obj_del(btn_reset);
+    btn_reset = nullptr;
+  }
+
+  btn_reset =
+      lv_btn_create(parent); // Create button on the provided parent object
+  lv_obj_set_size(btn_reset, 80, 40);
+  lv_obj_align(btn_reset, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+  lv_obj_t *btn_label_back = lv_label_create(btn_reset);
+  lv_label_set_text(btn_label_back, "Restart");
+  lv_obj_center(btn_label_back);
+  lv_obj_add_event_cb(btn_reset, btn_reset_event_handler, LV_EVENT_CLICKED, NULL);
+}*/
 
 /**
  * @brief Flag indicating whether the loop is currently reading.
@@ -3061,6 +3144,12 @@ void loop() {
         bills = bills + billAmountIntOne[i];
         total = (coins + bills);
         if (!isInsertingMoney) {
+          // Disable back button when money insertion starts
+          /*if (btn_reset != nullptr) {
+            lv_obj_add_state(btn_reset, LV_STATE_DISABLED);
+            lv_task_handler();
+          }*/
+
           createInsertMoneyScreen();
           lv_task_handler();
           isInsertingMoney = true;
