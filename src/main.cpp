@@ -7,23 +7,26 @@
 bool format = false; // true for formatting FOSSA memory, use once, then make
                      // false and reflash
 
-#define BTN1 39 // Screen tap button
+#define BTN1 0 // BOOT button on ESP32-8048S050
 
 #define RX1 32 // Bill acceptor
 #define TX1 33 // Bill acceptor
 
-#define TX2 4         // Coinmech
-#define INHIBITMECH 2 // Coinmech
+// Disabled during bring-up until the correct UART/power wiring is verified.
+#define BILL_ACCEPTOR_ENABLED 0
+
+// GPIO4 is used by the RGB display data bus and GPIO2 drives the backlight on
+// this board, so the original coin mech pins conflict with the panel wiring.
+// Leave coin mech disabled until the correct non-conflicting pins are known.
+#define TX2 (-1)         // Coinmech disabled: GPIO4 conflicts with LCD DATA_G5
+#define INHIBITMECH (-1) // Coinmech disabled: GPIO2 conflicts with TFT backlight
 
 //========================================================//
 //========================================================//
 //========================================================//
 
-#define LGFX_AUTODETECT // Autodetect board
-#define LGFX_USE_V1     // set to use new version of library
-
-#include <LovyanGFX.hpp> // main library
-static LGFX lcd;         // declare display variable
+#include "SuntonDisplay.h"
+static SuntonDisplay lcd;
 
 #include "lv_conf.h"
 #include "lv_font_montserrat_bold_60.c"
@@ -34,6 +37,7 @@ lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_ORANGE,
                        LV_COLOR_YELLOW, LV_COLOR_GREEN, LV_COLOR_BLUE};
 
 #include <FS.h>
+#include <esp_system.h>
 #include <SPIFFS.h>
 #include <WebServer.h>
 #include <WiFi.h>
@@ -42,6 +46,35 @@ lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_ORANGE,
 using WebServerClass = WebServer;
 fs::SPIFFSFS &FlashFS = SPIFFS;
 #define FORMAT_ON_FAIL true
+
+static const char *resetReasonToString(esp_reset_reason_t reason) {
+  switch (reason) {
+  case ESP_RST_UNKNOWN:
+    return "UNKNOWN";
+  case ESP_RST_POWERON:
+    return "POWERON";
+  case ESP_RST_EXT:
+    return "EXTERNAL";
+  case ESP_RST_SW:
+    return "SOFTWARE";
+  case ESP_RST_PANIC:
+    return "PANIC";
+  case ESP_RST_INT_WDT:
+    return "INT_WDT";
+  case ESP_RST_TASK_WDT:
+    return "TASK_WDT";
+  case ESP_RST_WDT:
+    return "WDT";
+  case ESP_RST_DEEPSLEEP:
+    return "DEEPSLEEP";
+  case ESP_RST_BROWNOUT:
+    return "BROWNOUT";
+  case ESP_RST_SDIO:
+    return "SDIO";
+  default:
+    return "OTHER";
+  }
+}
 
 #include <AutoConnect.h>
 #define AUTOCONNECT_USE_LOG 1
@@ -78,13 +111,11 @@ LV_IMG_DECLARE(lnbits);
 #include "services/PaymentService.h"
 #include "services/UiController.h"
 
-// Global device state (persistent configuration)
-static DeviceState deviceState;
-
-// Global session state (runtime state)
-static SessionState sessionState;
-
-HTTPClient http; // Declare object of class HTTPClient
+// Runtime-allocated to avoid pre-setup global constructors on ESP32.
+static DeviceState *deviceStatePtr = nullptr;
+static SessionState *sessionStatePtr = nullptr;
+#define deviceState (*deviceStatePtr)
+#define sessionState (*sessionStatePtr)
 
 #define PARAM_FILE "/elements.json"
 #define FIRST_FILE "/first.json"
@@ -164,9 +195,9 @@ char totalStr[64] = {0};
 #define initialCheck sessionState.initialCheck
 
 // Compatibility pointers for const char* usage
-const char *fundingsource = deviceState.fundingSourceBuffer;
-const char *ratesource = deviceState.rateSourceBuffer;
-const char *animated = deviceState.enableAnimBuffer;
+const char *fundingsource = "";
+const char *ratesource = "";
+const char *animated = "";
 
 // UI objects (remain global as they're LVGL objects)
 lv_obj_t *balanceValueLabel = nullptr;
@@ -196,23 +227,27 @@ const long interval = 300000; // 5 minutes in milliseconds
 const char *graphqlEndpoint = "https://api.blink.sv/graphql";
 const char *primaryApiEndpoint = "https://api.lnbc.sk/v1/lnurl";
 const char *secondaryApiEndpoint = "https://api.lnurlproxy.me/v1/lnurl";
-const String coingeckoConversionAPI =
-    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=";
-const String exchangeapiConversionAPI =
+const char *coinyepConversionAPI =
+    "https://coinyep.com/api/v1/?from=BTC&to=";
+const char *exchangeapiConversionAPI =
     "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/"
     "currencies/btc.json"; // https://github.com/fawazahmed0/exchange-api
-const String cuexConversionAPI = "https://api.cuex.com/v1/exchanges/btc";
-const String cuexApiKey =
+const char *cuexConversionAPI = "https://api.cuex.com/v1/exchanges/btc";
+const char *cuexApiKey =
     "3b71e5d431b2331acb65f2d484d423e5"; // Replace with your actual API key
-const String alternativeConversionAPI =
+const char *alternativeConversionAPI =
     "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=";
 
-WiFiClientSecure secureClient;
-
-HardwareSerial SerialPort1(1);
-HardwareSerial SerialPort2(2);
-
-Button BTNA(BTN1);
+WiFiClientSecure *secureClientPtr = nullptr;
+HTTPClient *httpPtr = nullptr;
+HardwareSerial *serialPort1Ptr = nullptr;
+HardwareSerial *serialPort2Ptr = nullptr;
+Button *BTNAPtr = nullptr;
+#define secureClient (*secureClientPtr)
+#define http (*httpPtr)
+#define SerialPort1 (*serialPort1Ptr)
+#define SerialPort2 (*serialPort2Ptr)
+#define BTNA (*BTNAPtr)
 
 lv_obj_t *screen_logo, *screen_portal, *screen_api, *screen_thx, *screen_main,
     *screen_insert_money, *screen_qr, *screen_currency;
@@ -229,9 +264,8 @@ lv_obj_t *loadingLabel;
 static GuiConfig guiConfig;
 static ConfigService configService;
 static PaymentService paymentService;
-static UiController uiController(screen_logo, screen_portal, screen_api,
-                                 screen_thx, screen_main, screen_insert_money,
-                                 screen_qr, screen_currency);
+static UiController *uiControllerPtr = nullptr;
+#define uiController (*uiControllerPtr)
 
 // Switch fundingsource
 lv_obj_t *switch_label;
@@ -253,7 +287,8 @@ void checkStackUsage() {
 
 bool triggerAp = false;
 
-String content = "<h1>ATM Access-point</br>For easy variable setting</h1>";
+static String *contentPtr = nullptr;
+#define content (*contentPtr)
 
 #include "pagefirst.h"
 #include "pagegui.h"
@@ -261,27 +296,44 @@ String content = "<h1>ATM Access-point</br>For easy variable setting</h1>";
 #include "pagesecond.h"
 #include "pagethird.h"
 
-WebServerClass server;
-AutoConnect portal(server);
-AutoConnectConfig config;
-AutoConnectAux elementsAux;
-AutoConnectAux saveAux;
-AutoConnectConfig first;
-AutoConnectAux firstAux;
-AutoConnectAux savefirstAux;
-AutoConnectConfig second;
-AutoConnectAux secondAux;
-AutoConnectAux savesecondAux;
-AutoConnectConfig third;
-AutoConnectAux thirdAux;
-AutoConnectAux savethirdAux;
-AutoConnectConfig gui;
-AutoConnectAux guiAux;
-AutoConnectAux saveguiAux;
+WebServerClass *serverPtr = nullptr;
+AutoConnect *portalPtr = nullptr;
+#define server (*serverPtr)
+#define portal (*portalPtr)
+AutoConnectConfig *configPtr = nullptr;
+AutoConnectAux *elementsAuxPtr = nullptr;
+AutoConnectAux *saveAuxPtr = nullptr;
+AutoConnectConfig *firstPtr = nullptr;
+AutoConnectAux *firstAuxPtr = nullptr;
+AutoConnectAux *savefirstAuxPtr = nullptr;
+AutoConnectConfig *secondPtr = nullptr;
+AutoConnectAux *secondAuxPtr = nullptr;
+AutoConnectAux *savesecondAuxPtr = nullptr;
+AutoConnectConfig *thirdPtr = nullptr;
+AutoConnectAux *thirdAuxPtr = nullptr;
+AutoConnectAux *savethirdAuxPtr = nullptr;
+AutoConnectConfig *guiPtr = nullptr;
+AutoConnectAux *guiAuxPtr = nullptr;
+AutoConnectAux *saveguiAuxPtr = nullptr;
+#define acConfig (*configPtr)
+#define elementsAux (*elementsAuxPtr)
+#define saveAux (*saveAuxPtr)
+#define first (*firstPtr)
+#define firstAux (*firstAuxPtr)
+#define savefirstAux (*savefirstAuxPtr)
+#define second (*secondPtr)
+#define secondAux (*secondAuxPtr)
+#define savesecondAux (*savesecondAuxPtr)
+#define third (*thirdPtr)
+#define thirdAux (*thirdAuxPtr)
+#define savethirdAux (*savethirdAuxPtr)
+#define gui (*guiPtr)
+#define guiAux (*guiAuxPtr)
+#define saveguiAux (*saveguiAuxPtr)
 
 /*** Setup screen resolution for LVGL ***/
-static const uint16_t screenWidth = 480;
-static const uint16_t screenHeight = 320;
+static const uint16_t screenWidth = 800;
+static const uint16_t screenHeight = 480;
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t buf[screenWidth * 10];
 
@@ -327,6 +379,223 @@ void createLoadingIndicator();
 void showLoadingIndicator();
 void hideLoadingIndicator();
 void enableAcceptor();
+void completeStartupAfterPortal();
+void reloadRuntimeConfigFromFlash();
+
+#ifndef BOOT_DIAG_HALT_AFTER_STAGE
+#define BOOT_DIAG_HALT_AFTER_STAGE 0
+#endif
+
+static void bootStage(uint8_t stage, const char *message) {
+  Serial.printf("[BOOT %02u] %s\n", stage, message);
+  delay(20);
+  if (BOOT_DIAG_HALT_AFTER_STAGE == stage) {
+    Serial.printf("[BOOT %02u] HALT_FOR_DIAG\n", stage);
+    while (true) {
+      delay(1000);
+    }
+  }
+}
+
+static void billAcceptorBegin() {
+  if (BILL_ACCEPTOR_ENABLED) {
+    SerialPort1.begin(300, SERIAL_8N2, RX1, TX1);
+  }
+}
+
+static size_t billAcceptorWrite(uint8_t value) {
+  if (BILL_ACCEPTOR_ENABLED) {
+    return SerialPort1.write(value);
+  }
+  return 0;
+}
+
+static int billAcceptorRead() {
+  if (BILL_ACCEPTOR_ENABLED && SerialPort1.available()) {
+    return SerialPort1.read();
+  }
+  return -1;
+}
+
+static bool exitCaptivePortalLoopOnce = false;
+static bool suspendTouchPolling = false;
+static bool pendingPortalCompletion = false;
+static bool appStartupCompleted = false;
+static bool portalRequestedByUser = false;
+static bool portalRequiredForMissingConfig = false;
+static bool portalRequiredForWifiRecovery = false;
+static bool portalNetworkStateLogged = false;
+static bool pendingConfigReload = false;
+
+static bool allowSetupToContinueWhilePortalStaysAlive() {
+  if (exitCaptivePortalLoopOnce) {
+    exitCaptivePortalLoopOnce = false;
+    Serial.println("Leaving blocking captive portal loop; keeping portal alive");
+    return false;
+  }
+  return true;
+}
+
+void completeStartupAfterPortal() {
+  if (appStartupCompleted) {
+    return;
+  }
+
+  Serial.println("Proceeding to main screen");
+  createMainScreen();
+  lv_task_handler();
+  bootStage(50, "main screen created");
+
+  // Extract "https://your.lnbits.com" from baseURLATM
+  // "https://your.lnbits.com/lnurldevice/api/v1/lnurl/<id>";
+  int thirdSlash = 0;
+  int count = 0;
+
+  for (int i = 0; i < strlen(baseURLATM); i++) {
+    if (baseURLATM[i] == '/') {
+      count++;
+      if (count == 3) {
+        thirdSlash = i;
+        break;
+      }
+    }
+  }
+
+  if (thirdSlash > 0 && thirdSlash < sizeof(lnbitsURL)) {
+    strncpy(lnbitsURL, baseURLATM, thirdSlash);
+    lnbitsURL[thirdSlash] = '\0';
+  } else {
+    strlcpy(lnbitsURL, baseURLATM, sizeof(lnbitsURL));
+  }
+
+  Serial.print(F("lnbitsURL: "));
+  Serial.println(lnbitsURL);
+  Serial.print("ESP Free heap (Setup end): ");
+  Serial.println(ESP.getFreeHeap());
+
+  appStartupCompleted = true;
+  pendingPortalCompletion = false;
+}
+
+void reloadRuntimeConfigFromFlash() {
+  Serial.println("Reloading runtime config from FlashFS");
+
+  File paramFile = FlashFS.open(PARAM_FILE, "r");
+  if (paramFile) {
+    DynamicJsonDocument conf(2400);
+    DeserializationError error = deserializeJson(conf, paramFile);
+    if (!error) {
+      const char *conf0Char = conf[0]["value"] | "changeme";
+      const char *conf1Char = conf[1]["value"] | "";
+      const char *conf2Char = conf[2]["value"] | "";
+      const char *conf3Char = conf[3]["value"] | "FIAT HELL";
+
+      strlcpy(deviceState.password, conf0Char, sizeof(deviceState.password));
+      strlcpy(atmdesc, conf1Char, sizeof(atmdesc));
+      strlcpy(atmsubtitle, conf2Char, sizeof(atmsubtitle));
+      strlcpy(atmtitle, conf3Char, sizeof(atmtitle));
+    } else {
+      Serial.print("Reload parse failed for ");
+      Serial.print(PARAM_FILE);
+      Serial.print(": ");
+      Serial.println(error.c_str());
+    }
+    paramFile.close();
+  }
+
+  FirstConfig firstCfg;
+  if (configService.loadFirst(FlashFS, FIRST_FILE, firstCfg)) {
+    strlcpy(blinkapikey, firstCfg.blinkApiKey, sizeof(blinkapikey));
+    strlcpy(blinkwalletid, firstCfg.blinkWalletId, sizeof(blinkwalletid));
+    strlcpy(baseURLATM1, firstCfg.baseUrl, sizeof(baseURLATM1));
+    strlcpy(secretATM1, firstCfg.secret, sizeof(secretATM1));
+    strlcpy(deviceState.currencyATM, firstCfg.currencyATM,
+            sizeof(deviceState.currencyATM));
+    strlcpy(adminkey, firstCfg.adminKey, sizeof(adminkey));
+    strlcpy(readkey, firstCfg.readKey, sizeof(readkey));
+    strlcpy(currencyOne, firstCfg.currencyLabel, sizeof(currencyOne));
+    billAmountIntOne = firstCfg.billMech;
+    maxamount = firstCfg.maxAmount;
+    charge1 = firstCfg.charge;
+  }
+
+  SecondConfig secondCfg;
+  if (configService.loadSecond(FlashFS, SECOND_FILE, secondCfg)) {
+    strlcpy(currencyTwo, secondCfg.currencyLabel, sizeof(currencyTwo));
+    strlcpy(baseURLATM2, secondCfg.baseUrl, sizeof(baseURLATM2));
+    strlcpy(secretATM2, secondCfg.secret, sizeof(secretATM2));
+    strlcpy(deviceState.currencyATM2, secondCfg.currencyATM,
+            sizeof(deviceState.currencyATM2));
+    billAmountIntTwo = secondCfg.billMech;
+    maxamount2 = secondCfg.maxAmount;
+    charge2 = secondCfg.charge;
+  }
+
+  ThirdConfig thirdCfg;
+  if (configService.loadThird(FlashFS, THIRD_FILE, thirdCfg)) {
+    strlcpy(currencyThree, thirdCfg.currencyLabel, sizeof(currencyThree));
+    strlcpy(baseURLATM3, thirdCfg.baseUrl, sizeof(baseURLATM3));
+    strlcpy(secretATM3, thirdCfg.secret, sizeof(secretATM3));
+    strlcpy(deviceState.currencyATM3, thirdCfg.currencyATM,
+            sizeof(deviceState.currencyATM3));
+    billAmountIntThree = thirdCfg.billMech;
+    maxamount3 = thirdCfg.maxAmount;
+    charge3 = thirdCfg.charge;
+  }
+
+  if (configService.loadGuiConfig(FlashFS, GUI_FILE, guiConfig)) {
+    if (guiConfig.fundingSource[0] != '\0') {
+      strlcpy(deviceState.fundingSourceBuffer, guiConfig.fundingSource,
+              sizeof(deviceState.fundingSourceBuffer));
+      fundingsource = deviceState.fundingSourceBuffer;
+    }
+
+    if (guiConfig.rateSource[0] != '\0') {
+      strlcpy(deviceState.rateSourceBuffer, guiConfig.rateSource,
+              sizeof(deviceState.rateSourceBuffer));
+      ratesource = deviceState.rateSourceBuffer;
+    }
+
+    if (guiConfig.animated[0] != '\0') {
+      strlcpy(deviceState.enableAnimBuffer, guiConfig.animated,
+              sizeof(deviceState.enableAnimBuffer));
+      animated = deviceState.enableAnimBuffer;
+    }
+  }
+
+  int thirdSlash = 0;
+  int count = 0;
+  for (int i = 0; i < strlen(baseURLATM1); i++) {
+    if (baseURLATM1[i] == '/') {
+      count++;
+      if (count == 3) {
+        thirdSlash = i;
+        break;
+      }
+    }
+  }
+  if (thirdSlash > 0 && thirdSlash < sizeof(lnbitsURL)) {
+    strncpy(lnbitsURL, baseURLATM1, thirdSlash);
+    lnbitsURL[thirdSlash] = '\0';
+  } else {
+    strlcpy(lnbitsURL, baseURLATM1, sizeof(lnbitsURL));
+  }
+
+  acConfig.psk = deviceState.password;
+
+  if (appStartupCompleted) {
+    uiController.deleteCurrencyScreen();
+    uiController.deleteMainScreen();
+    createMainScreen();
+    checkPrice();
+    checkBalance();
+    updateMainScreenLabel();
+    lv_task_handler();
+  }
+
+  pendingConfigReload = false;
+}
+
 
 /**
  * @brief The String class provides a way to manipulate and store strings of
@@ -362,19 +631,96 @@ void to_upper(char *arr) {
 }
 
 void setup() {
+  Serial.begin(115200);
+  delay(50);
+  const esp_reset_reason_t resetReason = esp_reset_reason();
+  Serial.printf("Reset reason: %s (%d)\n", resetReasonToString(resetReason),
+                static_cast<int>(resetReason));
+  Serial.println("Booting FIAT HELL on ESP32-8048S050...");
+  bootStage(1, "serial ready");
+
+  bootStage(2, "allocating runtime objects");
+  deviceStatePtr = new DeviceState();
+  sessionStatePtr = new SessionState();
+  contentPtr = new String();
+  serverPtr = new WebServerClass();
+  portalPtr = new AutoConnect(server);
+  secureClientPtr = new WiFiClientSecure();
+  httpPtr = new HTTPClient();
+  serialPort1Ptr = new HardwareSerial(1);
+  serialPort2Ptr = new HardwareSerial(2);
+  BTNAPtr = new Button(BTN1);
+  configPtr = new AutoConnectConfig();
+  elementsAuxPtr = new AutoConnectAux();
+  saveAuxPtr = new AutoConnectAux();
+  firstPtr = new AutoConnectConfig();
+  firstAuxPtr = new AutoConnectAux();
+  savefirstAuxPtr = new AutoConnectAux();
+  secondPtr = new AutoConnectConfig();
+  secondAuxPtr = new AutoConnectAux();
+  savesecondAuxPtr = new AutoConnectAux();
+  thirdPtr = new AutoConnectConfig();
+  thirdAuxPtr = new AutoConnectAux();
+  savethirdAuxPtr = new AutoConnectAux();
+  guiPtr = new AutoConnectConfig();
+  guiAuxPtr = new AutoConnectAux();
+  saveguiAuxPtr = new AutoConnectAux();
+  uiControllerPtr = new UiController(screen_logo, screen_portal, screen_api,
+                                     screen_thx, screen_main,
+                                     screen_insert_money, screen_qr,
+                                     screen_currency);
+  if ((deviceStatePtr == nullptr) || (sessionStatePtr == nullptr) ||
+      (contentPtr == nullptr) || (serverPtr == nullptr) ||
+      (portalPtr == nullptr) ||
+      (secureClientPtr == nullptr) || (httpPtr == nullptr) ||
+      (serialPort1Ptr == nullptr) || (serialPort2Ptr == nullptr) ||
+      (BTNAPtr == nullptr)) {
+    Serial.println("Failed to allocate runtime objects");
+    while (true) {
+      delay(1000);
+    }
+  }
+  bootStage(3, "runtime objects allocated");
+
+  fundingsource = deviceState.fundingSourceBuffer;
+  ratesource = deviceState.rateSourceBuffer;
+  animated = deviceState.enableAnimBuffer;
+  content = "<h1>ATM Access-point</br>For easy variable setting</h1>";
+  bootStage(4, "runtime state initialized");
+
   /*********************/
   /*** Init display ***/
   /*********************/
-  lcd.init(); // Initialize LovyanGFX
+  bootStage(5, "before lcd.init");
+  lcd.init();
+  bootStage(6, "after lcd.init");
+  Serial.println("Display test: RED");
+  lcd.fillScreen(0xF800);
+  delay(400);
+  Serial.println("Display test: GREEN");
+  lcd.fillScreen(0x07E0);
+  delay(400);
+  Serial.println("Display test: BLUE");
+  lcd.fillScreen(0x001F);
+  delay(400);
+  Serial.println("Display test: WHITE");
+  lcd.fillScreen(0xFFFF);
+  delay(400);
+  Serial.println("Display test: BLACK");
+  lcd.fillScreen(0x0000);
+  delay(150);
   lv_init();  // Initialize lvgl
+  bootStage(7, "after lv_init");
 
   // Set orientation (landscape)
   if (lcd.width() < lcd.height()) {
     lcd.setRotation(lcd.getRotation() ^ 1);
   }
+  bootStage(8, "display rotation checked");
 
   // LVGL buffer
   lv_disp_draw_buf_init(&draw_buf, buf, NULL, screenWidth * 10);
+  bootStage(9, "lvgl draw buffer ready");
 
   // Set LVGL display
   static lv_disp_drv_t disp_drv;
@@ -384,6 +730,7 @@ void setup() {
   disp_drv.flush_cb = display_flush;
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
+  bootStage(10, "lvgl display driver registered");
 
   // Set LVGL input (touch)
   static lv_indev_drv_t indev_drv;
@@ -391,27 +738,36 @@ void setup() {
   indev_drv.type = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = touchpad_read;
   lv_indev_drv_register(&indev_drv);
+  bootStage(11, "lvgl touch driver registered");
 
   // Logo / Splash screen
   createLogoScreen();
   lv_task_handler(); // refresh obrazovky
+  bootStage(12, "logo screen created");
 
   /*********************************/
   /*** Initialize periferies  ***/
   /*********************************/
-  BTNA.begin(); // Button/Screen touch
-  Serial.begin(115200);
+  BTNA.begin(); // BOOT button as fallback input
   delay(10);
+  bootStage(13, "button initialized");
 
-  SerialPort1.begin(300, SERIAL_8N2, TX1, RX1); // Bill acceptor
-  SerialPort2.begin(4800, SERIAL_8N1, TX2);     // Coin mech
-  pinMode(INHIBITMECH, OUTPUT);
+  billAcceptorBegin(); // Bill acceptor
+  if (TX2 >= 0) {
+    SerialPort2.begin(4800, SERIAL_8N1, -1, TX2); // Coin mech
+  }
+  if (INHIBITMECH >= 0) {
+    pinMode(INHIBITMECH, OUTPUT);
+  }
+  bootStage(14, "serial peripherals initialized");
 
   secureClient.setInsecure();
+  bootStage(15, "secure client configured");
 
   // Start logo wait state (non-blocking)
   currentUiState = UI_LOGO_WAIT;
   stateEnterTime = millis();
+  bootStage(16, "entering logo wait");
 
   // Non-blocking wait for tap during logo screen
   // Keep checking for tap while loading config
@@ -420,12 +776,15 @@ void setup() {
     handleUiStateMachine();
     yield(); // Allow other tasks to run
   }
+  bootStage(17, "logo wait finished");
 
   /******************************************/
   /*** Read params from SPIFFS  ***/
   /******************************************/
+  bootStage(18, "before filesystem init");
   FlashFS.begin(FORMAT_ON_FAIL);
   SPIFFS.begin(true);
+  bootStage(19, "filesystem initialized");
   if (format == true) {
     SPIFFS.format();
   }
@@ -434,31 +793,60 @@ void setup() {
   if (paramFile) {
     DynamicJsonDocument conf(2400);
     DeserializationError error = deserializeJson(conf, paramFile);
+    if (error) {
+      Serial.print("Failed to parse ");
+      Serial.print(PARAM_FILE);
+      Serial.print(": ");
+      Serial.println(error.c_str());
+      triggerAp = true;
+    } else {
+      const char *conf0Char = conf[0]["value"] | "changeme";
+      const char *conf1Char = conf[1]["value"] | "";
+      const char *conf2Char = conf[2]["value"] | "";
+      const char *conf3Char = conf[3]["value"] | "FIAT HELL";
 
-    const JsonObject conf0 = conf[0];
-    const char *conf0Char = conf0["value"];
-    strlcpy(deviceState.password, conf0Char, sizeof(deviceState.password));
-
-    const JsonObject conf1 = conf[1];
-    const char *conf1Char = conf1["value"];
-    strlcpy(atmdesc, conf1Char, sizeof(atmdesc));
-
-    const JsonObject conf2 = conf[2];
-    const char *conf2Char = conf2["value"];
-    strlcpy(atmsubtitle, conf2Char, sizeof(atmsubtitle));
-
-    const JsonObject conf3 = conf[3];
-    const char *conf3Char = conf3["value"];
-    strlcpy(atmtitle, conf3Char, sizeof(atmtitle));
-    //} else {
-    // triggerAp = true;
+      strlcpy(deviceState.password, conf0Char, sizeof(deviceState.password));
+      strlcpy(atmdesc, conf1Char, sizeof(atmdesc));
+      strlcpy(atmsubtitle, conf2Char, sizeof(atmsubtitle));
+      strlcpy(atmtitle, conf3Char, sizeof(atmtitle));
+    }
+  } else {
+    Serial.println("Missing /elements.json, using defaults");
+    triggerAp = true;
   }
-  paramFile.close();
+  if (paramFile) {
+    paramFile.close();
+  }
+  bootStage(20, "main params loaded");
 
   server.on("/", []() {
-    content += AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", content);
+    const bool routeToConfigPortal =
+        pendingPortalCompletion || portalRequestedByUser ||
+        portalRequiredForMissingConfig || portal.isPortalAvailable();
+    if (routeToConfigPortal) {
+      server.sendHeader("Location", "/config", true);
+      server.send(302, "text/plain", "");
+      server.client().stop();
+      return;
+    }
+
+    const String page = content + AUTOCONNECT_LINK(COG_24);
+    server.send(200, "text/html", page);
   });
+  bootStage(21, "root route registered");
+
+  auto redirectToConfigPortal = []() {
+    server.sendHeader("Location", "/config", true);
+    server.send(302, "text/plain", "");
+    server.client().stop();
+  };
+
+  // Common captive-portal probe URLs used by Android, iPhone, and Windows.
+  server.on("/generate_204", redirectToConfigPortal);
+  server.on("/hotspot-detect.html", redirectToConfigPortal);
+  server.on("/connecttest.txt", redirectToConfigPortal);
+  server.on("/ncsi.txt", redirectToConfigPortal);
+  server.on("/fwlink", redirectToConfigPortal);
 
   elementsAux.load(FPSTR(PAGE_ELEMENTS));
   elementsAux.on([](AutoConnectAux &aux, PageArgument &arg) {
@@ -479,6 +867,7 @@ void setup() {
     }
     return String();
   });
+  bootStage(22, "elements aux configured");
 
   // First page start
   //  get the saved details and store in global variables
@@ -499,6 +888,7 @@ void setup() {
     //} else {
     // triggerAp = true;
   }
+  bootStage(23, "first config loaded");
 
   firstAux.load(FPSTR(PAGE_FIRST));
   firstAux.on([](AutoConnectAux &aux, PageArgument &arg) {
@@ -515,6 +905,7 @@ void setup() {
     }
     return String();
   });
+  bootStage(24, "first aux configured");
 
   // Second page start
   // get the saved details and store in global variables
@@ -531,6 +922,7 @@ void setup() {
     //} else {
     // triggerAp = true;
   }
+  bootStage(25, "second config loaded");
 
   secondAux.load(FPSTR(PAGE_SECOND));
   secondAux.on([](AutoConnectAux &aux, PageArgument &arg) {
@@ -544,6 +936,7 @@ void setup() {
     }
     return String();
   });
+  bootStage(26, "second aux configured");
 
   //*
   //*
@@ -562,6 +955,7 @@ void setup() {
     //} else {
     // triggerAp = true;
   }
+  bootStage(27, "third config loaded");
 
   thirdAux.load(FPSTR(PAGE_THIRD));
   thirdAux.on([](AutoConnectAux &aux, PageArgument &arg) {
@@ -575,9 +969,12 @@ void setup() {
     }
     return String();
   });
+  bootStage(28, "third aux configured");
 
+  bootStage(29, "before second filesystem init");
   FlashFS.begin(FORMAT_ON_FAIL);
   SPIFFS.begin(true);
+  bootStage(30, "after second filesystem init");
   if (format == true) {
     SPIFFS.format();
   }
@@ -610,6 +1007,7 @@ void setup() {
     //} else {
     // triggerAp = true;
   }
+  bootStage(31, "gui config loaded");
 
   guiAux.load(FPSTR(PAGE_GUI));
   guiAux.on([](AutoConnectAux &aux, PageArgument &arg) {
@@ -628,6 +1026,7 @@ void setup() {
     }
     return String();
   });
+  bootStage(32, "gui aux configured");
 
   //*
   //*
@@ -649,8 +1048,10 @@ void setup() {
     } else {
       aux["echo"].value = "Filesystem failed to open.";
     }
+    pendingConfigReload = true;
     return String();
   });
+  bootStage(33, "save aux configured");
 
   // Save first page
   savefirstAux.load(FPSTR(FIRST_SAVE));
@@ -663,11 +1064,13 @@ void setup() {
                                      "billmech", "maxamount", "charge1"},
                                     echo)) {
       aux["echo"].value = echo;
+      pendingConfigReload = true;
     } else {
       aux["echo"].value = "Filesystem failed to open.";
     }
     return String();
   });
+  bootStage(34, "save first aux configured");
 
   // Save second page
   savesecondAux.load(FPSTR(SECOND_SAVE));
@@ -679,11 +1082,13 @@ void setup() {
             {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"},
             echo)) {
       aux["echo"].value = echo;
+      pendingConfigReload = true;
     } else {
       aux["echo"].value = "Filesystem failed to open.";
     }
     return String();
   });
+  bootStage(35, "save second aux configured");
 
   // Save third page
   savethirdAux.load(FPSTR(THIRD_SAVE));
@@ -695,11 +1100,13 @@ void setup() {
             {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"},
             echo)) {
       aux["echo"].value = echo;
+      pendingConfigReload = true;
     } else {
       aux["echo"].value = "Filesystem failed to open.";
     }
     return String();
   });
+  bootStage(36, "save third aux configured");
 
   // Save gui page
   saveguiAux.load(FPSTR(GUI_SAVE));
@@ -710,15 +1117,18 @@ void setup() {
                                     {"fundingsource", "ratesource", "animated"},
                                     echo)) {
       aux["echo"].value = echo;
+      pendingConfigReload = true;
     } else {
       aux["echo"].value = "Filesystem failed to open.";
     }
     return String();
   });
+  bootStage(37, "save gui aux configured");
 
   originalSizeOne = billAmountIntOne.size();
   originalSizeTwo = billAmountIntTwo.size();
   originalSizeThree = billAmountIntThree.size();
+  bootStage(38, "bill vectors sized");
 
   // First merge billAmountIntOne and billAmountIntTwo
   if ((deviceState.currencyATM2[0] != '\0') || (currencyTwo[0] != '\0')) {
@@ -731,38 +1141,46 @@ void setup() {
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntThree.begin(),
                             billAmountIntThree.end());
   }
+  bootStage(39, "bill vectors merged");
 
   /*********************************************************/
   /*** Set AutoConnect before launching the portal       ***/
   /*********************************************************/
-  config.auth = AC_AUTH_BASIC;
-  config.authScope = AC_AUTHSCOPE_AUX;
-  config.ticker = true;
-  config.autoReconnect = true;
-  config.autoRise = false; // set dynamically during startup based on mode
-  config.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  config.psk = deviceState.password; // Password for AP
-  config.menuItems =
-      AC_MENUITEM_CONFIGNEW | AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET;
-  config.title = "LN ATM";
-  config.reconnectInterval = 1;
-  config.immediateStart =
+  acConfig.auth = AC_AUTH_NONE;
+  acConfig.authScope = AC_AUTHSCOPE_AUX;
+  acConfig.ticker = true;
+  acConfig.autoReset = false;
+  acConfig.autoReconnect = true;
+  acConfig.retainPortal = true;
+  acConfig.autoRise = false; // set dynamically during startup based on mode
+  acConfig.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+  acConfig.psk = deviceState.password; // Password for AP
+  acConfig.menuItems =
+      AC_MENUITEM_CONFIGNEW | AC_MENUITEM_OPENSSIDS |
+      AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET | AC_MENUITEM_HOME;
+  acConfig.title = "LN ATM";
+  acConfig.homeUri = "/config";
+  acConfig.reconnectInterval = 1;
+  acConfig.immediateStart =
       false; // If we don't have WiFi saved, it will start AP
-  // To define a username/password for the Basic Auth portal, you can use:
-  config.username = deviceState.password;
-  config.password = deviceState.password;
+  acConfig.username = "";
+  acConfig.password = "";
+  bootStage(40, "autoconnect config prepared");
 
   // Register all Aux pages to the portal
   portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
                savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux});
+  bootStage(41, "portal aux pages joined");
 
   // Apply config
-  portal.config(config);
+  portal.config(acConfig);
+  bootStage(42, "portal config applied");
 
   // Create the loading indicator
   createLoadingIndicator();
   lv_task_handler();
   delay(5);
+  bootStage(43, "loading indicator created");
 
   ///*** Debug ***////
   /*Serial.print(F("APP PASSWORD: "));
@@ -817,9 +1235,31 @@ void setup() {
         (blinkapikey[0] == '\0' || blinkwalletid[0] == '\0')) ||
        (currencyOne[0] == '\0'));
 
+  const bool shouldOpenPortalNow =
+      (userWantsPortal || apiDataMissing || (wifiRequired && !wifiStatus()));
+  const bool showPortalScreenImmediately =
+      (userWantsPortal || apiDataMissing);
+
+  portalRequestedByUser = userWantsPortal;
+  portalRequiredForMissingConfig = apiDataMissing;
+  portalRequiredForWifiRecovery = (wifiRequired && !wifiStatus());
+
+  // In config-first mode, keep the AP stable for phones instead of trying to
+  // reconnect to a remembered WiFi in the background.
+  acConfig.autoReconnect = !(portalRequestedByUser || portalRequiredForMissingConfig);
+  acConfig.preserveAPMode =
+      (portalRequestedByUser || portalRequiredForMissingConfig);
+
   // Decide portal behavior once, then call portal.begin() once.
-  config.immediateStart = (userWantsPortal || apiDataMissing);
-  config.autoRise = (userWantsPortal || apiDataMissing || wifiRequired);
+  acConfig.immediateStart = (userWantsPortal || apiDataMissing);
+  acConfig.autoRise = (userWantsPortal || apiDataMissing || wifiRequired);
+  exitCaptivePortalLoopOnce = shouldOpenPortalNow;
+  portal.whileCaptivePortal(allowSetupToContinueWhilePortalStaysAlive);
+
+  if (portalRequestedByUser || portalRequiredForMissingConfig) {
+    Serial.println("Config portal requested: disconnecting STA to keep captive AP stable");
+    WiFi.disconnect(false, false);
+  }
 
   if (isBlinkMode) {
     Serial.println("Blink mode => Internet needed");
@@ -834,10 +1274,22 @@ void setup() {
   } else {
     Serial.println("No tap => try STA first");
   }
+  bootStage(44, "portal mode decision made");
 
-  portal.config(config);
+  bool portalScreenShown = false;
+  if (showPortalScreenImmediately) {
+    createPortalScreen();
+    lv_task_handler();
+    delay(50);
+    bootStage(45, "portal screen shown");
+    portalScreenShown = true;
+  }
+
+  portal.config(acConfig);
+  bootStage(46, "portal config re-applied");
   Serial.println("Attempting to connect via AutoConnect...");
   (void)portal.begin(); // may connect STA or start AP depending on config
+  bootStage(47, "portal begin returned");
 
   if (wifiStatus()) {
     Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
@@ -847,49 +1299,28 @@ void setup() {
     }
   } else {
     Serial.println("WiFi not connected.");
-    if (config.autoRise) {
-      Serial.println("Portal available. AP Name: " + config.apid);
+    if (acConfig.autoRise) {
+      if (!portalScreenShown) {
+        createPortalScreen();
+        lv_task_handler();
+        delay(50);
+        bootStage(45, "portal screen shown");
+        portalScreenShown = true;
+      }
+      Serial.println("Portal available. AP Name: " + acConfig.apid);
       digitalWrite(11, LOW);
     }
   }
+  bootStage(48, "wifi or portal state evaluated");
 
   // If portal is required (tap / missing data / Blink no-wifi), stay in portal.
   if (userWantsPortal || apiDataMissing || (wifiRequired && !wifiStatus())) {
+    pendingPortalCompletion = true;
+    bootStage(49, "setup exits into portal mode");
     return;
   }
 
-  // Otherwise we can continue (LNbits offline allowed).
-  Serial.println("Proceeding to main screen");
-  createMainScreen();
-  lv_task_handler();
-
-  // Extract "https://your.lnbits.com" from baseURLATM
-  // "https://your.lnbits.com/lnurldevice/api/v1/lnurl/<id>";
-  int thirdSlash = 0;
-  int count = 0;
-
-  for (int i = 0; i < strlen(baseURLATM); i++) {
-    if (baseURLATM[i] == '/') {
-      count++;
-      if (count == 3) {
-        thirdSlash = i;
-        break;
-      }
-    }
-  }
-
-  if (thirdSlash > 0 && thirdSlash < sizeof(lnbitsURL)) {
-    strncpy(lnbitsURL, baseURLATM, thirdSlash);
-    lnbitsURL[thirdSlash] = '\0';
-  } else {
-    // Fallback if structure not matched, though usually should match if valid
-    // URL
-    strlcpy(lnbitsURL, baseURLATM, sizeof(lnbitsURL));
-  }
-  Serial.print(F("lnbitsURL: "));
-  Serial.println(lnbitsURL); // This should print "https://your.lnbits.com"
-  Serial.print("ESP Free heap (Setup end): ");
-  Serial.println(ESP.getFreeHeap());
+  completeStartupAfterPortal();
 }
 
 /**
@@ -900,10 +1331,7 @@ void setup() {
  * @return The byte read from the SerialPort1, or -1 if no data is available.
  */
 int nonBlockingRead() {
-  if (SerialPort1.available()) {
-    return SerialPort1.read();
-  }
-  return -1; // No data available
+  return billAcceptorRead();
 }
 
 // Create the logo screen
@@ -990,6 +1418,8 @@ void createLogoScreen() {
  */
 void createPortalScreen() {
   screen_portal = lv_obj_create(NULL); // Create a new screen
+  lv_obj_set_style_bg_color(screen_portal, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(screen_portal, LV_OPA_COVER, 0);
 
   String LVGL_PORTAL_ON = "Config launched";
   lv_obj_t *portalon =
@@ -1009,7 +1439,7 @@ void createPortalScreen() {
                80); // Center but 20 from the top
   lv_obj_set_style_text_font(connecttowifi, &lv_font_montserrat_24,
                              0); // Use the large font
-  // lv_obj_set_style_text_color(atmurl, LV_COLOR_WHITE, 0);
+  lv_obj_set_style_text_color(connecttowifi, LV_COLOR_WHITE, 0);
 
   String LVGL_PORTAL_TEXT_ONE = "Find new Wi-Fi network 'LN ATM-xxxx' ";
   lv_obj_t *portaltextone =
@@ -1020,6 +1450,7 @@ void createPortalScreen() {
                120); // Center but 20 from the top
   lv_obj_set_style_text_font(portaltextone, &lv_font_montserrat_22,
                              0); // Use the large font
+  lv_obj_set_style_text_color(portaltextone, LV_COLOR_WHITE, 0);
 
   String LVGL_PORTAL_TEXT_TWO = "in your phone and connect to it. After ";
   lv_obj_t *portaltexttwo =
@@ -1030,6 +1461,7 @@ void createPortalScreen() {
                160); // Center but 20 from the top
   lv_obj_set_style_text_font(portaltexttwo, &lv_font_montserrat_22,
                              0); // Use the large font
+  lv_obj_set_style_text_color(portaltexttwo, LV_COLOR_WHITE, 0);
 
   String LVGL_PORTAL_TEXT_THREE = "you are connected, open ATM settings ";
   lv_obj_t *portaltextthree =
@@ -1040,6 +1472,7 @@ void createPortalScreen() {
                200); // Center but 20 from the top
   lv_obj_set_style_text_font(portaltextthree, &lv_font_montserrat_22,
                              0); // Use the large font
+  lv_obj_set_style_text_color(portaltextthree, LV_COLOR_WHITE, 0);
 
   String LVGL_PORTAL_TEXT_FOUR = "and set your preferences";
   lv_obj_t *portaltextfour =
@@ -1050,6 +1483,7 @@ void createPortalScreen() {
                240); // Center but 20 from the top
   lv_obj_set_style_text_font(portaltextfour, &lv_font_montserrat_22,
                              0); // Use the large font
+  lv_obj_set_style_text_color(portaltextfour, LV_COLOR_WHITE, 0);
 
   lv_scr_load(screen_portal);
 }
@@ -1142,8 +1576,10 @@ void checkNetworkAndDeviceStatus() {
       Serial.println("No network connection available. Checking again soon...");
       // Optionally, trigger a screen update or indicator that network is
       // required but unavailable
-      SerialPort1.write(185);
-      digitalWrite(INHIBITMECH, LOW);
+      billAcceptorWrite(185);
+      if (INHIBITMECH >= 0) {
+        digitalWrite(INHIBITMECH, LOW);
+      }
     }
   } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 &&
              (deviceState.currencyATM[0] == '\0' || adminkey[0] == '\0' ||
@@ -1256,7 +1692,7 @@ void setCurrency(const char *newCurrency, bool skipInhibit = false) {
   // Reduced delay - bill acceptor should respond faster
   // Most bill acceptors can handle commands much faster than 200ms
   for (int i = 0; i < 16; i++) {
-    SerialPort1.write(INHIBIT_START + i); // Inhibit all initially
+    billAcceptorWrite(INHIBIT_START + i); // Inhibit all initially
     delay(5); // Reduced from 200ms to 5ms - much faster
   }
 
@@ -1283,7 +1719,7 @@ void setCurrency(const char *newCurrency, bool skipInhibit = false) {
     Serial.print(currencySelected);
     Serial.print(": ");
     Serial.println(channelCode);
-    SerialPort1.write(channelCode);
+    billAcceptorWrite(channelCode);
     delay(
         2); // Reduced from 20ms to 2ms - minimal delay for serial communication
   }
@@ -1292,14 +1728,18 @@ void setCurrency(const char *newCurrency, bool skipInhibit = false) {
 void checkPrice() {
   if (strcmp(deviceState.rateSourceBuffer, "ExchangeApi") == 0) {
     checkPriceExchangeApi();
-  } else if (strcmp(deviceState.rateSourceBuffer, "Coingecko") == 0) {
+  } else if (strcmp(deviceState.rateSourceBuffer, "Coingecko") == 0 ||
+             strcmp(deviceState.rateSourceBuffer, "CoinYEP") == 0) {
+    checkPriceCoinGecko();
+  } else {
     checkPriceCoinGecko();
   }
 }
 
 void checkPriceCoinGecko() {
-  http.begin(coingeckoConversionAPI +
-             currencySelected); // Specify request destination
+  String targetCurrency = currencySelected;
+  targetCurrency.toUpperCase();
+  http.begin(String(coinyepConversionAPI) + targetCurrency);
 
   int httpCode = http.GET(); // Send the request
 
@@ -1308,22 +1748,30 @@ void checkPriceCoinGecko() {
     String responsePayload =
         http.getString(); // Get the request response payload
     // Serial.println(responsePayload);
-    //  Parse JSON
+    // Parse JSON from CoinYEP. We keep the old function name for backward
+    // compatibility with saved "Coingecko" config values.
     DynamicJsonDocument doc(1024);
-    deserializeJson(doc, responsePayload);
-
-    String tempCurrency = currencySelected;
-    tempCurrency.toLowerCase();
-
-    // Get EUR value from parsed JSON
-    fiatValue = doc["bitcoin"][tempCurrency.c_str()];
-    Serial.print(F("HTTP (checkPriceCoinGecko): "));
-    Serial.println(httpCode);
+    DeserializationError error = deserializeJson(doc, responsePayload);
+    if (!error) {
+      const char *priceStr = doc["price"] | "";
+      fiatValue = String(priceStr).toFloat();
+      Serial.print(F("HTTP (checkPriceCoinGecko/CoinYEP): "));
+      Serial.println(httpCode);
+      Serial.print("CoinYEP raw price: ");
+      Serial.println(priceStr);
+      Serial.print("BTC/");
+      Serial.print(targetCurrency);
+      Serial.print(": ");
+      Serial.println(fiatValue, 2);
+    } else {
+      Serial.print("deserializeJson() failed in CoinYEP parser: ");
+      Serial.println(error.c_str());
+    }
   } else {
-    Serial.print(F("Error (checkPriceCoinGecko): "));
+    Serial.print(F("Error (checkPriceCoinGecko/CoinYEP): "));
     Serial.println(httpCode);
   }
-  Serial.print("Free heap (checkPriceCoinGecko): ");
+  Serial.print("Free heap (checkPriceCoinGecko/CoinYEP): ");
   Serial.println(ESP.getFreeHeap());
   http.end(); // Close connection
 }
@@ -1812,8 +2260,10 @@ void updateMainScreenLabel() {
 void createMainScreen() {
   uiController.deleteCurrencyScreen();
   lv_task_handler();
-  SerialPort1.write(185); // Command to turn off the acceptor
-  digitalWrite(INHIBITMECH, LOW);
+  billAcceptorWrite(185); // Command to turn off the acceptor
+  if (INHIBITMECH >= 0) {
+    digitalWrite(INHIBITMECH, LOW);
+  }
 
   Serial.println("createMainScreen: Start machine");
   Serial.print("Free heap (createMainScreen Start): ");
@@ -2083,8 +2533,10 @@ void enableAcceptor() {
     Serial.println("Error: Blink API is selected but the device is offline");
     return;
   } else {
-    SerialPort1.write(184);          // Enable acceptor
-    digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
+    billAcceptorWrite(184);          // Enable acceptor
+    if (INHIBITMECH >= 0) {
+      digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
+    }
   }
 }
 
@@ -2298,16 +2750,18 @@ void display_flush(lv_disp_drv_t *disp, const lv_area_t *area,
   uint32_t w = (area->x2 - area->x1 + 1);
   uint32_t h = (area->y2 - area->y1 + 1);
 
-  lcd.startWrite();
-  lcd.setAddrWindow(area->x1, area->y1, w, h);
-  lcd.pushPixels((uint16_t *)&color_p->full, w * h, true);
-  lcd.endWrite();
+  lcd.drawBitmap565(area->x1, area->y1, (uint16_t *)&color_p->full, w, h);
 
   lv_disp_flush_ready(disp);
 }
 
 /*** Touchpad callback to read the touchpad ***/
 void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
+  if (suspendTouchPolling) {
+    data->state = LV_INDEV_STATE_REL;
+    return;
+  }
+
   uint16_t touchX, touchY;
   bool touched = lcd.getTouch(&touchX, &touchY);
 
@@ -2922,10 +3376,10 @@ void startConfigPortal() {
 
   // Assume config and portal are previously defined and configured
   // appropriately
-  config.immediateStart = true;
+  acConfig.immediateStart = true;
   portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
                savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux});
-  portal.config(config);
+  portal.config(acConfig);
   portal.begin();
   Serial.println("Portal started. IP2: " + WiFi.localIP().toString());
   // No infinite loop; portal.handleClient() is called in the main loop
@@ -3109,6 +3563,41 @@ void loop() {
   lv_timer_handler();    // Let the GUI do its work
   portal.handleClient(); // Already non‑blocking
 
+  if (pendingConfigReload) {
+    reloadRuntimeConfigFromFlash();
+  }
+
+  const bool portalActive = portal.isPortalAvailable();
+  suspendTouchPolling = portalActive;
+
+  if (pendingPortalCompletion && wifiStatus()) {
+    if (portalRequestedByUser || portalRequiredForMissingConfig) {
+      if (!portalNetworkStateLogged) {
+        if (!(WiFi.getMode() & WIFI_AP)) {
+          Serial.println("Re-enabling config AP alongside STA");
+          WiFi.mode(WIFI_AP_STA);
+          WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str());
+        }
+
+        Serial.println("WiFi connected in config portal; staying in settings mode");
+        Serial.println("Portal available on home WiFi IP: " +
+                       WiFi.localIP().toString());
+        Serial.println("Portal AP IP: " + WiFi.softAPIP().toString());
+        portalNetworkStateLogged = true;
+      }
+    } else {
+      Serial.println("WiFi connected from portal flow; completing startup");
+      completeStartupAfterPortal();
+    }
+  }
+
+  // Keep the portal responsive and avoid unrelated app work while a client is
+  // still configuring WiFi through AutoConnect.
+  if (portalActive && !wifiStatus()) {
+    delay(5);
+    return;
+  }
+
   // Handle UI state machine
   handleUiStateMachine();
 
@@ -3190,8 +3679,10 @@ void loop() {
         Serial.print("showQRCodeLVGL() - LNbits offline: ");
         Serial.println(qrData);
         // Turn off machines
-        SerialPort1.write(185);
-        digitalWrite(INHIBITMECH, LOW);
+        billAcceptorWrite(185);
+        if (INHIBITMECH >= 0) {
+          digitalWrite(INHIBITMECH, LOW);
+        }
         Serial.print("Free heap (makeLNURL): ");
         Serial.println(ESP.getFreeHeap());
         lv_task_handler();
@@ -3211,8 +3702,10 @@ void loop() {
           lv_task_handler();
           Serial.println("lv_task_handler() - Blink online");
           // Turn off machines
-          SerialPort1.write(185);
-          digitalWrite(INHIBITMECH, LOW);
+          billAcceptorWrite(185);
+          if (INHIBITMECH >= 0) {
+            digitalWrite(INHIBITMECH, LOW);
+          }
           currentUiState = UI_SHOWING_QR;
           stateEnterTime = millis();
           qrDebounceDone = false;
@@ -3230,8 +3723,10 @@ void loop() {
             lv_task_handler();
             Serial.println("lv_task_handler() - LNbits online");
             // Turn off machines
-            SerialPort1.write(185);
-            digitalWrite(INHIBITMECH, LOW);
+            billAcceptorWrite(185);
+            if (INHIBITMECH >= 0) {
+              digitalWrite(INHIBITMECH, LOW);
+            }
             currentUiState = UI_SHOWING_QR;
             stateEnterTime = millis();
             qrDebounceDone = false;
@@ -3242,8 +3737,10 @@ void loop() {
             makeLNURL();
             showQRCodeLVGL(qrData);
             lv_task_handler();
-            SerialPort1.write(185);
-            digitalWrite(INHIBITMECH, LOW);
+            billAcceptorWrite(185);
+            if (INHIBITMECH >= 0) {
+              digitalWrite(INHIBITMECH, LOW);
+            }
             currentUiState = UI_SHOWING_QR;
             stateEnterTime = millis();
             qrDebounceDone = false;

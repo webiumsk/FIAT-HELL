@@ -59,9 +59,13 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   JsonObject docGui1 = docGui.createNestedObject();
   docGui1["name"] = "ratesource";
   JsonArray valuesRateSource = docGui1.createNestedArray("value");
-  valuesRateSource.add("Coingecko");
+  valuesRateSource.add("CoinYEP");
   valuesRateSource.add("ExchangeApi");
-  docGui1["checked"] = (strcmp(in.rateSource, "Coingecko") == 0) ? 1 : 2;
+  docGui1["checked"] =
+      (strcmp(in.rateSource, "Coingecko") == 0 ||
+       strcmp(in.rateSource, "CoinYEP") == 0)
+          ? 1
+          : 2;
 
   JsonObject docGui2 = docGui.createNestedObject();
   docGui2["name"] = "animated";
