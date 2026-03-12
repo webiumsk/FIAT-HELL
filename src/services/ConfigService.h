@@ -26,7 +26,7 @@ struct FirstConfig {
   char readKey[256]{0};
   std::vector<int> billMech;
   int maxAmount{0};
-  int charge{0};
+  float charge{0.0f};
   bool valid{false};
 };
 
@@ -37,7 +37,7 @@ struct SecondConfig {
   char currencyLabel[64]{0};
   std::vector<int> billMech;
   int maxAmount{0};
-  int charge{0};
+  float charge{0.0f};
   bool valid{false};
 };
 
@@ -48,7 +48,7 @@ struct ThirdConfig {
   char currencyLabel[64]{0};
   std::vector<int> billMech;
   int maxAmount{0};
-  int charge{0};
+  float charge{0.0f};
   bool valid{false};
 };
 

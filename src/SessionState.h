@@ -44,10 +44,26 @@ struct SessionState {
   float total = 0.0f;
   bool isInsertingMoney = false;
 
+  // Mixed-currency: totals per currency in cents (e.g. 500 = 5.00 EUR)
+  long totalCurrency1 = 0;
+  long totalCurrency2 = 0;
+  long totalCurrency3 = 0;
+  long lastBillCents = 0;
+  char lastBillCurrency[64] = {0};
+
+  // Rates for all 3 currencies (BTC per 1 unit of fiat), for mixed conversion
+  float fiatValue1 = 0.0f;
+  float fiatValue2 = 0.0f;
+  float fiatValue3 = 0.0f;
+
   // Currently selected values (from DeviceState, but cached for quick access)
   char currencySelected[64] = {0};
   float maxamountSelected = 100.0f;
-  int chargeSelected = 0;
+  float chargeSelected = 0.0f;
+
+  // Allowed bill acceptor channels for selected currency (for software filter)
+  int allowedChannelStart = 0;
+  int allowedChannelCount = 0;
 
   // Current active base URL and secret (selected from DeviceState)
   char baseURLATM[256] = {0};
@@ -92,6 +108,11 @@ struct SessionState {
     coins = 0.0f;
     total = 0.0f;
     isInsertingMoney = false;
+    totalCurrency1 = 0;
+    totalCurrency2 = 0;
+    totalCurrency3 = 0;
+    lastBillCents = 0;
+    memset(lastBillCurrency, 0, sizeof(lastBillCurrency));
     tempCharge = 0.0f;
     result = 0;
   }

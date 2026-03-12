@@ -25,10 +25,12 @@ static const char PAGE_GUI[] PROGMEM = R"(
       "name": "ratesource",
       "type": "ACRadio",
       "value": [
+        "CoinGecko",
+        "ExchangeApi",
         "CoinYEP",
-        "ExchangeApi"
+        "Kraken"
       ],
-      "label": "Rate source 'CoinYEP' or 'ExchangeApi'",
+      "label": "Rate source: CoinGecko (universal), ExchangeApi, CoinYEP, Kraken",
       "arrange": "horizontal",
       "checked": 1
     },

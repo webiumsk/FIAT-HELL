@@ -57,10 +57,14 @@
  *=========================*/
 
 /*1: use custom malloc/free, 0: use the built-in `lv_mem_alloc()` and `lv_mem_free()`*/
+#ifndef LV_MEM_CUSTOM
 #define LV_MEM_CUSTOM 0
+#endif
 #if LV_MEM_CUSTOM == 0
 /*Size of the memory available for `lv_mem_alloc()` in bytes (>= 2kB)*/
+#  ifndef LV_MEM_SIZE
 #  define LV_MEM_SIZE (32U * 1024U)          /*[bytes]*/
+#  endif
 
 /*Set an address for the memory pool instead of allocating it as a normal array. Can be in external SRAM too.*/
 #  define LV_MEM_ADR 0     /*0: unused*/
@@ -315,17 +319,23 @@ e.g. "stm32f769xx.h" or "stm32f429xx.h"*/
  *https://fonts.google.com/specimen/Montserrat*/
 #define LV_FONT_MONTSERRAT_8  0
 #define LV_FONT_MONTSERRAT_10 0
+#ifndef LV_FONT_MONTSERRAT_12
 #define LV_FONT_MONTSERRAT_12 0
+#endif
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_16 1
 #define LV_FONT_MONTSERRAT_18 0
+#ifndef LV_FONT_MONTSERRAT_20
 #define LV_FONT_MONTSERRAT_20 0
+#endif
 #define LV_FONT_MONTSERRAT_22 1
 #define LV_FONT_MONTSERRAT_24 1
 #define LV_FONT_MONTSERRAT_26 0
 #define LV_FONT_MONTSERRAT_28 1
 #define LV_FONT_MONTSERRAT_30 0
+#ifndef LV_FONT_MONTSERRAT_32
 #define LV_FONT_MONTSERRAT_32 0
+#endif
 #define LV_FONT_MONTSERRAT_34 0
 #define LV_FONT_MONTSERRAT_36 0
 #define LV_FONT_MONTSERRAT_38 0

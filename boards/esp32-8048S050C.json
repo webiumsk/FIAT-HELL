@@ -49,8 +49,8 @@
     "maximum_size": 16777216,
     "require_upload_port": true,
     "speed": 460800,
-    "use_1200bps_touch": true,
-    "wait_for_upload_port": true
+    "use_1200bps_touch": false,
+    "wait_for_upload_port": false
   },
   "url": "https://esp3d.io/ESP3D-TFT/Version_1.X/hardware/esp32-s3/sunton-50-8048/",
   "vendor": "Sunton"

@@ -17,14 +17,6 @@ void UiController::deleteLogoScreen() {
   }
 }
 
-void UiController::deleteCurrencyScreen() {
-  if (screen_currency != NULL) {
-    lv_obj_del(screen_currency);
-    screen_currency = NULL;
-    Serial.println(F("Delete: screen_currency"));
-  }
-}
-
 void UiController::deleteInsertMoneyScreen() {
   if (screen_insert_money != NULL) {
     lv_obj_del(screen_insert_money);
@@ -51,7 +43,6 @@ void UiController::deleteThankYouScreen() {
 
 void UiController::deleteAllScreens() {
   deleteLogoScreen();
-  deleteCurrencyScreen();
   deleteInsertMoneyScreen();
   deleteQRCodeScreen();
   deleteThankYouScreen();

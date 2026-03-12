@@ -59,13 +59,18 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   JsonObject docGui1 = docGui.createNestedObject();
   docGui1["name"] = "ratesource";
   JsonArray valuesRateSource = docGui1.createNestedArray("value");
-  valuesRateSource.add("CoinYEP");
+  valuesRateSource.add("CoinGecko");
   valuesRateSource.add("ExchangeApi");
-  docGui1["checked"] =
-      (strcmp(in.rateSource, "Coingecko") == 0 ||
-       strcmp(in.rateSource, "CoinYEP") == 0)
-          ? 1
-          : 2;
+  valuesRateSource.add("CoinYEP");
+  valuesRateSource.add("Kraken");
+  if (strcmp(in.rateSource, "CoinGecko") == 0 || strcmp(in.rateSource, "Coingecko") == 0)
+    docGui1["checked"] = 1;
+  else if (strcmp(in.rateSource, "ExchangeApi") == 0)
+    docGui1["checked"] = 2;
+  else if (strcmp(in.rateSource, "CoinYEP") == 0)
+    docGui1["checked"] = 3;
+  else
+    docGui1["checked"] = 4;
 
   JsonObject docGui2 = docGui.createNestedObject();
   docGui2["name"] = "animated";
@@ -206,7 +211,7 @@ bool ConfigService::loadFirst(fs::FS &fs, const char *path, FirstConfig &out) {
   out.maxAmount = String(doc7["value"] | "").toInt();
 
   const JsonObject doc8 = doc[8];
-  out.charge = String(doc8["value"] | "").toInt();
+  out.charge = String(doc8["value"] | "").toFloat();
 
   out.valid = out.currencyLabel[0] != '\0';
   return out.valid;
@@ -243,7 +248,7 @@ bool ConfigService::loadSecond(fs::FS &fs, const char *path,
   out.maxAmount = String(doc3["value"] | "").toInt();
 
   const JsonObject doc4 = doc[4];
-  out.charge = String(doc4["value"] | "").toInt();
+  out.charge = String(doc4["value"] | "").toFloat();
 
   out.valid = out.currencyLabel[0] != '\0';
   return out.valid;
@@ -279,7 +284,7 @@ bool ConfigService::loadThird(fs::FS &fs, const char *path, ThirdConfig &out) {
   out.maxAmount = String(doc3["value"] | "").toInt();
 
   const JsonObject doc4 = doc[4];
-  out.charge = String(doc4["value"] | "").toInt();
+  out.charge = String(doc4["value"] | "").toFloat();
 
   out.valid = out.currencyLabel[0] != '\0';
   return out.valid;

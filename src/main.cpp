@@ -2,18 +2,19 @@
 //== == = //
 //============EDIT IF USING DIFFERENT HARDWARE============//
 //========================================================//
-// v0.1
+// v1.2.1
+#define FW_VERSION "1.2.5"
 
 bool format = false; // true for formatting FOSSA memory, use once, then make
                      // false and reflash
 
 #define BTN1 0 // BOOT button on ESP32-8048S050
 
-#define RX1 32 // Bill acceptor
-#define TX1 33 // Bill acceptor
+// Sunton ESP32-8048S050: use P3 header - GPIO 18 (Rx), 17 (Tx). GPIO 32/33 cause boot loop (NA on S3).
+#define RX1 18 // Bill acceptor: NV10 Pin1(Tx) -> P3 pin (GPIO18)
+#define TX1 17 // Bill acceptor: NV10 Pin5(Rx) -> P3 pin (GPIO17)
 
-// Disabled during bring-up until the correct UART/power wiring is verified.
-#define BILL_ACCEPTOR_ENABLED 0
+#define BILL_ACCEPTOR_ENABLED 1
 
 // GPIO4 is used by the RGB display data bus and GPIO2 drives the backlight on
 // this board, so the original coin mech pins conflict with the panel wiring.
@@ -77,12 +78,16 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
 }
 
 #include <AutoConnect.h>
+#include <HTTPUpdate.h>
+#include <WiFiClientSecure.h>
+#include "PriceBalanceTask.h"
 #define AUTOCONNECT_USE_LOG 1
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
 #include <JC_Button.h>
 #include <SPI.h>
 
+#include <ESPmDNS.h>
 #include <Bitcoin.h>
 #include <HTTPClient.h>
 #include <Hash.h>
@@ -110,12 +115,16 @@ LV_IMG_DECLARE(lnbits);
 #include "services/ConfigService.h"
 #include "services/PaymentService.h"
 #include "services/UiController.h"
+#include "pageota.h"
 
 // Runtime-allocated to avoid pre-setup global constructors on ESP32.
 static DeviceState *deviceStatePtr = nullptr;
 static SessionState *sessionStatePtr = nullptr;
 #define deviceState (*deviceStatePtr)
 #define sessionState (*sessionStatePtr)
+
+#define OTA_BASE_URL "https://fw.lnpay.eu"
+#define OTA_CATALOG_URL OTA_BASE_URL "/_catalog?op=list&path="
 
 #define PARAM_FILE "/elements.json"
 #define FIRST_FILE "/first.json"
@@ -145,10 +154,6 @@ static SessionState *sessionStatePtr = nullptr;
 #define currencyTwo deviceState.currencyTwo
 #define currencyThree deviceState.currencyThree
 #define currencySelected sessionState.currencySelected
-
-lv_obj_t *btn1; // Currencies buttons
-lv_obj_t *btn2;
-lv_obj_t *btn3;
 
 lv_obj_t *burnTextLabel;
 
@@ -203,6 +208,13 @@ const char *animated = "";
 lv_obj_t *balanceValueLabel = nullptr;
 lv_obj_t *fiatValueLabel = nullptr;
 lv_obj_t *chargeValueLabel = nullptr;
+// Currency blocks on main screen (rate + fee per currency, updated by updateMainScreenLabel)
+lv_obj_t *mainScreenCurrency1RateLabel = nullptr;
+lv_obj_t *mainScreenCurrency1FeeLabel = nullptr;
+lv_obj_t *mainScreenCurrency2RateLabel = nullptr;
+lv_obj_t *mainScreenCurrency2FeeLabel = nullptr;
+lv_obj_t *mainScreenCurrency3RateLabel = nullptr;
+lv_obj_t *mainScreenCurrency3FeeLabel = nullptr;
 
 // Temporary buffers
 char buffer[32];
@@ -229,6 +241,8 @@ const char *primaryApiEndpoint = "https://api.lnbc.sk/v1/lnurl";
 const char *secondaryApiEndpoint = "https://api.lnurlproxy.me/v1/lnurl";
 const char *coinyepConversionAPI =
     "https://coinyep.com/api/v1/?from=BTC&to=";
+const char *coingeckoAPI =
+    "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=";
 const char *exchangeapiConversionAPI =
     "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/"
     "currencies/btc.json"; // https://github.com/fawazahmed0/exchange-api
@@ -250,14 +264,15 @@ Button *BTNAPtr = nullptr;
 #define BTNA (*BTNAPtr)
 
 lv_obj_t *screen_logo, *screen_portal, *screen_api, *screen_thx, *screen_main,
-    *screen_insert_money, *screen_qr, *screen_currency;
-lv_obj_t *labelbtn;
+    *screen_insert_money, *screen_qr;
 lv_obj_t *fiathell;
 lv_obj_t *labelLastInserted = nullptr;
 lv_obj_t *labelTotalAmount = nullptr;
+lv_obj_t *labelTotalCurrency1 = nullptr;
+lv_obj_t *labelTotalCurrency2 = nullptr;
+lv_obj_t *labelTotalCurrency3 = nullptr;
+lv_obj_t *labelTotalSats = nullptr;
 lv_obj_t *labelMaxAmount = nullptr;
-lv_obj_t *wait_label = nullptr; // Status label on currency screen
-//lv_obj_t *btn_reset = nullptr;   // Back button on currency screen
 
 lv_obj_t *loadingLabel;
 
@@ -315,6 +330,8 @@ AutoConnectAux *savethirdAuxPtr = nullptr;
 AutoConnectConfig *guiPtr = nullptr;
 AutoConnectAux *guiAuxPtr = nullptr;
 AutoConnectAux *saveguiAuxPtr = nullptr;
+AutoConnectAux *otaAuxPtr = nullptr;
+AutoConnectAux *otaDoAuxPtr = nullptr;
 #define acConfig (*configPtr)
 #define elementsAux (*elementsAuxPtr)
 #define saveAux (*saveAuxPtr)
@@ -328,7 +345,9 @@ AutoConnectAux *saveguiAuxPtr = nullptr;
 #define thirdAux (*thirdAuxPtr)
 #define savethirdAux (*savethirdAuxPtr)
 #define gui (*guiPtr)
-#define guiAux (*guiAuxPtr)
+#define   guiAux (*guiAuxPtr)
+#define otaAux (*otaAuxPtr)
+#define otaDoAux (*otaDoAuxPtr)
 #define saveguiAux (*saveguiAuxPtr)
 
 /*** Setup screen resolution for LVGL ***/
@@ -350,11 +369,9 @@ void createLogoScreen();
 void createPortalScreen();
 void createAPIScreen();
 void createMainScreen();
-void createCurrencyScreen(const char *currency, float rate, float balance,
-                          float charge);
 void createInsertMoneyScreen();
 void createSwitch(lv_obj_t *parent);
-void lv_button_currency();
+void createAcceptedCurrenciesSection();
 void updateBurnText();
 void updateMainScreenLabel();
 void checkPrice();
@@ -367,6 +384,7 @@ void showQRCodeLVGL(const char *data);
 int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen,
                 uint8_t *nonce, size_t nonce_len, uint64_t pin,
                 uint64_t amount_in_cents);
+static long computeMixedTotalSats();
 
 void checkNetworkAndDeviceStatus();
 void startConfigPortal();
@@ -399,7 +417,7 @@ static void bootStage(uint8_t stage, const char *message) {
 
 static void billAcceptorBegin() {
   if (BILL_ACCEPTOR_ENABLED) {
-    SerialPort1.begin(300, SERIAL_8N2, RX1, TX1);
+    SerialPort1.begin(300, SERIAL_8N2, RX1, TX1);  // rxPin, txPin (Arduino convention)
   }
 }
 
@@ -441,6 +459,10 @@ void completeStartupAfterPortal() {
     return;
   }
 
+  if (wifiStatus() && MDNS.begin("fiathell")) {
+    Serial.println("mDNS: http://fiathell.local");
+  }
+
   Serial.println("Proceeding to main screen");
   createMainScreen();
   lv_task_handler();
@@ -472,6 +494,9 @@ void completeStartupAfterPortal() {
   Serial.println(lnbitsURL);
   Serial.print("ESP Free heap (Setup end): ");
   Serial.println(ESP.getFreeHeap());
+
+  startPriceBalanceTask(deviceStatePtr, sessionStatePtr);
+  triggerPriceBalanceFetch(PBR_PERIODIC);
 
   appStartupCompleted = true;
   pendingPortalCompletion = false;
@@ -582,13 +607,13 @@ void reloadRuntimeConfigFromFlash() {
   }
 
   acConfig.psk = deviceState.password;
+  acConfig.password = deviceState.password;
+  portal.config(acConfig);
 
   if (appStartupCompleted) {
-    uiController.deleteCurrencyScreen();
     uiController.deleteMainScreen();
     createMainScreen();
-    checkPrice();
-    checkBalance();
+    triggerPriceBalanceFetch(PBR_PERIODIC);
     updateMainScreenLabel();
     lv_task_handler();
   }
@@ -665,10 +690,11 @@ void setup() {
   guiPtr = new AutoConnectConfig();
   guiAuxPtr = new AutoConnectAux();
   saveguiAuxPtr = new AutoConnectAux();
+  otaAuxPtr = new AutoConnectAux();
+  otaDoAuxPtr = new AutoConnectAux();
   uiControllerPtr = new UiController(screen_logo, screen_portal, screen_api,
                                      screen_thx, screen_main,
-                                     screen_insert_money, screen_qr,
-                                     screen_currency);
+                                     screen_insert_money, screen_qr);
   if ((deviceStatePtr == nullptr) || (sessionStatePtr == nullptr) ||
       (contentPtr == nullptr) || (serverPtr == nullptr) ||
       (portalPtr == nullptr) ||
@@ -752,7 +778,7 @@ void setup() {
   delay(10);
   bootStage(13, "button initialized");
 
-  billAcceptorBegin(); // Bill acceptor
+  billAcceptorBegin(); // Bill acceptor – leave running; turned off in createMainScreen()
   if (TX2 >= 0) {
     SerialPort2.begin(4800, SERIAL_8N1, -1, TX2); // Coin mech
   }
@@ -1146,8 +1172,8 @@ void setup() {
   /*********************************************************/
   /*** Set AutoConnect before launching the portal       ***/
   /*********************************************************/
-  acConfig.auth = AC_AUTH_NONE;
-  acConfig.authScope = AC_AUTHSCOPE_AUX;
+  acConfig.auth = AC_AUTH_BASIC;
+  acConfig.authScope = AC_AUTHSCOPE_PORTAL;
   acConfig.ticker = true;
   acConfig.autoReset = false;
   acConfig.autoReconnect = true;
@@ -1161,15 +1187,142 @@ void setup() {
   acConfig.title = "LN ATM";
   acConfig.homeUri = "/config";
   acConfig.reconnectInterval = 1;
+  acConfig.channel = 6;        // Fixed channel for stable AP (avoids scan disrupting clients)
+  acConfig.beginTimeout = 45000;
   acConfig.immediateStart =
       false; // If we don't have WiFi saved, it will start AP
-  acConfig.username = "";
-  acConfig.password = "";
+  acConfig.username = "admin";
+  acConfig.password = deviceState.password;
   bootStage(40, "autoconnect config prepared");
 
   // Register all Aux pages to the portal
+  otaAux.load(FPSTR(PAGE_OTA));
+  otaAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    // Populate version select from catalog
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient catalogHttp;
+    catalogHttp.setTimeout(8000);
+    if (catalogHttp.begin(client, OTA_CATALOG_URL)) {
+      int code = catalogHttp.GET();
+      if (code == 200) {
+        String payload = catalogHttp.getString();
+        DynamicJsonDocument doc(2048);
+        if (deserializeJson(doc, payload) == DeserializationError::Ok &&
+            doc.is<JsonArray>()) {
+          AutoConnectSelect &versionSelect =
+              aux["version"].as<AutoConnectSelect>();
+          versionSelect.empty(16);
+          for (JsonObject item : doc.as<JsonArray>()) {
+            const char *name = item["name"];
+            if (name && item["type"] == "bin") {
+              const char *date = item["date"] | "";
+              size_t sizeVal = item["size"] | 0;
+              String label = String(name);
+              if (date[0])
+                label += " (" + String(date);
+              if (sizeVal > 0)
+                label += date[0] ? ", " : " (";
+              if (sizeVal > 0)
+                label += String(sizeVal / 1024) + " KB";
+              if (date[0] || sizeVal > 0)
+                label += ")";
+              versionSelect.add(label);
+            }
+          }
+          if (versionSelect.size() == 0)
+            versionSelect.add("No firmware found");
+        } else {
+          aux["version"].as<AutoConnectSelect>().empty(1);
+          aux["version"].as<AutoConnectSelect>().add("Catalog parse error");
+        }
+      } else {
+        aux["version"].as<AutoConnectSelect>().empty(1);
+        aux["version"].as<AutoConnectSelect>().add("Catalog fetch failed");
+      }
+      catalogHttp.end();
+    } else {
+      aux["version"].as<AutoConnectSelect>().empty(1);
+      aux["version"].as<AutoConnectSelect>().add("Connection failed");
+    }
+    return String();
+  }, AC_EXIT_AHEAD);
+  otaDoAux.load(FPSTR(PAGE_OTA_DO));
+  otaDoAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    String selected = arg.arg("version");
+    // Extract filename: "fiat-hell-v1.2.0.bin (2026-03-08, 1911 KB)" -> "fiat-hell-v1.2.0.bin"
+    int parenIdx = selected.indexOf(" (");
+    String filename = parenIdx > 0 ? selected.substring(0, parenIdx) : selected;
+    filename.trim();
+    if (!filename.endsWith(".bin"))
+      filename = "";
+    if (filename.length() == 0) {
+      aux["result"].value = "No version selected.";
+      return String();
+    }
+    String updateUrl = String(OTA_BASE_URL) + "/" + filename;
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPUpdate updater;
+    updater.setLedPin(-1); // Disable LED – GPIO2 is backlight on this display
+    updater.rebootOnUpdate(true);
+    // Show OTA overlay on display so user sees clear feedback (no blinking)
+    static lv_obj_t *otaOverlay = nullptr;
+    otaOverlay = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(otaOverlay, screenWidth, screenHeight);
+    lv_obj_set_pos(otaOverlay, 0, 0);
+    lv_obj_set_style_bg_color(otaOverlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(otaOverlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(otaOverlay, 0, 0);
+    lv_obj_clear_flag(otaOverlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *otaLabel = lv_label_create(otaOverlay);
+    lv_label_set_text(otaLabel, "Firmware update...\nPlease wait.");
+    lv_obj_center(otaLabel);
+    lv_obj_set_style_text_font(otaLabel, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(otaLabel, lv_color_white(), 0);
+    lv_obj_move_foreground(otaOverlay);
+    for (int i = 0; i < 8; i++) {
+      lv_task_handler();
+      delay(30);
+    }
+    updater.onStart([]() {
+      if (otaOverlay) {
+        lv_label_set_text(lv_obj_get_child(otaOverlay, 0),
+                          "Downloading firmware...");
+        lv_task_handler();
+      }
+    });
+    updater.onProgress([](int curBytes, int totalBytes) {
+      if (otaOverlay && totalBytes > 0) {
+        int pct = (int)((100ULL * curBytes) / totalBytes);
+        char buf[48];
+        snprintf(buf, sizeof(buf), "Downloading... %d%%", pct);
+        lv_label_set_text(lv_obj_get_child(otaOverlay, 0), buf);
+      }
+      lv_task_handler();
+      yield();
+    });
+    HTTPUpdateResult updateResult = updater.update(client, updateUrl);
+    if (otaOverlay) {
+      lv_obj_del(otaOverlay);
+      otaOverlay = nullptr;
+      lv_task_handler();
+    }
+    if (updateResult == HTTP_UPDATE_OK) {
+      aux["result"].value = "Update OK. Rebooting...";
+      return String();
+    }
+    if (updateResult == HTTP_UPDATE_NO_UPDATES) {
+      aux["result"].value = "No update available.";
+      return String();
+    }
+    aux["result"].value =
+        "Update failed: " + updater.getLastErrorString();
+    return String();
+  }, AC_EXIT_AHEAD);
   portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
-               savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux});
+               savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux,
+               otaAux, otaDoAux});
   bootStage(41, "portal aux pages joined");
 
   // Apply config
@@ -1308,6 +1461,9 @@ void setup() {
         portalScreenShown = true;
       }
       Serial.println("Portal available. AP Name: " + acConfig.apid);
+      if (MDNS.begin("fiathell")) {
+        Serial.println("mDNS: http://fiathell.local (config AP)");
+      }
       digitalWrite(11, LOW);
     }
   }
@@ -1421,6 +1577,12 @@ void createPortalScreen() {
   lv_obj_set_style_bg_color(screen_portal, lv_color_black(), 0);
   lv_obj_set_style_bg_opa(screen_portal, LV_OPA_COVER, 0);
 
+  lv_obj_t *verLabel = lv_label_create(screen_portal);
+  lv_label_set_text(verLabel, "v" FW_VERSION);
+  lv_obj_align(verLabel, LV_ALIGN_TOP_RIGHT, -15, 10);
+  lv_obj_set_style_text_font(verLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(verLabel, lv_color_hex(0x808080), 0);
+
   String LVGL_PORTAL_ON = "Config launched";
   lv_obj_t *portalon =
       lv_label_create(screen_portal); // full screen as the parent
@@ -1452,24 +1614,38 @@ void createPortalScreen() {
                              0); // Use the large font
   lv_obj_set_style_text_color(portaltextone, LV_COLOR_WHITE, 0);
 
-  String LVGL_PORTAL_TEXT_TWO = "in your phone and connect to it. After ";
+  String LVGL_PORTAL_TEXT_TWO =
+      "in your phone and connect. If phone says \"no internet\", choose";
   lv_obj_t *portaltexttwo =
       lv_label_create(screen_portal); // full screen as the parent
   lv_label_set_text(portaltexttwo,
                     LVGL_PORTAL_TEXT_TWO.c_str()); // set label text
   lv_obj_align(portaltexttwo, LV_ALIGN_TOP_MID, 0,
-               160); // Center but 20 from the top
-  lv_obj_set_style_text_font(portaltexttwo, &lv_font_montserrat_22,
-                             0); // Use the large font
+               155); // Center but 20 from the top
+  lv_obj_set_style_text_font(portaltexttwo, &lv_font_montserrat_16,
+                             0); // Slightly smaller for longer text
   lv_obj_set_style_text_color(portaltexttwo, LV_COLOR_WHITE, 0);
 
-  String LVGL_PORTAL_TEXT_THREE = "you are connected, open ATM settings ";
+  String LVGL_PORTAL_TEXT_TWO_B = "\"Use network anyway\". Then open browser:";
+  lv_obj_t *portaltext2b = lv_label_create(screen_portal);
+  lv_label_set_text(portaltext2b, LVGL_PORTAL_TEXT_TWO_B.c_str());
+  lv_obj_align(portaltext2b, LV_ALIGN_TOP_MID, 0, 178);
+  lv_obj_set_style_text_font(portaltext2b, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(portaltext2b, LV_COLOR_WHITE, 0);
+
+  String LVGL_PORTAL_URL = "http://fiathell.local  or  192.168.4.1";
+  lv_obj_t *portalurl = lv_label_create(screen_portal);
+  lv_label_set_text(portalurl, LVGL_PORTAL_URL.c_str());
+  lv_obj_align(portalurl, LV_ALIGN_TOP_MID, 0, 198);
+  lv_obj_set_style_text_font(portalurl, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(portalurl, lv_color_hex(0x90EE90), 0);
+
+  String LVGL_PORTAL_TEXT_THREE = "After connected, open ATM settings ";
   lv_obj_t *portaltextthree =
       lv_label_create(screen_portal); // full screen as the parent
   lv_label_set_text(portaltextthree,
                     LVGL_PORTAL_TEXT_THREE.c_str()); // set label text
-  lv_obj_align(portaltextthree, LV_ALIGN_TOP_MID, 0,
-               200); // Center but 20 from the top
+  lv_obj_align(portaltextthree, LV_ALIGN_TOP_MID, 0, 228);
   lv_obj_set_style_text_font(portaltextthree, &lv_font_montserrat_22,
                              0); // Use the large font
   lv_obj_set_style_text_color(portaltextthree, LV_COLOR_WHITE, 0);
@@ -1479,8 +1655,7 @@ void createPortalScreen() {
       lv_label_create(screen_portal); // full screen as the parent
   lv_label_set_text(portaltextfour,
                     LVGL_PORTAL_TEXT_FOUR.c_str()); // set label text
-  lv_obj_align(portaltextfour, LV_ALIGN_TOP_MID, 0,
-               240); // Center but 20 from the top
+  lv_obj_align(portaltextfour, LV_ALIGN_TOP_MID, 0, 262);
   lv_obj_set_style_text_font(portaltextfour, &lv_font_montserrat_22,
                              0); // Use the large font
   lv_obj_set_style_text_color(portaltextfour, LV_COLOR_WHITE, 0);
@@ -1666,6 +1841,27 @@ const int INHIBIT_START = 131;
 const int UNINHIBIT_START = 151;
 
 /**
+ * @brief Uninhibit all bill channels so the acceptor accepts mixed currencies.
+ * Call from createMainScreen for mixed-currency mode.
+ */
+void uninhibitAllChannels() {
+#if BILL_ACCEPTOR_ENABLED
+  int totalChannels = (int)billAmountIntOne.size();
+  if (totalChannels <= 0 || totalChannels > 16)
+    return;
+  Serial.println("NV10: uninhibiting all channels (mixed currency)");
+  for (int i = 0; i < totalChannels; i++) {
+    SerialPort1.write(UNINHIBIT_START + i);
+    delay(25);
+  }
+  delay(100);
+  sessionState.allowedChannelStart = 0;
+  sessionState.allowedChannelCount = totalChannels;
+  Serial.println("NV10: all channels enabled");
+#endif
+}
+
+/**
  * Sets the currency to the specified value.
  * @param newCurrency The new currency to set.
  */
@@ -1682,57 +1878,73 @@ void setCurrency(const char *newCurrency, bool skipInhibit = false) {
   Serial.println(newCurrency);
   strlcpy(currencySelected, newCurrency, sizeof(currencySelected));
 
-  // Skip inhibit/uninhibit if acceptor is not enabled (e.g., at startup)
+  // Always update allowed range for software filter (button path or bill path)
+  int startCh = 0;
+  int sizeCh = 0;
+  if (strcmp(currencySelected, currencyOne) == 0) {
+    startCh = 0;
+    sizeCh = originalSizeOne;
+  } else if (strcmp(currencySelected, currencyTwo) == 0) {
+    startCh = originalSizeOne;
+    sizeCh = originalSizeTwo;
+  } else if (strcmp(currencySelected, currencyThree) == 0) {
+    startCh = originalSizeOne + originalSizeTwo;
+    sizeCh = originalSizeThree;
+  }
+  sessionState.allowedChannelStart = startCh;
+  sessionState.allowedChannelCount = sizeCh;
+
   if (skipInhibit) {
     Serial.println("setCurrency: Skipping inhibit (acceptor not enabled)");
     return;
   }
 
-  // Clear all channels before setting the new ones
-  // Reduced delay - bill acceptor should respond faster
-  // Most bill acceptors can handle commands much faster than 200ms
+  int startChannel = startCh;
+  int currencySize = sizeCh;
+
+#if BILL_ACCEPTOR_ENABLED
+  Serial.println("NV10: inhibiting all channels (131..146)");
   for (int i = 0; i < 16; i++) {
-    billAcceptorWrite(INHIBIT_START + i); // Inhibit all initially
-    delay(5); // Reduced from 200ms to 5ms - much faster
+    SerialPort1.write(INHIBIT_START + i);
+    delay(100);
   }
+  delay(100);
+  Serial.println("NV10: all channels inhibited");
 
-  // Determine which channels to uninhibit based on the selected currency
-  int startChannel = 0;
-  int currencySize = 0;
-
-  if (strcmp(currencySelected, currencyOne) == 0) {
-    startChannel = 0;
-    currencySize = originalSizeOne;
-  } else if (strcmp(currencySelected, currencyTwo) == 0) {
-    startChannel = originalSizeOne;
-    currencySize = originalSizeTwo;
-  } else if (strcmp(currencySelected, currencyThree) == 0) {
-    startChannel = originalSizeOne + originalSizeTwo;
-    currencySize = originalSizeThree;
-  }
-
-  // Uninhibit channels for the selected currency
-  // Reduced delay - commands can be sent faster
+  Serial.print("NV10: uninhibiting channels ");
+  Serial.print(startChannel);
+  Serial.print("..");
+  Serial.print(startChannel + currencySize - 1);
+  Serial.print(" for ");
+  Serial.println(currencySelected);
   for (int i = 0; i < currencySize; i++) {
     int channelCode = UNINHIBIT_START + startChannel + i;
-    Serial.print("Sending value allow ");
+    Serial.print("  allow ");
     Serial.print(currencySelected);
     Serial.print(": ");
     Serial.println(channelCode);
-    billAcceptorWrite(channelCode);
-    delay(
-        2); // Reduced from 20ms to 2ms - minimal delay for serial communication
+    SerialPort1.write(channelCode);
+    delay(200);
   }
+  delay(100);
+  Serial.println("NV10: channel setup done");
+#endif
 }
 
+void checkPriceKraken();
+void checkPriceCoinGeckoApi();
 void checkPrice() {
-  if (strcmp(deviceState.rateSourceBuffer, "ExchangeApi") == 0) {
+  if (strcmp(deviceState.rateSourceBuffer, "CoinGecko") == 0) {
+    checkPriceCoinGeckoApi();
+  } else if (strcmp(deviceState.rateSourceBuffer, "ExchangeApi") == 0) {
     checkPriceExchangeApi();
+  } else if (strcmp(deviceState.rateSourceBuffer, "Kraken") == 0) {
+    checkPriceKraken();
   } else if (strcmp(deviceState.rateSourceBuffer, "Coingecko") == 0 ||
              strcmp(deviceState.rateSourceBuffer, "CoinYEP") == 0) {
-    checkPriceCoinGecko();
+    checkPriceCoinGecko();  // CoinYEP fallback
   } else {
-    checkPriceCoinGecko();
+    checkPriceCoinGeckoApi();  // default to CoinGecko
   }
 }
 
@@ -1814,6 +2026,65 @@ void checkPriceExchangeApi() {
     Serial.println(httpResponseCode);
   }
 
+  http.end();
+}
+
+static const char *krakenTickerAPI = "https://api.kraken.com/0/public/Ticker";
+
+void checkPriceCoinGeckoApi() {
+  String curr = String(currencySelected);
+  curr.toLowerCase();
+  http.begin(String(coingeckoAPI) + curr);
+  int code = http.GET();
+  if (code == 200 || code == 201) {
+    String payload = http.getString();
+    DynamicJsonDocument doc(512);
+    if (deserializeJson(doc, payload) == DeserializationError::Ok &&
+        doc["bitcoin"][curr]) {
+      fiatValue = doc["bitcoin"][curr].as<float>();
+      Serial.print("CoinGecko BTC/");
+      Serial.print(currencySelected);
+      Serial.print(": ");
+      Serial.println(fiatValue, 2);
+    }
+  }
+  http.end();
+}
+
+void checkPriceKraken() {
+  String pair = "XBTEUR"; // default
+  String curr = String(currencySelected);
+  curr.toUpperCase();
+  if (curr == "EUR")
+    pair = "XBTEUR";
+  else if (curr == "USD")
+    pair = "XBTUSD";
+  else if (curr == "CZK")
+    pair = "XBTCZK";
+  else if (curr == "GBP")
+    pair = "XBTGBP";
+  else
+    pair = "XBT" + curr;
+
+  http.begin(String(krakenTickerAPI) + "?pair=" + pair);
+  int code = http.GET();
+  if (code == 200 || code == 201) {
+    String payload = http.getString();
+    DynamicJsonDocument doc(2048);
+    if (deserializeJson(doc, payload) == DeserializationError::Ok &&
+        doc["result"] && doc["error"].size() == 0) {
+      JsonObject res = doc["result"].as<JsonObject>();
+      for (JsonPair kv : res) {
+        const char *lastStr = kv.value()["c"][0] | "";
+        fiatValue = String(lastStr).toFloat();
+        break;
+      }
+      Serial.print("Kraken BTC/");
+      Serial.print(currencySelected);
+      Serial.print(": ");
+      Serial.println(fiatValue, 2);
+    }
+  }
   http.end();
 }
 
@@ -1990,179 +2261,6 @@ void hideLoadingIndicator() {
   Serial.println("Loading indicator hidden");
 }
 
-/**
- * @brief Event handler for button 1.
- *
- * This function is called when button 1 is clicked. It sets the currency to
- * currencyOne, updates the base URL and secret if the funding source is
- * "LNbits", and updates the charge and max amount variables. It then shows the
- * currency screen with the updated values.
- *
- * @param e The event object.
- */
-static void btn1_event_handler(lv_event_t *e) {
-  lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_CLICKED) {
-    showLoadingIndicator();
-
-    // Set currency first (fast operation)
-    setCurrency(currencyOne);
-
-    // Update config variables
-    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-      strlcpy(baseURLATM, baseURLATM1, sizeof(baseURLATM));
-      strlcpy(secretATM, secretATM1, sizeof(secretATM));
-    }
-    chargeSelected = charge1;
-    maxamountSelected = maxamount;
-
-    // Show screen immediately with current values (may be slightly outdated)
-    createCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected);
-    lv_task_handler();
-    hideLoadingIndicator();
-
-    // Update price and balance in background (these are slow HTTP requests)
-    // This happens after screen is shown, so user sees response immediately
-    checkPrice();
-    checkBalance();
-
-    // Update screen with new values after they're fetched
-    createCurrencyScreen(currencyOne, fiatValue, fiatBalance, chargeSelected);
-    lv_task_handler();
-
-    // Enable acceptor only after currency is set, price and balance are loaded,
-    // and inhibit channels are configured
-    enableAcceptor();
-
-    // Update status label to "READY" with green color
-    if (wait_label != nullptr) {
-      lv_label_set_text(wait_label, "READY");
-      lv_obj_set_style_text_color(wait_label, lv_color_hex(0x00FF00),
-                                  0); // Green color
-      lv_task_handler();
-    }
-
-    Serial.print("Currency set to ");
-    Serial.println(currencyOne);
-  }
-}
-
-/**
- * @brief Event handler for button 2.
- *
- * This function is called when button 2 is clicked. It performs the following
- * actions:
- * 1. Shows a loading indicator.
- * 2. Sets the currency to currencyTwo.
- * 3. Prints a message to the serial monitor indicating the currency set.
- * 4. Updates the baseURLATM and secretATM variables based on the funding source
- * buffer.
- * 5. Sets the chargeSelected variable to charge2.
- * 6. Sets the maxamountSelected variable to maxamount2.
- * 7. Shows the currency screen with the updated values.
- * 8. Hides the loading indicator.
- *
- * @param e The event object.
- */
-static void btn2_event_handler(lv_event_t *e) {
-  lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_CLICKED) {
-    showLoadingIndicator();
-
-    // Set currency first (fast operation)
-    setCurrency(currencyTwo);
-
-    // Update config variables
-    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-      strlcpy(baseURLATM, baseURLATM2, sizeof(baseURLATM));
-      strlcpy(secretATM, secretATM2, sizeof(secretATM));
-    }
-    chargeSelected = charge2;
-    maxamountSelected = maxamount2;
-
-    // Show screen immediately with current values (may be slightly outdated)
-    createCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected);
-    lv_task_handler();
-    hideLoadingIndicator();
-
-    // Update price and balance in background (these are slow HTTP requests)
-    checkPrice();
-    checkBalance();
-
-    // Update screen with new values after they're fetched
-    createCurrencyScreen(currencyTwo, fiatValue, fiatBalance, chargeSelected);
-    lv_task_handler();
-
-    // Enable acceptor only after currency is set, price and balance are loaded,
-    // and inhibit channels are configured
-    enableAcceptor();
-
-    // Update status label to "READY" with green color
-    if (wait_label != nullptr) {
-      lv_label_set_text(wait_label, "READY");
-      lv_obj_set_style_text_color(wait_label, lv_color_hex(0x00FF00),
-                                  0); // Green color
-      lv_task_handler();
-    }
-
-    Serial.print("Currency set to ");
-    Serial.println(currencyTwo);
-  }
-}
-
-/**
- * Event handler for button 3.
- * This function is called when button 3 is clicked.
- * It sets the currency to currencyThree, updates the base URL and secret if the
- * funding source is LNbits, sets the chargeSelected and maxamountSelected
- * variables, and shows the currency screen with the new values.
- */
-static void btn3_event_handler(lv_event_t *e) {
-  lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_CLICKED) {
-    showLoadingIndicator();
-
-    // Set currency first (fast operation)
-    setCurrency(currencyThree);
-
-    // Update config variables
-    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-      strlcpy(baseURLATM, baseURLATM3, sizeof(baseURLATM));
-      strlcpy(secretATM, secretATM3, sizeof(secretATM));
-    }
-    chargeSelected = charge3;
-    maxamountSelected = maxamount3;
-
-    // Show screen immediately with current values (may be slightly outdated)
-    createCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected);
-    lv_task_handler();
-    hideLoadingIndicator();
-
-    // Update price and balance in background (these are slow HTTP requests)
-    checkPrice();
-    checkBalance();
-
-    // Update screen with new values after they're fetched
-    createCurrencyScreen(currencyThree, fiatValue, fiatBalance, chargeSelected);
-    lv_task_handler();
-
-    // Enable acceptor only after currency is set, price and balance are loaded,
-    // and inhibit channels are configured
-    enableAcceptor();
-
-    // Update status label to "READY" with green color
-    if (wait_label != nullptr) {
-      lv_label_set_text(wait_label, "READY");
-      lv_obj_set_style_text_color(wait_label, lv_color_hex(0x00FF00),
-                                  0); // Green color
-      lv_task_handler();
-    }
-
-    Serial.print("Currency set to ");
-    Serial.println(currencyThree);
-  }
-}
-
 // Create the main screen
 /**
  * @brief Callback function for color animation.
@@ -2236,8 +2334,47 @@ void updateMainScreenLabel() {
   }
   if (chargeValueLabel) { // Check if it has been initialized
     char buffer[32];
-    snprintf(buffer, sizeof(buffer), "%ld %%", chargeSelected);
+    snprintf(buffer, sizeof(buffer), "%.1f %%", (double)chargeSelected);
     lv_label_set_text(chargeValueLabel, buffer);
+  }
+  if (mainScreenCurrency1RateLabel) {
+    char buf[32];
+    if (wifiStatus() && sessionState.fiatValue1 > 0)
+      snprintf(buf, sizeof(buf), "%ld", (long)sessionState.fiatValue1);
+    else
+      snprintf(buf, sizeof(buf), "-");
+    lv_label_set_text(mainScreenCurrency1RateLabel, buf);
+  }
+  if (mainScreenCurrency1FeeLabel) {
+    char feeBuf[24];
+    snprintf(feeBuf, sizeof(feeBuf), "Fee: %.1f%%", (double)charge1);
+    lv_label_set_text(mainScreenCurrency1FeeLabel, feeBuf);
+  }
+  if (mainScreenCurrency2RateLabel) {
+    char buf[32];
+    if (wifiStatus() && sessionState.fiatValue2 > 0)
+      snprintf(buf, sizeof(buf), "%ld", (long)sessionState.fiatValue2);
+    else
+      snprintf(buf, sizeof(buf), "-");
+    lv_label_set_text(mainScreenCurrency2RateLabel, buf);
+  }
+  if (mainScreenCurrency2FeeLabel) {
+    char feeBuf[24];
+    snprintf(feeBuf, sizeof(feeBuf), "Fee: %.1f%%", (double)charge2);
+    lv_label_set_text(mainScreenCurrency2FeeLabel, feeBuf);
+  }
+  if (mainScreenCurrency3RateLabel) {
+    char buf[32];
+    if (wifiStatus() && sessionState.fiatValue3 > 0)
+      snprintf(buf, sizeof(buf), "%ld", (long)sessionState.fiatValue3);
+    else
+      snprintf(buf, sizeof(buf), "-");
+    lv_label_set_text(mainScreenCurrency3RateLabel, buf);
+  }
+  if (mainScreenCurrency3FeeLabel) {
+    char feeBuf[24];
+    snprintf(feeBuf, sizeof(feeBuf), "Fee: %.1f%%", (double)charge3);
+    lv_label_set_text(mainScreenCurrency3FeeLabel, feeBuf);
   }
 
   Serial.print("Free heap (updateMainScreenLabel End): ");
@@ -2258,9 +2395,7 @@ void updateMainScreenLabel() {
  * configurations have been properly set up beforehand.
  */
 void createMainScreen() {
-  uiController.deleteCurrencyScreen();
   lv_task_handler();
-  billAcceptorWrite(185); // Command to turn off the acceptor
   if (INHIBITMECH >= 0) {
     digitalWrite(INHIBITMECH, LOW);
   }
@@ -2271,6 +2406,12 @@ void createMainScreen() {
 
   screen_main = lv_obj_create(NULL); // Create a new screen
   Serial.println("createMainScreen: Screen created");
+
+  lv_obj_t *verLabel = lv_label_create(screen_main);
+  lv_label_set_text(verLabel, "v" FW_VERSION);
+  lv_obj_align(verLabel, LV_ALIGN_TOP_RIGHT, -15, 10);
+  lv_obj_set_style_text_font(verLabel, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(verLabel, lv_color_hex(0x808080), 0);
 
   String LVGL_Atm_desc = "BITCOIN LIGHTNING ATM ";
   if (atmdesc[0] != '\0') {
@@ -2284,13 +2425,18 @@ void createMainScreen() {
   String LVGL_Zero_Title = "";
   if (atmsubtitle[0] != '\0') {
     LVGL_Zero_Title = atmsubtitle;
-  };
+  }
+  if (strcmp(atmsubtitle, "DVADSATJEDEN") == 0 ||
+      strcmp(atmsubtitle, "Dvadsatjeden") == 0 ||
+      strcmp(atmsubtitle, "21") == 0) {
+    LVGL_Zero_Title = "DVADSATJEDEN";
+  }
   lv_obj_t *zeroline =
       lv_label_create(screen_main); // full screen as the parent
   lv_label_set_text(zeroline, LVGL_Zero_Title.c_str()); // set label text
-  lv_obj_align(zeroline, LV_ALIGN_TOP_MID, 0, 45); // Center but 20 from the top
+  lv_obj_align(zeroline, LV_ALIGN_TOP_MID, 0, 60); // Center but 20 from the top
   if (strcmp(atmsubtitle, "AMITY") == 0 || strcmp(atmsubtitle, "Amity") == 0) {
-    lv_label_set_text(zeroline, ""); // set label text
+    lv_label_set_text(zeroline, "");
   }
   if (strcmp(atmsubtitle, "DVADSATJEDEN") == 0 ||
       strcmp(atmsubtitle, "Dvadsatjeden") == 0 ||
@@ -2309,7 +2455,7 @@ void createMainScreen() {
   lv_obj_t *fiathell =
       lv_label_create(screen_main); // full screen as the parent
   lv_label_set_text(fiathell, LVGL_Fiat_Hell.c_str()); // set label text
-  lv_obj_align(fiathell, LV_ALIGN_TOP_MID, 0, 95); // Center but 95 from the top
+  lv_obj_align(fiathell, LV_ALIGN_TOP_MID, 0, 125); // Center but 95 from the top
   lv_obj_set_style_text_font(
       fiathell, &lv_font_montserrat_bold_60,
       0); // Assuming lv_font_montserrat_22 is a bold font.
@@ -2335,10 +2481,11 @@ void createMainScreen() {
   lv_obj_set_style_text_font(burnTextLabel, &lv_font_montserrat_24,
                              0); // Use the large font
   lv_obj_align(burnTextLabel, LV_ALIGN_TOP_MID, 0,
-               163); // Center but 163 from the top
+               223); // Center but 163 from the top
   Serial.println("createMainScreen: burnTextLabel created");
 
-  if (strcmp(atmsubtitle, "DVADSATJEDEN") == 0 ||
+  if (strcmp(atmsubtitle, "DVADSATJEDEN") == 0 || 
+      strcmp(atmsubtitle, "Dvadsatjeden") == 0 ||
       strcmp(atmsubtitle, "21") == 0) {
     lv_obj_t *img1 = lv_img_create(screen_main); // Create an image object
     lv_img_set_src(img1, &btcSmallImg);          // Set the image source to your
@@ -2346,7 +2493,7 @@ void createMainScreen() {
     lv_obj_align(img1, LV_ALIGN_TOP_MID, 180,
                  70); // Align the image to the center of the screen
     Serial.println("createMainScreen: btc logo added");
-  }
+    }
 
   if (strcmp(atmsubtitle, "AMITY") == 0 || strcmp(atmsubtitle, "Amity") == 0) {
     lv_obj_t *img1 = lv_img_create(screen_main); // Create an image object
@@ -2405,8 +2552,8 @@ void createMainScreen() {
   lv_obj_set_style_text_font(fiatValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: fiatValueLabel created");
 
-  snprintf(buffer, sizeof(buffer), "%d %%",
-           chargeSelected); // Convert the int to a char array
+  snprintf(buffer, sizeof(buffer), "%.1f %%",
+           (double)chargeSelected);
   chargeValueLabel =
       lv_label_create(screen_main); // Create it on your main screen
   lv_label_set_text(chargeValueLabel,
@@ -2416,8 +2563,8 @@ void createMainScreen() {
   lv_obj_set_style_text_font(chargeValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: chargeValueLabel created");
 
-  lv_button_currency();
-  Serial.println("createMainScreen: lv_button_currency created");
+  createAcceptedCurrenciesSection();
+  Serial.println("createMainScreen: accepted currencies section created");
   //}
   img_blink = lv_img_create(screen_main);
   lv_img_set_src(
@@ -2443,88 +2590,13 @@ void createMainScreen() {
 
   lv_scr_load(screen_main);
   Serial.println("createMainScreen: Screen loaded");
+  // Mixed-currency mode: accept all bills, no single-currency filter
+#if BILL_ACCEPTOR_ENABLED
+  uninhibitAllChannels();
+  enableAcceptor();
+#endif
   Serial.print("Free heap (createMainScreen End): ");
   Serial.println(ESP.getFreeHeap());
-}
-
-/**
- * Displays the currency screen with the given currency, rate, balance, and
- * charge.
- *
- * @param currency The selected currency.
- * @param rate The rate of the currency in BTC.
- * @param balance The balance in the selected currency.
- * @param charge The fee percentage.
- */
-void createCurrencyScreen(const char *currency, float rate, float balance,
-                          float charge) {
-  // Delete existing currency screen if it exists
-  if (screen_currency != nullptr) {
-    lv_obj_del(screen_currency);
-    screen_currency = nullptr;
-    wait_label = nullptr; // Reset wait_label reference
-    //btn_reset = nullptr;   // Reset btn_reset reference
-  }
-
-  // Create new currency screen
-  screen_currency = lv_obj_create(NULL);
-
-  String currency_text = "Selected Currency: " + String(currency);
-  lv_obj_t *currency_label = lv_label_create(screen_currency);
-  lv_label_set_text(currency_label, currency_text.c_str());
-  lv_obj_align(currency_label, LV_ALIGN_TOP_MID, 0, 20);
-  lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
-
-  String rate_text = "Rate: " + String(rate) + " " + currency + "/BTC";
-  lv_obj_t *rate_label = lv_label_create(screen_currency);
-  lv_label_set_text(rate_label, rate_text.c_str());
-  lv_obj_align(rate_label, LV_ALIGN_TOP_MID, 0, 50);
-  lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
-
-  String balance_text = "Balance: " + String(balance) + " " + currency;
-  lv_obj_t *balance_label = lv_label_create(screen_currency);
-  lv_label_set_text(balance_label, balance_text.c_str());
-  lv_obj_align(balance_label, LV_ALIGN_TOP_MID, 0, 80);
-  lv_obj_set_style_text_font(currency_label, &lv_font_montserrat_16, 0);
-
-  String charge_text = "Fee: " + String(charge) + "%";
-  lv_obj_t *charge_label = lv_label_create(screen_currency);
-  lv_label_set_text(charge_label, charge_text.c_str());
-  lv_obj_align(charge_label, LV_ALIGN_TOP_MID, 0, 110);
-  lv_obj_set_style_text_font(charge_label, &lv_font_montserrat_16, 0);
-
-  String insert_text = "INSERT " + String(currency) + " SHITCOIN";
-  lv_obj_t *insert_label = lv_label_create(screen_currency);
-  lv_label_set_text(insert_label, insert_text.c_str());
-  lv_obj_align(insert_label, LV_ALIGN_CENTER, 0, 0);
-  lv_obj_set_style_text_font(insert_label, &lv_font_montserrat_24, 0);
-
-  // Create status label (WAITING FOR ACCEPTOR... / READY)
-  // Delete existing wait_label if it exists
-  if (wait_label != nullptr) {
-    lv_obj_del(wait_label);
-    wait_label = nullptr;
-  }
-
-  String wait_text = "WAITING FOR ACCEPTOR...";
-  wait_label = lv_label_create(screen_currency);
-  lv_label_set_text(wait_label, wait_text.c_str());
-  lv_obj_align(wait_label, LV_ALIGN_TOP_MID, 0, 200);
-  lv_obj_set_style_text_font(wait_label, &lv_font_montserrat_28, 0);
-  lv_obj_set_style_text_color(wait_label, LV_COLOR_ORANGE, 0);
-
-  //createResetkButton(screen_currency);
-
-  // Enable reset button when currency screen is created (in case it was
-  // disabled)
-  /*if (btn_reset != nullptr) {
-    lv_obj_clear_state(btn_reset, LV_STATE_DISABLED);
-  }*/
-
-  lv_scr_load(screen_currency);
-
-  // Note: enableAcceptor() is now called in button handlers after all data is
-  // loaded
 }
 
 void enableAcceptor() {
@@ -2532,11 +2604,10 @@ void enableAcceptor() {
       (!wifiStatus())) {
     Serial.println("Error: Blink API is selected but the device is offline");
     return;
-  } else {
-    billAcceptorWrite(184);          // Enable acceptor
-    if (INHIBITMECH >= 0) {
-      digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
-    }
+  }
+  billAcceptorWrite(184);  // Enable acceptor (channels already set by setCurrency)
+  if (INHIBITMECH >= 0) {
+    digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
   }
 }
 
@@ -2551,9 +2622,6 @@ void enableAcceptor() {
  * @note This function prints the free heap size to the serial monitor.
  */
 void createInsertMoneyScreen() {
-  uiController.deleteCurrencyScreen(); // Properly manage deletion of the
-                                       // previous screen
-
   isInsertingMoney = true;
 
   Serial.println("Inside createInsertMoneyScreen()");
@@ -2578,14 +2646,42 @@ void createInsertMoneyScreen() {
     Serial.println("Failed to create labelLastInserted!");
   }
 
-  // Create label for displaying the total amount
+  // Create label for displaying the total amount (single-currency) or empty (mixed)
   labelTotalAmount = lv_label_create(screen_insert_money);
   if (labelTotalAmount) {
-    lv_label_set_text(labelTotalAmount, ""); // Initialize with empty text
+    lv_label_set_text(labelTotalAmount, "");
     lv_obj_align(labelTotalAmount, LV_ALIGN_TOP_LEFT, 30, 100);
     lv_obj_set_style_text_font(labelTotalAmount, &lv_font_montserrat_48, 0);
   } else {
     Serial.println("Failed to create labelTotalAmount!");
+  }
+
+  // Mixed-currency: one line per currency total
+  labelTotalCurrency1 = lv_label_create(screen_insert_money);
+  if (labelTotalCurrency1) {
+    lv_label_set_text(labelTotalCurrency1, "");
+    lv_obj_align(labelTotalCurrency1, LV_ALIGN_TOP_LEFT, 30, 100);
+    lv_obj_set_style_text_font(labelTotalCurrency1, &lv_font_montserrat_24, 0);
+  }
+  labelTotalCurrency2 = lv_label_create(screen_insert_money);
+  if (labelTotalCurrency2) {
+    lv_label_set_text(labelTotalCurrency2, "");
+    lv_obj_align(labelTotalCurrency2, LV_ALIGN_TOP_LEFT, 30, 130);
+    lv_obj_set_style_text_font(labelTotalCurrency2, &lv_font_montserrat_24, 0);
+  }
+  labelTotalCurrency3 = lv_label_create(screen_insert_money);
+  if (labelTotalCurrency3) {
+    lv_label_set_text(labelTotalCurrency3, "");
+    lv_obj_align(labelTotalCurrency3, LV_ALIGN_TOP_LEFT, 30, 160);
+    lv_obj_set_style_text_font(labelTotalCurrency3, &lv_font_montserrat_24, 0);
+  }
+
+  // Mixed-currency: total in sats
+  labelTotalSats = lv_label_create(screen_insert_money);
+  if (labelTotalSats) {
+    lv_label_set_text(labelTotalSats, "");
+    lv_obj_align(labelTotalSats, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_text_font(labelTotalSats, &lv_font_montserrat_48, 0);
   }
 
   // Create prompt label
@@ -2602,7 +2698,7 @@ void createInsertMoneyScreen() {
   labelMaxAmount = lv_label_create(screen_insert_money);
   if (labelMaxAmount) {
     lv_label_set_text(labelMaxAmount, ""); // Initialize with empty text
-    lv_obj_align(labelMaxAmount, LV_ALIGN_TOP_LEFT, 30, 220);
+    lv_obj_align(labelMaxAmount, LV_ALIGN_TOP_LEFT, 30, 330);
     lv_obj_set_style_text_font(labelMaxAmount, &lv_font_montserrat_16, 0);
   } else {
     Serial.println("Failed to create labelMaxAmount!");
@@ -2631,104 +2727,87 @@ static void switch_animation_event_handler(lv_event_t *e) {
 }
 
 /**
- * @brief Function to create and initialize currency buttons.
- *
- * This function creates and initializes currency buttons (up to 3 currencies).
- * It sets the position, size, and text of each button based on the currency
- * values. It also sets the button style for the checked state and sets the
- * initial currency.
- * @note This function assumes that the variables currencyATM3, currencyThree,
- * currencyOne, currencyTwo, and currencySelected are defined and accessible.
+ * @brief Creates one currency block (ticker + rate + fee) and returns the rate/fee label pointers via out params.
  */
-void lv_button_currency() {
-  lv_obj_t *labelbtn;
+static void createCurrencyBlock(lv_obj_t *parent, int x, int y, const char *ticker,
+    lv_obj_t **outRateLabel, lv_obj_t **outFeeLabel, float feePct) {
+  const int block_w = 200;
+  const int block_h = 100;
+  const int pad = 10;
 
-  // Initialize styles
-  static lv_style_t style_btn_default, style_btn_pressed;
-  lv_style_init(&style_btn_default);
-  lv_style_init(&style_btn_pressed);
+  lv_obj_t *cont = lv_obj_create(parent);
+  lv_obj_set_size(cont, block_w, block_h);
+  lv_obj_set_pos(cont, x, y);
+  lv_obj_set_style_bg_color(cont, lv_color_hex(0x1a1a1a), 0);
+  lv_obj_set_style_border_color(cont, LV_COLOR_ORANGE, 0);
+  lv_obj_set_style_border_width(cont, 2, 0);
+  lv_obj_set_style_radius(cont, 8, 0);
+  lv_obj_set_style_pad_all(cont, pad, 0);
+  lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
 
-  // Default style properties
-  lv_style_set_bg_color(&style_btn_default, lv_color_black());
-  lv_style_set_border_color(&style_btn_default, LV_COLOR_ORANGE);
-  lv_style_set_border_width(&style_btn_default, 2);
+  lv_obj_t *tickerLabel = lv_label_create(cont);
+  lv_label_set_text(tickerLabel, ticker);
+  lv_obj_set_style_text_font(tickerLabel, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(tickerLabel, LV_COLOR_ORANGE, 0);
+  lv_obj_align(tickerLabel, LV_ALIGN_TOP_MID, 0, 2);
 
-  // Checked style properties
-  lv_style_set_bg_color(&style_btn_pressed, LV_COLOR_PURPLE);
-  lv_style_set_border_color(&style_btn_pressed, LV_COLOR_PURPLE);
-  lv_style_set_border_width(&style_btn_pressed, 2);
+  *outRateLabel = lv_label_create(cont);
+  lv_label_set_text(*outRateLabel, "-");
+  lv_obj_set_style_text_font(*outRateLabel, &lv_font_montserrat_20, 0);
+  lv_obj_set_style_text_color(*outRateLabel, lv_color_hex(0xE0E0E0), 0);
+  lv_obj_align(*outRateLabel, LV_ALIGN_TOP_MID, 0, 38);
 
-  // Calculate positions based on the number of buttons
-  int num_buttons = 0;
-  if (currencyOne[0] != '\0')
-    num_buttons++;
-  if (currencyTwo[0] != '\0')
-    num_buttons++;
-  if (currencyThree[0] != '\0')
-    num_buttons++;
+  char feeBuf[24];
+  snprintf(feeBuf, sizeof(feeBuf), "Fee: %.1f%%", (double)feePct);
+  *outFeeLabel = lv_label_create(cont);
+  lv_label_set_text(*outFeeLabel, feeBuf);
+  lv_obj_set_style_text_font(*outFeeLabel, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(*outFeeLabel, lv_color_hex(0xA0A0A0), 0);
+  lv_obj_align(*outFeeLabel, LV_ALIGN_TOP_MID, 0, 64);
+}
 
-  int screen_width = 480;
-  int btn_width = 120;
-  int btn_height = 50;
-  int spacing = 20;
+/**
+ * @brief Creates the "Accepted currencies" section: 1–3 blocks (ticker + rate + fee), layout by count.
+ */
+void createAcceptedCurrenciesSection() {
+  const int section_y = 262;
+  const int block_w = 200;
+  const int gap = 24;
+  const int total_w_1 = block_w;
+  const int total_w_2 = block_w * 2 + gap;
+  const int total_w_3 = block_w * 3 + gap * 2;
+  const int screen_center = (int)screenWidth / 2;
 
-  int start_x =
-      (screen_width - (num_buttons * btn_width + (num_buttons - 1) * spacing)) /
-      2;
+  int n = 0;
+  if (currencyOne[0] != '\0') n++;
+  if (currencyTwo[0] != '\0') n++;
+  if (currencyThree[0] != '\0') n++;
 
-  // Create buttons and apply styles
+  int start_x;
+  if (n == 1)
+    start_x = screen_center - total_w_1 / 2;
+  else if (n == 2)
+    start_x = screen_center - total_w_2 / 2;
+  else
+    start_x = screen_center - total_w_3 / 2;
+
   if (currencyOne[0] != '\0') {
-    btn1 = lv_btn_create(screen_main);
-    lv_obj_add_style(btn1, &style_btn_default, 0); // Apply default style
-    lv_obj_add_style(btn1, &style_btn_pressed,
-                     LV_STATE_PRESSED); // Apply checked style
-    lv_obj_add_event_cb(btn1, btn1_event_handler, LV_EVENT_ALL, NULL);
-    lv_obj_set_pos(btn1, start_x, 200);
-    lv_obj_set_size(btn1, btn_width, btn_height);
-    labelbtn = lv_label_create(btn1);
-
-    if (currencyTwo[0] == '\0' && currencyThree[0] == '\0') {
-      lv_label_set_text(labelbtn, "START");
-    } else {
-      lv_label_set_text(labelbtn, currencyOne);
-    }
-
-    lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
-    lv_obj_center(labelbtn);
-
-    start_x += btn_width + spacing;
+    createCurrencyBlock(screen_main, start_x, section_y, currencyOne,
+        &mainScreenCurrency1RateLabel, &mainScreenCurrency1FeeLabel, charge1);
+    start_x += block_w + gap;
   }
-
   if (currencyTwo[0] != '\0') {
-    btn2 = lv_btn_create(screen_main);
-    lv_obj_add_style(btn2, &style_btn_default, 0);
-    lv_obj_add_style(btn2, &style_btn_pressed, LV_STATE_PRESSED);
-    lv_obj_add_event_cb(btn2, btn2_event_handler, LV_EVENT_ALL, NULL);
-    lv_obj_set_pos(btn2, start_x, 200);
-    lv_obj_set_size(btn2, btn_width, btn_height);
-    labelbtn = lv_label_create(btn2);
-    lv_label_set_text(labelbtn, currencyTwo);
-    lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
-    lv_obj_center(labelbtn);
-
-    start_x += btn_width + spacing;
+    createCurrencyBlock(screen_main, start_x, section_y, currencyTwo,
+        &mainScreenCurrency2RateLabel, &mainScreenCurrency2FeeLabel, charge2);
+    start_x += block_w + gap;
   }
-
   if (currencyThree[0] != '\0') {
-    btn3 = lv_btn_create(screen_main);
-    lv_obj_add_style(btn3, &style_btn_default, 0);
-    lv_obj_add_style(btn3, &style_btn_pressed, LV_STATE_PRESSED);
-    lv_obj_add_event_cb(btn3, btn3_event_handler, LV_EVENT_ALL, NULL);
-    lv_obj_set_pos(btn3, start_x, 200);
-    lv_obj_set_size(btn3, btn_width, btn_height);
-    labelbtn = lv_label_create(btn3);
-    lv_label_set_text(labelbtn, currencyThree);
-    lv_obj_set_style_text_font(labelbtn, &lv_font_montserrat_24, 0);
-    lv_obj_center(labelbtn);
+    createCurrencyBlock(screen_main, start_x, section_y, currencyThree,
+        &mainScreenCurrency3RateLabel, &mainScreenCurrency3FeeLabel, charge3);
   }
 
-  // Set initial currency (skip inhibit since acceptor is not enabled yet)
-  setCurrency(currencyOne, true);
+  if (currencyOne[0] != '\0')
+    setCurrency(currencyOne, true);
 }
 
 /*** Display callback to flush the buffer to screen ***/
@@ -2907,24 +2986,20 @@ void getBlinkLnURL(const char *invoice) {
  * @return None
  */
 void createLNURLWithdraw() {
-  float temp = ((total / 100.0) / fiatValue * 1e8);
-
-  Serial.print("Temp (satoshis): ");
-  Serial.println(temp);
-
-  if (chargeSelected > 0) {
-    tempCharge = ((total / 100.0) / fiatValue * 1e8) * chargeSelected / 100;
-    result = round(temp) - tempCharge;
+  const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 | sessionState.totalCurrency3) != 0;
+  if (mixed) {
+    result = computeMixedTotalSats();
+    tempCharge = 0.0f;
+    Serial.print("Mixed-currency result (sats): ");
+    Serial.println(result);
   } else {
-    result = round(temp);
+    float temp = ((total / 100.0) / fiatValue * 1e8);
+    result = (long)round(temp * (100.0f - chargeSelected) / 100.0f);
+    tempCharge = temp - (float)result;
   }
-
-  Serial.print("Charge TEMP: ");
-  Serial.println(tempCharge);
-  Serial.print("Result (rounded satoshis): ");
+  Serial.print("Result (after fee, satoshis): ");
   Serial.println(result);
 
-  // Convert long to String for the POST request
   String resultStr = String(result);
 
   http.begin(primaryApiEndpoint);
@@ -2999,23 +3074,16 @@ void getBlinkLNURL() {
   Serial.println(chargeSelected);
 
   float temp = ((total / 100.0) / fiatValue * 1e8);
+  result = (long)round(temp * (100.0f - chargeSelected) / 100.0f);
+  tempCharge = temp - (float)result;
 
   Serial.print("Temp (satoshis): ");
   Serial.println(temp);
-
-  if (chargeSelected > 0) {
-    tempCharge = ((total / 100.0) / fiatValue * 1e8) * chargeSelected / 100;
-    result = round(temp) - tempCharge;
-  } else {
-    result = round(temp);
-  }
-
-  Serial.print("Charge TEMP: ");
-  Serial.println(tempCharge);
-  Serial.print("Result (rounded satoshis): ");
+  Serial.print("Charge %: ");
+  Serial.println(chargeSelected);
+  Serial.print("Result (after fee, satoshis): ");
   Serial.println(result);
 
-  // Convert long to String for the POST request
   String resultStr = String(result);
 
   http.begin(graphqlEndpoint); // API endpoint
@@ -3050,6 +3118,26 @@ void getBlinkLNURL() {
 }
 
 /**
+ * @brief Compute total satoshis from mixed-currency totals (fee and rate per currency).
+ */
+static long computeMixedTotalSats() {
+  long totalSats = 0;
+  if (sessionState.totalCurrency1 > 0 && sessionState.fiatValue1 > 0) {
+    float afterFee = (sessionState.totalCurrency1 / 100.0f) * (100.0f - charge1) / 100.0f;
+    totalSats += (long)round(afterFee / sessionState.fiatValue1 * 1e8);
+  }
+  if (sessionState.totalCurrency2 > 0 && sessionState.fiatValue2 > 0) {
+    float afterFee = (sessionState.totalCurrency2 / 100.0f) * (100.0f - charge2) / 100.0f;
+    totalSats += (long)round(afterFee / sessionState.fiatValue2 * 1e8);
+  }
+  if (sessionState.totalCurrency3 > 0 && sessionState.fiatValue3 > 0) {
+    float afterFee = (sessionState.totalCurrency3 / 100.0f) * (100.0f - charge3) / 100.0f;
+    totalSats += (long)round(afterFee / sessionState.fiatValue3 * 1e8);
+  }
+  return totalSats;
+}
+
+/**
  * @brief Retrieves the LNURL from the server based on the provided parameters.
  *
  * This function calculates the LNURL based on the total amount, EUR value, and
@@ -3061,30 +3149,31 @@ void getBlinkLNURL() {
  * chargeSelected, lnbitsURL, adminkey) have been properly initialized.
  */
 void getLNURL() {
-  Serial.print("Total (cents): ");
-  Serial.println(total);
-  Serial.print("EUR Value (price of 1 Bitcoin in euros): ");
-  Serial.println(fiatValue);
-  Serial.print("Charge: ");
-  Serial.println(chargeSelected);
-
-  float temp = ((total / 100.0) / fiatValue * 1e8);
+  const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 | sessionState.totalCurrency3) != 0;
+  float temp = 0.0f;
+  if (mixed) {
+    result = computeMixedTotalSats();
+    temp = (float)result;
+    tempCharge = 0.0f;
+    Serial.print("Mixed-currency result (sats): ");
+    Serial.println(result);
+  } else {
+    Serial.print("Total (cents): ");
+    Serial.println(total);
+    Serial.print("EUR Value (price of 1 Bitcoin in euros): ");
+    Serial.println(fiatValue);
+    Serial.print("Charge: ");
+    Serial.println(chargeSelected);
+    temp = ((total / 100.0) / fiatValue * 1e8);
+    result = (long)round(temp * (100.0f - chargeSelected) / 100.0f);
+    tempCharge = temp - (float)result;
+  }
 
   Serial.print("Temp (satoshis): ");
   Serial.println(temp);
-
-  if (chargeSelected > 0) {
-    tempCharge = ((total / 100.0) / fiatValue * 1e8) * chargeSelected / 100;
-    result = round(temp) - tempCharge;
-  } else {
-    result = round(temp);
-  }
-
-  Serial.print("Charge TEMP: ");
-  Serial.println(tempCharge);
-  Serial.print("Result (rounded satoshis): ");
-  Serial.println(result);
-
+  Serial.print("Charge %: ");
+  Serial.println(chargeSelected);
+  Serial.print("Result (after fee, satoshis): ");
   Serial.println(result);
 
   String resultStr = String(result);
@@ -3171,11 +3260,22 @@ void makeLNURL() {
     nonce[i] = random(256);
   }
 
+  // Mixed: encode total sats; single currency: encode amount after fee (cents)
+  uint64_t amountToEncode;
+  const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 | sessionState.totalCurrency3) != 0;
+  if (mixed) {
+    result = computeMixedTotalSats();
+    amountToEncode = (uint64_t)result;
+  } else {
+    float amountAfterFeeCents = total * (100.0f - chargeSelected) / 100.0f;
+    amountToEncode = (uint64_t)round(amountAfterFeeCents);
+  }
+
   byte payload[51]; // 51 bytes is max one can get with xor-encryption
 
   size_t payload_len = xor_encrypt(
       payload, sizeof(payload), (uint8_t *)secretATM, strlen(secretATM), nonce,
-      sizeof(nonce), randomPin, float(total));
+      sizeof(nonce), randomPin, amountToEncode);
   String preparedURL = String(baseURLATM) + "?atm=1&p=";
   preparedURL +=
       toBase64(payload, payload_len, BASE64_URLSAFE | BASE64_NOPADDING);
@@ -3378,7 +3478,8 @@ void startConfigPortal() {
   // appropriately
   acConfig.immediateStart = true;
   portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
-               savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux});
+               savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux,
+               otaAux, otaDoAux});
   portal.config(acConfig);
   portal.begin();
   Serial.println("Portal started. IP2: " + WiFi.localIP().toString());
@@ -3522,9 +3623,10 @@ void handleUiStateMachine() {
     }
     break;
 
-  case UI_WAITING_FOR_TAP:
+  case UI_WAITING_FOR_TAP: {
     // Non-blocking wait for tap after QR code (for LNbits)
-    if (BTNA.wasPressed()) {
+    uint16_t qrTouchX, qrTouchY;
+    if (BTNA.wasPressed() || lcd.getTouch(&qrTouchX, &qrTouchY)) {
       // Reset for the next transaction
       coins = 0;
       bills = 0;
@@ -3535,14 +3637,18 @@ void handleUiStateMachine() {
       ESP.restart();
     }
     break;
+  }
 
-  case UI_THANK_YOU:
-    // After thank you screen, wait then restart
-    if (currentTime - stateEnterTime >= 1200) {
-      Serial.println("Thank you timeout => restarting");
+  case UI_THANK_YOU: {
+    // Thank you screen: 5 seconds or tap to continue
+    uint16_t thxTouchX, thxTouchY;
+    bool thxTap = lcd.getTouch(&thxTouchX, &thxTouchY) || BTNA.wasPressed();
+    if (thxTap || (currentTime - stateEnterTime >= 5000)) {
+      Serial.println("Thank you => restarting");
       ESP.restart();
     }
     break;
+  }
 
   case UI_IDLE:
   default:
@@ -3597,9 +3703,14 @@ void loop() {
     delay(5);
     return;
   }
-
   // Handle UI state machine
   handleUiStateMachine();
+
+  // Process background fetch results (periodic price/balance update)
+  if (consumePriceBalanceDataReady()) {
+    updateMainScreenLabel();
+    lv_task_handler();
+  }
 
   if (initialCheck) {
     previousMillis =
@@ -3612,62 +3723,173 @@ void loop() {
     previousMillis = currentMillis;
 
     checkNetworkAndDeviceStatus();
-    checkPrice();
-    checkBalance();          // Check the balance every 5 minutes
-    updateMainScreenLabel(); // Update the label on the main screen with the new
-                             // balance
-    lv_task_handler();
-    // delay(5); // Removed to avoid blocking
+    triggerPriceBalanceFetch(PBR_PERIODIC);
   }
 
   // Check if user is inserting money
   int x = nonBlockingRead();
 
-  if (x != -1) // Data available
-  {
-    for (int i = 0; i < billAmountIntOne.size();
-         i++) // Using .size() method on std::vector
-    {
-      if ((i + 1) == x) {
-        // A valid bill is detected
-        bills = bills + billAmountIntOne[i];
-        total = (coins + bills);
-        if (!isInsertingMoney) {
-          // Disable back button when money insertion starts
-          /*if (btn_reset != nullptr) {
-            lv_obj_add_state(btn_reset, LV_STATE_DISABLED);
-            lv_task_handler();
-          }*/
+#if BILL_ACCEPTOR_ENABLED
+  if (x != -1) {
+    Serial.print("NV10 rx: ");
+    Serial.print(x);
+    if (x >= 1 && x <= (int)billAmountIntOne.size()) {
+      Serial.println(" (channel)");
+    } else {
+      Serial.println(" (other)");
+    }
+  }
+#endif
 
-          createInsertMoneyScreen();
-          lv_task_handler();
-          isInsertingMoney = true;
-          currentUiState = UI_INSERTING_MONEY;
-          stateEnterTime = millis();
+  if (x >= 1 && x <= (int)billAmountIntOne.size()) {
+    int channelIdx = x - 1;  // 0-based
+    int amount = billAmountIntOne[channelIdx];
+    const bool mixed = (sessionState.allowedChannelCount == (int)billAmountIntOne.size());
+    bool creditBill = false;
+
+    if (mixed) {
+      // Mixed-currency: accept all, add to per-currency totals
+      creditBill = true;
+      if (channelIdx < (int)originalSizeOne) {
+        sessionState.totalCurrency1 += (long)amount * 100;
+        strlcpy(sessionState.lastBillCurrency, currencyOne, sizeof(sessionState.lastBillCurrency));
+      } else if (channelIdx < (int)(originalSizeOne + originalSizeTwo)) {
+        sessionState.totalCurrency2 += (long)amount * 100;
+        strlcpy(sessionState.lastBillCurrency, currencyTwo, sizeof(sessionState.lastBillCurrency));
+      } else {
+        sessionState.totalCurrency3 += (long)amount * 100;
+        strlcpy(sessionState.lastBillCurrency, currencyThree, sizeof(sessionState.lastBillCurrency));
+      }
+      sessionState.lastBillCents = (long)amount * 100;
+    } else {
+      // Single-currency (user tapped a button): only credit if channel matches
+      if (channelIdx >= sessionState.allowedChannelStart &&
+          channelIdx < sessionState.allowedChannelStart + sessionState.allowedChannelCount) {
+        creditBill = true;
+      }
+    }
+
+    if (creditBill) {
+      if (!mixed) {
+        bills = bills + amount;
+        total = (coins + bills);
+      }
+      if (!isInsertingMoney) {
+        createInsertMoneyScreen();
+        lv_task_handler();
+        isInsertingMoney = true;
+        currentUiState = UI_INSERTING_MONEY;
+        stateEnterTime = millis();
+      }
+      if (mixed) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Last bill: %d %s", amount, sessionState.lastBillCurrency);
+        lv_label_set_text(labelLastInserted, buf);
+        long totalSats = 0;
+        if (labelTotalCurrency1 && sessionState.totalCurrency1 > 0) {
+          long sats1 = 0;
+          if (sessionState.fiatValue1 > 0) {
+            float afterFee = (sessionState.totalCurrency1 / 100.0f) * (100.0f - charge1) / 100.0f;
+            sats1 = (long)round(afterFee / sessionState.fiatValue1 * 1e8);
+            totalSats += sats1;
+          }
+          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%ld sats)", currencyOne,
+                  sessionState.totalCurrency1 / 100.0f, currencyOne, sats1);
+          lv_label_set_text(labelTotalCurrency1, buf);
+        } else if (labelTotalCurrency1) {
+          lv_label_set_text(labelTotalCurrency1, "");
         }
-        String lastBillString = "Last bill: " + String(billAmountIntOne[i]) +
-                                " " + currencySelected;
+        if (labelTotalCurrency2 && sessionState.totalCurrency2 > 0) {
+          long sats2 = 0;
+          if (sessionState.fiatValue2 > 0) {
+            float afterFee = (sessionState.totalCurrency2 / 100.0f) * (100.0f - charge2) / 100.0f;
+            sats2 = (long)round(afterFee / sessionState.fiatValue2 * 1e8);
+            totalSats += sats2;
+          }
+          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%ld sats)", currencyTwo,
+                  sessionState.totalCurrency2 / 100.0f, currencyTwo, sats2);
+          lv_label_set_text(labelTotalCurrency2, buf);
+        } else if (labelTotalCurrency2) {
+          lv_label_set_text(labelTotalCurrency2, "");
+        }
+        if (labelTotalCurrency3 && sessionState.totalCurrency3 > 0) {
+          long sats3 = 0;
+          if (sessionState.fiatValue3 > 0) {
+            float afterFee = (sessionState.totalCurrency3 / 100.0f) * (100.0f - charge3) / 100.0f;
+            sats3 = (long)round(afterFee / sessionState.fiatValue3 * 1e8);
+            totalSats += sats3;
+          }
+          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%ld sats)", currencyThree,
+                  sessionState.totalCurrency3 / 100.0f, currencyThree, sats3);
+          lv_label_set_text(labelTotalCurrency3, buf);
+        } else if (labelTotalCurrency3) {
+          lv_label_set_text(labelTotalCurrency3, "");
+        }
+        if (labelTotalSats) {
+          snprintf(buf, sizeof(buf), "Total: %ld sats", totalSats);
+          lv_label_set_text(labelTotalSats, buf);
+        }
+        lv_label_set_text(labelTotalAmount, "");
+        lv_label_set_text(labelMaxAmount, "");
+      } else {
+        String lastBillString = "Last bill: " + String(amount) + " " + currencySelected;
         String totalString = "Total: " + String(total) + " " + currencySelected;
         String maxString = "MAX: " + String(maxamountSelected) + " " +
                            currencySelected + " from " +
                            deviceState.fundingSourceBuffer;
-
         lv_label_set_text(labelLastInserted, lastBillString.c_str());
         lv_label_set_text(labelTotalAmount, totalString.c_str());
         lv_label_set_text(labelMaxAmount, maxString.c_str());
-
-        break; // Exit the for loop as we found a match
+        if (labelTotalCurrency1) lv_label_set_text(labelTotalCurrency1, "");
+        if (labelTotalCurrency2) lv_label_set_text(labelTotalCurrency2, "");
+        if (labelTotalCurrency3) lv_label_set_text(labelTotalCurrency3, "");
+        if (labelTotalSats) lv_label_set_text(labelTotalSats, "");
       }
     }
   }
-  // Check button release or total (only if in INSERTING_MONEY state)
+  // Check button release, touchscreen tap, or total (only if in INSERTING_MONEY state)
+  const bool hasMixed = (sessionState.totalCurrency1 || sessionState.totalCurrency2 || sessionState.totalCurrency3) != 0;
+  const bool hasAmount = (total != 0) || hasMixed;
   if (currentUiState == UI_INSERTING_MONEY) {
-    if ((BTNA.wasPressed() && total != 0) || total >= maxamountSelected) {
-      // Process the total and reset variables for the next transaction.
-      total = (coins + bills) * 100;
-
-      Serial.print(F("Total: "));
-      Serial.println(total);
+    uint16_t touchX, touchY;
+    bool screenTapped = hasAmount && lcd.getTouch(&touchX, &touchY);
+    if ((BTNA.wasPressed() && hasAmount) || screenTapped || (!hasMixed && total >= maxamountSelected)) {
+      if (hasMixed) {
+        // Mixed-currency: use first wallet for LNURL (undef macros to use struct members)
+#if defined(baseURLATM) && defined(secretATM) && defined(lnbitsURL)
+#undef baseURLATM
+#undef secretATM
+#undef lnbitsURL
+#endif
+        if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+          strlcpy(sessionStatePtr->baseURLATM, baseURLATM1, sizeof(sessionStatePtr->baseURLATM));
+          strlcpy(sessionStatePtr->secretATM, secretATM1, sizeof(sessionStatePtr->secretATM));
+          int slashCount = 0, thirdSlash = 0;
+          for (size_t i = 0; baseURLATM1[i] != '\0'; i++) {
+            if (baseURLATM1[i] == '/') {
+              slashCount++;
+              if (slashCount == 3) {
+                thirdSlash = (int)i;
+                break;
+              }
+            }
+          }
+          if (thirdSlash > 0 && thirdSlash < (int)sizeof(deviceStatePtr->lnbitsURL)) {
+            memcpy(deviceStatePtr->lnbitsURL, baseURLATM1, (size_t)thirdSlash);
+            deviceStatePtr->lnbitsURL[thirdSlash] = '\0';
+          } else {
+            strlcpy(deviceStatePtr->lnbitsURL, baseURLATM1, sizeof(deviceStatePtr->lnbitsURL));
+          }
+        }
+#define baseURLATM sessionState.baseURLATM
+#define secretATM sessionState.secretATM
+#define lnbitsURL deviceState.lnbitsURL
+        Serial.println(F("Mixed-currency: computing total sats from all currencies"));
+      } else {
+        total = (coins + bills) * 100;
+        Serial.print(F("Total: "));
+        Serial.println(total);
+      }
 
       if (!wifiStatus()) {
         uiController.deleteInsertMoneyScreen();

@@ -66,9 +66,9 @@ struct DeviceState {
   float maxamount = 100.0f;
   float maxamount2 = 0.0f;
   float maxamount3 = 0.0f;
-  int charge1 = 0;
-  int charge2 = 0;
-  int charge3 = 0;
+  float charge1 = 0.0f;
+  float charge2 = 0.0f;
+  float charge3 = 0.0f;
 
   // Bill acceptor configuration
   std::vector<int> billAmountIntOne;
@@ -111,9 +111,9 @@ struct DeviceState {
     maxamount = 100.0f;
     maxamount2 = 0.0f;
     maxamount3 = 0.0f;
-    charge1 = 0;
-    charge2 = 0;
-    charge3 = 0;
+    charge1 = 0.0f;
+    charge2 = 0.0f;
+    charge3 = 0.0f;
     billAmountIntOne.clear();
     billAmountIntTwo.clear();
     billAmountIntThree.clear();

@@ -145,7 +145,8 @@ private:
   static constexpr int DATA_B3 = 9;
   static constexpr int DATA_B4 = 1;
 
-  static constexpr int16_t TOUCH_MAP_X1 = 480;
+  // 800x480: touch X inverted; Y inverted (reported touch was above actual tap)
+  static constexpr int16_t TOUCH_MAP_X1 = 800;
   static constexpr int16_t TOUCH_MAP_X2 = 0;
   static constexpr int16_t TOUCH_MAP_Y1 = 480;
   static constexpr int16_t TOUCH_MAP_Y2 = 0;
