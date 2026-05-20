@@ -22,6 +22,13 @@ bool format = false; // true for formatting FOSSA memory, use once, then make
 #define TX2 (-1)         // Coinmech disabled: GPIO4 conflicts with LCD DATA_G5
 #define INHIBITMECH (-1) // Coinmech disabled: GPIO2 conflicts with TFT backlight
 
+// Battery indicator: ADC pin for voltage divider (12V→3.3V). Set -1 to disable.
+#define BATTERY_ADC_GPIO 10
+#define V_BATT_MIN 10.5f  // Empty (3S Li-ion)
+#define V_BATT_MAX 12.6f  // Full (3S Li-ion)
+// Voltage divider: V_batt = adc_voltage * DIVIDER_RATIO. For 30k+7.5k module: 5.0
+#define BATTERY_DIVIDER_RATIO 5.0f
+
 //========================================================//
 //========================================================//
 //========================================================//
@@ -276,6 +283,9 @@ lv_obj_t *labelMaxAmount = nullptr;
 
 lv_obj_t *loadingLabel;
 
+/** When true, mixed limit exceeded - auto-proceed to QR without waiting for tap. */
+static bool mixedLimitExceededAutoProceed = false;
+
 static GuiConfig guiConfig;
 static ConfigService configService;
 static PaymentService paymentService;
@@ -291,9 +301,122 @@ lv_obj_t *anim_label;
 lv_obj_t *img_blink;
 lv_obj_t *img_lnbits;
 
+// Battery indicator (4 cells + percent label)
+static lv_obj_t *battery_container = nullptr;
+static lv_obj_t *battery_cells[4] = {nullptr};
+static lv_obj_t *battery_label = nullptr;
+static unsigned long lastBatteryUpdate = 0;
+static const unsigned long BATTERY_UPDATE_INTERVAL_MS = 4000;
+
 void checkStackUsage() {
   UBaseType_t highWaterMark = uxTaskGetStackHighWaterMark(NULL);
   Serial.printf("Stack high water mark: %u bytes\n", highWaterMark);
+}
+
+#if (BATTERY_ADC_GPIO >= 0)
+/**
+ * @brief Read battery voltage via ADC and return percentage (0-100).
+ * Returns -1 if ADC invalid or voltage out of sane range.
+ */
+static int readBatteryPercent() {
+  int raw = analogRead(BATTERY_ADC_GPIO);
+  float vAdc = (raw / 4095.0f) * 3.3f;
+  float vBatt = vAdc * BATTERY_DIVIDER_RATIO;
+  if (vBatt < 8.0f || vBatt > 14.0f) {
+    return -1; // Sane range check (unconnected or faulty)
+  }
+  float pct = (vBatt - V_BATT_MIN) / (V_BATT_MAX - V_BATT_MIN) * 100.0f;
+  return (int)constrain(pct, 0, 100);
+}
+#endif
+
+/**
+ * @brief Create battery indicator: 4 cells + percent label in top-left.
+ * Call once after first screen exists.
+ */
+void createBatteryIndicator() {
+  if (battery_container != nullptr) return;
+  battery_container = lv_obj_create(NULL);
+  lv_obj_set_size(battery_container, 120, 28);
+  lv_obj_set_style_bg_opa(battery_container, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_opa(battery_container, LV_OPA_0, 0);
+  lv_obj_set_style_pad_all(battery_container, 0, 0);
+  lv_obj_clear_flag(battery_container, LV_OBJ_FLAG_SCROLLABLE);
+
+  const int cell_w = 14;
+  const int cell_h = 20;
+  const int gap = 2;
+  for (int i = 0; i < 4; i++) {
+    battery_cells[i] = lv_obj_create(battery_container);
+    lv_obj_set_size(battery_cells[i], cell_w, cell_h);
+    lv_obj_set_pos(battery_cells[i], i * (cell_w + gap), 2);
+    lv_obj_set_style_radius(battery_cells[i], 2, 0);
+    lv_obj_set_style_border_width(battery_cells[i], 1, 0);
+    lv_obj_set_style_border_color(battery_cells[i], lv_color_hex(0x606060), 0);
+    lv_obj_set_style_bg_color(battery_cells[i], lv_color_hex(0x404040), 0);
+    lv_obj_clear_flag(battery_cells[i], LV_OBJ_FLAG_SCROLLABLE);
+  }
+
+  battery_label = lv_label_create(battery_container);
+  lv_label_set_text(battery_label, "---");
+  lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_color(battery_label, lv_color_hex(0xE0E0E0), 0);
+  lv_obj_set_pos(battery_label, 4 * (cell_w + gap) + 6, 4);
+}
+
+/**
+ * @brief Attach battery indicator to current screen (top-left).
+ * Call after each lv_scr_load().
+ */
+void attachBatteryToCurrentScreen() {
+  if (battery_container == nullptr) return;
+  lv_obj_set_parent(battery_container, lv_scr_act());
+  lv_obj_align(battery_container, LV_ALIGN_TOP_LEFT, 15, 10);
+#if (BATTERY_ADC_GPIO < 0)
+  lv_obj_add_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+#else
+  lv_obj_clear_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+#endif
+}
+
+/**
+ * @brief Update battery cells and percent label. Call from loop with throttling.
+ */
+void updateBatteryIndicator() {
+  if (battery_container == nullptr || battery_cells[0] == nullptr) return;
+#if (BATTERY_ADC_GPIO < 0)
+  lv_obj_add_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+  return;
+#endif
+  int pct = readBatteryPercent();
+  int filled;
+  lv_color_t color;
+  if (pct < 0) {
+    filled = 0;
+    color = lv_color_hex(0x808080);
+    lv_label_set_text(battery_label, "---");
+  } else {
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d%%", pct);
+    lv_label_set_text(battery_label, buf);
+    if (pct >= 75) {
+      filled = 4;
+      color = LV_COLOR_GREEN;
+    } else if (pct >= 50) {
+      filled = 3;
+      color = LV_COLOR_GREEN;
+    } else if (pct >= 25) {
+      filled = 2;
+      color = LV_COLOR_ORANGE;
+    } else {
+      filled = 1;
+      color = LV_COLOR_RED;
+    }
+  }
+  for (int i = 0; i < 4; i++) {
+    lv_obj_set_style_bg_color(battery_cells[i],
+        (i < filled) ? color : lv_color_hex(0x404040), 0);
+  }
 }
 
 /* ----------------------------------
@@ -385,6 +508,7 @@ int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen,
                 uint8_t *nonce, size_t nonce_len, uint64_t pin,
                 uint64_t amount_in_cents);
 static long computeMixedTotalSats();
+static long computeMixedMaxSats();
 
 void checkNetworkAndDeviceStatus();
 void startConfigPortal();
@@ -398,6 +522,9 @@ void showLoadingIndicator();
 void hideLoadingIndicator();
 void enableAcceptor();
 void completeStartupAfterPortal();
+void createBatteryIndicator();
+void attachBatteryToCurrentScreen();
+void updateBatteryIndicator();
 void reloadRuntimeConfigFromFlash();
 
 #ifndef BOOT_DIAG_HALT_AFTER_STAGE
@@ -1557,6 +1684,8 @@ void createLogoScreen() {
                0); // Align the image to the center of the screen
 
   lv_scr_load(screen_logo);
+  createBatteryIndicator();
+  attachBatteryToCurrentScreen();
 }
 
 // Create the portal screen
@@ -1615,30 +1744,30 @@ void createPortalScreen() {
   lv_obj_set_style_text_color(portaltextone, LV_COLOR_WHITE, 0);
 
   String LVGL_PORTAL_TEXT_TWO =
-      "in your phone and connect. If phone says \"no internet\", choose";
+      "in your phone and connect.";
   lv_obj_t *portaltexttwo =
       lv_label_create(screen_portal); // full screen as the parent
   lv_label_set_text(portaltexttwo,
                     LVGL_PORTAL_TEXT_TWO.c_str()); // set label text
   lv_obj_align(portaltexttwo, LV_ALIGN_TOP_MID, 0,
                155); // Center but 20 from the top
-  lv_obj_set_style_text_font(portaltexttwo, &lv_font_montserrat_16,
+  lv_obj_set_style_text_font(portaltexttwo, &lv_font_montserrat_22,
                              0); // Slightly smaller for longer text
   lv_obj_set_style_text_color(portaltexttwo, LV_COLOR_WHITE, 0);
 
-  String LVGL_PORTAL_TEXT_TWO_B = "\"Use network anyway\". Then open browser:";
+  /*String LVGL_PORTAL_TEXT_TWO_B = "\"Use network anyway\". Then open browser:";
   lv_obj_t *portaltext2b = lv_label_create(screen_portal);
   lv_label_set_text(portaltext2b, LVGL_PORTAL_TEXT_TWO_B.c_str());
   lv_obj_align(portaltext2b, LV_ALIGN_TOP_MID, 0, 178);
   lv_obj_set_style_text_font(portaltext2b, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(portaltext2b, LV_COLOR_WHITE, 0);
+  lv_obj_set_style_text_color(portaltext2b, LV_COLOR_WHITE, 0);*/
 
-  String LVGL_PORTAL_URL = "http://fiathell.local  or  192.168.4.1";
+  /*String LVGL_PORTAL_URL = "http://fiathell.local  or  192.168.4.1";
   lv_obj_t *portalurl = lv_label_create(screen_portal);
   lv_label_set_text(portalurl, LVGL_PORTAL_URL.c_str());
   lv_obj_align(portalurl, LV_ALIGN_TOP_MID, 0, 198);
   lv_obj_set_style_text_font(portalurl, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(portalurl, lv_color_hex(0x90EE90), 0);
+  lv_obj_set_style_text_color(portalurl, lv_color_hex(0x90EE90), 0);*/
 
   String LVGL_PORTAL_TEXT_THREE = "After connected, open ATM settings ";
   lv_obj_t *portaltextthree =
@@ -1661,6 +1790,7 @@ void createPortalScreen() {
   lv_obj_set_style_text_color(portaltextfour, LV_COLOR_WHITE, 0);
 
   lv_scr_load(screen_portal);
+  attachBatteryToCurrentScreen();
 }
 
 /**
@@ -1735,6 +1865,7 @@ void createAPIScreen() {
                              0); // Use the large font
 
   lv_scr_load(screen_api);
+  attachBatteryToCurrentScreen();
 }
 
 /**
@@ -1810,6 +1941,7 @@ void createThankYouScreen() {
   lv_obj_set_style_text_color(thxDesc, LV_COLOR_GREEN, 0);
 
   lv_scr_load(screen_thx);
+  attachBatteryToCurrentScreen();
 }
 
 /**
@@ -2570,14 +2702,14 @@ void createMainScreen() {
   lv_img_set_src(
       img_blink,
       &blink); // 'blink' must be a properly defined LVGL image variable
-  lv_obj_align(img_blink, LV_ALIGN_TOP_LEFT, 10, 10);
+  lv_obj_align(img_blink, LV_ALIGN_TOP_RIGHT, -10, 35);
   lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
 
   img_lnbits = lv_img_create(screen_main);
   lv_img_set_src(
       img_lnbits,
       &lnbits); // 'lnbits' must be a properly defined LVGL image variable
-  lv_obj_align(img_lnbits, LV_ALIGN_TOP_LEFT, 10, 10);
+  lv_obj_align(img_lnbits, LV_ALIGN_TOP_RIGHT, -10, 35);
   lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
 
   if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
@@ -2589,6 +2721,7 @@ void createMainScreen() {
   }
 
   lv_scr_load(screen_main);
+  attachBatteryToCurrentScreen();
   Serial.println("createMainScreen: Screen loaded");
   // Mixed-currency mode: accept all bills, no single-currency filter
 #if BILL_ACCEPTOR_ENABLED
@@ -2698,7 +2831,7 @@ void createInsertMoneyScreen() {
   labelMaxAmount = lv_label_create(screen_insert_money);
   if (labelMaxAmount) {
     lv_label_set_text(labelMaxAmount, ""); // Initialize with empty text
-    lv_obj_align(labelMaxAmount, LV_ALIGN_TOP_LEFT, 30, 330);
+    lv_obj_align(labelMaxAmount, LV_ALIGN_TOP_MID, 0, 330);
     lv_obj_set_style_text_font(labelMaxAmount, &lv_font_montserrat_16, 0);
   } else {
     Serial.println("Failed to create labelMaxAmount!");
@@ -2706,6 +2839,7 @@ void createInsertMoneyScreen() {
 
   // Load the new screen
   lv_scr_load(screen_insert_money);
+  attachBatteryToCurrentScreen();
 }
 
 static void switch_animation_event_handler(lv_event_t *e) {
@@ -3117,6 +3251,41 @@ void getBlinkLNURL() {
   http.end();
 }
 
+/** Max insert limit for mixed mode, in EUR equivalent. */
+static const float MAX_MIXED_EUR = 100.0f;
+
+/** Get BTC/EUR rate (from whichever configured currency is EUR). */
+static float getEurRateForLimit() {
+  if ((strcmp(currencyOne, "EUR") == 0 || strcmp(currencyOne, "eur") == 0) && sessionState.fiatValue1 > 0)
+    return sessionState.fiatValue1;
+  if ((strcmp(currencyTwo, "EUR") == 0 || strcmp(currencyTwo, "eur") == 0) && sessionState.fiatValue2 > 0)
+    return sessionState.fiatValue2;
+  if ((strcmp(currencyThree, "EUR") == 0 || strcmp(currencyThree, "eur") == 0) && sessionState.fiatValue3 > 0)
+    return sessionState.fiatValue3;
+  return sessionState.fiatValue1 > 0 ? sessionState.fiatValue1 : 0.0f;
+}
+
+/** Max satoshis for mixed mode (100 EUR equivalent). */
+static long computeMixedMaxSats() {
+  float eurRate = getEurRateForLimit();
+  if (eurRate <= 0) return 999999999L;
+  return (long)round(MAX_MIXED_EUR / eurRate * 1e8);
+}
+
+/** Total EUR-equivalent value of mixed amounts (before fee). */
+static float computeMixedTotalValueEUR() {
+  float eurRate = getEurRateForLimit();
+  if (eurRate <= 0) return 0.0f;
+  float sumEur = 0.0f;
+  if (sessionState.totalCurrency1 > 0 && sessionState.fiatValue1 > 0)
+    sumEur += (sessionState.totalCurrency1 / 100.0f) * (eurRate / sessionState.fiatValue1);
+  if (sessionState.totalCurrency2 > 0 && sessionState.fiatValue2 > 0)
+    sumEur += (sessionState.totalCurrency2 / 100.0f) * (eurRate / sessionState.fiatValue2);
+  if (sessionState.totalCurrency3 > 0 && sessionState.fiatValue3 > 0)
+    sumEur += (sessionState.totalCurrency3 / 100.0f) * (eurRate / sessionState.fiatValue3);
+  return sumEur;
+}
+
 /**
  * @brief Compute total satoshis from mixed-currency totals (fee and rate per currency).
  */
@@ -3430,6 +3599,7 @@ void showQRCodeLVGL(const char *data) {
 
   // Load the screen
   lv_scr_load(screen_qr);
+  attachBatteryToCurrentScreen();
 
   // Debugging heap memory
   Serial.print("Free heap (showQRCodeLVGL): ");
@@ -3726,6 +3896,12 @@ void loop() {
     triggerPriceBalanceFetch(PBR_PERIODIC);
   }
 
+  if (battery_container != nullptr &&
+      currentMillis - lastBatteryUpdate >= BATTERY_UPDATE_INTERVAL_MS) {
+    lastBatteryUpdate = currentMillis;
+    updateBatteryIndicator();
+  }
+
   // Check if user is inserting money
   int x = nonBlockingRead();
 
@@ -3830,7 +4006,20 @@ void loop() {
           lv_label_set_text(labelTotalSats, buf);
         }
         lv_label_set_text(labelTotalAmount, "");
-        lv_label_set_text(labelMaxAmount, "");
+        if (labelMaxAmount) {
+          long maxSats = computeMixedMaxSats();
+          float totalEUR = computeMixedTotalValueEUR();
+          if (totalEUR >= MAX_MIXED_EUR) {
+            snprintf(buf, sizeof(buf), "Max reached - generating QR...");
+#if BILL_ACCEPTOR_ENABLED
+            billAcceptorWrite(185);
+#endif
+            mixedLimitExceededAutoProceed = true;
+          } else {
+            snprintf(buf, sizeof(buf), "Max: 100 EUR (~%ld sats)", maxSats);
+          }
+          lv_label_set_text(labelMaxAmount, buf);
+        }
       } else {
         String lastBillString = "Last bill: " + String(amount) + " " + currencySelected;
         String totalString = "Total: " + String(total) + " " + currencySelected;
@@ -3853,7 +4042,8 @@ void loop() {
   if (currentUiState == UI_INSERTING_MONEY) {
     uint16_t touchX, touchY;
     bool screenTapped = hasAmount && lcd.getTouch(&touchX, &touchY);
-    if ((BTNA.wasPressed() && hasAmount) || screenTapped || (!hasMixed && total >= maxamountSelected)) {
+    if ((BTNA.wasPressed() && hasAmount) || screenTapped || mixedLimitExceededAutoProceed || (!hasMixed && total >= maxamountSelected)) {
+      mixedLimitExceededAutoProceed = false;
       if (hasMixed) {
         // Mixed-currency: use first wallet for LNURL (undef macros to use struct members)
 #if defined(baseURLATM) && defined(secretATM) && defined(lnbitsURL)

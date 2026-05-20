@@ -1,0 +1,61 @@
+name: Build & Deploy Web Flasher
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: pio run -e esp32-8048s050
+
+      - name: Copy binaries to web-flasher/bin/
+        run: |
+          cp .pio/build/esp32-8048s050/bootloader.bin web-flasher/bin/bootloader.bin
+          cp .pio/build/esp32-8048s050/partitions.bin web-flasher/bin/partitions.bin
+          cp .pio/build/esp32-8048s050/firmware.bin   web-flasher/bin/firmware.bin
+          # boot_app0.bin – zo PlatformIO balíka
+          BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" | head -1)
+          if [ -n "$BOOT_APP0" ]; then
+            cp "$BOOT_APP0" web-flasher/bin/boot_app0.bin
+          else
+            echo "WARN: boot_app0.bin nenájdený"
+          fi
+
+      - name: Extract firmware version
+        id: fwver
+        run: |
+          VER=$(grep 'define FW_VERSION' src/main.cpp | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VER" >> $GITHUB_OUTPUT
+          echo "Firmware version: $VER"
+
+      - name: Update version in manifest.json
+        run: |
+          VER="${{ steps.fwver.outputs.version }}"
+          sed -i "s/\"version\": \".*\"/\"version\": \"$VER\"/" web-flasher/manifest.json
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./web-flasher
+          publish_branch: gh-pages
+          commit_message: "Deploy web flasher v${{ steps.fwver.outputs.version }}"
