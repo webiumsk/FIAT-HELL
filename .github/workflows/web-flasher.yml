@@ -2,7 +2,7 @@ name: Build & Deploy Web Flasher
 
 on:
   push:
-    branches: [main]
+    branches: [main, esp32-s3]
     tags: ['v*']
   workflow_dispatch:
 
@@ -53,7 +53,7 @@ jobs:
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
-        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/esp32-s3' || startsWith(github.ref, 'refs/tags/')
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./web-flasher
