@@ -638,7 +638,12 @@
         </button>
         <span slot="unsupported">
           <div class="alert alert-warning" style="margin:0;text-align:left;">
-            Tento prehliadač nepodporuje Web Serial. Použi Chrome alebo Edge na desktope.
+            Tento prehliadač nepodporuje Web Serial. Použi Chrome alebo Edge na desktope (verzia 89+).
+          </div>
+        </span>
+        <span slot="not-allowed">
+          <div class="alert alert-warning" style="margin:0;text-align:left;">
+            Web Serial vyžaduje HTTPS. Otvor stránku cez <strong>https://</strong> (nie http://).
           </div>
         </span>
       </esp-web-install-button>
