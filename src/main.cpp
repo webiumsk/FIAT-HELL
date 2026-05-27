@@ -955,12 +955,12 @@ void setup() {
           // format: WRITE_CONFIG:/filename.json:{json_content}
           const int colon2 = line.indexOf(':', 13);
           if (colon2 > 13) {
-            String path    = line.substring(13, colon2);
-            String content = line.substring(colon2 + 1);
-            File f = SPIFFS.open(path, "w");
-            if (f) { f.print(content); f.close(); }
+            String filePath    = line.substring(13, colon2);
+            String fileContent = line.substring(colon2 + 1);
+            File f = SPIFFS.open(filePath, "w");
+            if (f) { f.print(fileContent); f.close(); }
             Serial.print("FIAT-HELL:WROTE:");
-            Serial.println(path);
+            Serial.println(filePath);
           }
         } else if (line == "CONFIG_DONE") {
           Serial.println("FIAT-HELL:CONFIG_SAVED");
