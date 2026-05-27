@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FIAT HELL – Web Flasher</title>
-  <script type="module" crossorigin src="./assets/index-CSIUXils.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-BB_EiZQR.css">
+  <script type="module" crossorigin src="./assets/index-BgxRyyBJ.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-Blqiv8ZQ.css">
 </head>
 <body>
 <div class="page">
@@ -21,13 +21,17 @@
   </header>
 
   <!-- ── Step tabs ── -->
-  <div class="steps">
-    <div class="step active" id="tab-config" onclick="showPanel('config')">
+  <div class="steps" role="tablist">
+    <button type="button" class="step active" id="tab-config" role="tab"
+            aria-controls="panel-config" aria-selected="true"
+            onclick="showPanel('config')">
       <span class="step-num">1</span> Konfigurácia
-    </div>
-    <div class="step" id="tab-flash" onclick="showPanel('flash')">
+    </button>
+    <button type="button" class="step" id="tab-flash" role="tab"
+            aria-controls="panel-flash" aria-selected="false"
+            onclick="showPanel('flash')">
       <span class="step-num">2</span> Flash firmvéru
-    </div>
+    </button>
   </div>
 
   <!-- ════════════════════════════════ KROK 1 – KONFIGURÁCIA ════════════════════════════════ -->
@@ -335,7 +339,7 @@
     <hr class="divider">
 
     <div class="alert alert-info">
-      ℹ️ <strong>Windows driver:</strong> Ak port nevidíš, nainštaluj <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html" target="_blank" style="color:var(--orange);">CH340 driver</a>.
+      ℹ️ <strong>Windows driver:</strong> Ak port nevidíš, nainštaluj <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html" target="_blank" rel="noopener noreferrer" style="color:var(--orange);">CH340 driver</a>.
     </div>
 
     <div class="btn-row" style="margin-top:20px;">
@@ -350,9 +354,9 @@
 <!-- ── Footer ── -->
 <footer>
   <p>
-    <a href="https://github.com/webiumsk/fiat-hell" target="_blank">GitHub</a> ·
-    <a href="https://github.com/webiumsk/fiat-hell/releases" target="_blank">Releases</a> ·
-    Powered by <a href="https://github.com/espressif/esptool-js" target="_blank">esptool-js</a>
+    <a href="https://github.com/webiumsk/fiat-hell" target="_blank" rel="noopener noreferrer">GitHub</a> ·
+    <a href="https://github.com/webiumsk/fiat-hell/releases" target="_blank" rel="noopener noreferrer">Releases</a> ·
+    Powered by <a href="https://github.com/espressif/esptool-js" target="_blank" rel="noopener noreferrer">esptool-js</a>
   </p>
 </footer>
 
