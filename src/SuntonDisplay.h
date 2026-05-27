@@ -55,6 +55,7 @@ public:
   void setRotation(uint8_t rotation) {
     _rotation = rotation & 3U;
     _gfx.setRotation(_rotation);
+    if (_touchReady) _touch.setRotation(_rotation);
   }
 
   uint8_t getRotation() const { return _rotation; }

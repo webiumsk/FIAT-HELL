@@ -64,7 +64,7 @@ Header-only LVGL screen definitions included directly in `main.cpp`:
 ## Hardware Pin Constraints
 
 - **Bill acceptor (NV10USB+):** UART1 on **GPIO 17 (TX)** and **GPIO 18 (RX)** — P3 header.
-- **Do not use GPIO 32/33** on this board — they cause a boot loop (not available on S3).
+- **Do not use GPIO 32/33** — these pins do not exist on the ESP32-S3 architecture; on the Sunton ESP32-8048S050 board referencing them causes a boot loop.
 - **GPIO 2** (backlight) and **GPIO 4** (RGB DATA_G5) conflict with any new peripheral on those pins.
 - **Battery ADC:** GPIO 10, voltage divider ratio 5.0 (30kΩ + 7.5kΩ), 3S Li-ion range 10.5–12.6V.
 

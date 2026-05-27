@@ -1,6 +1,8 @@
 #ifndef PAGE_OTA_H
 #define PAGE_OTA_H
 
+#include <Arduino.h>
+
 static const char PAGE_OTA[] PROGMEM = R"(
 {
   "uri": "/ota",

@@ -7,9 +7,14 @@ import { FW_VERSION } from './config.js';
 ══════════════════════════════════════════════════════════════ */
 function showPanel(name) {
   document.querySelectorAll('.page-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.step').forEach(s => {
+    s.classList.remove('active');
+    s.setAttribute('aria-selected', 'false');
+  });
   document.getElementById('panel-' + name).classList.add('active');
-  document.getElementById('tab-' + name).classList.add('active');
+  const tab = document.getElementById('tab-' + name);
+  tab.classList.add('active');
+  tab.setAttribute('aria-selected', 'true');
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -161,7 +166,8 @@ const STORAGE_KEY = 'fiat-hell-flasher-v1';
 
 function saveToStorage() {
   const data = {};
-  document.querySelectorAll('input[type="text"], input[type="password"], input[type="number"]')
+  // password-type inputs are intentionally excluded from localStorage
+  document.querySelectorAll('input[type="text"], input[type="number"]')
     .forEach(el => { if (el.id) data[el.id] = el.value; });
   document.querySelectorAll('input[type="radio"]:checked')
     .forEach(r => { data['radio_' + r.name] = r.value; });

@@ -7,14 +7,14 @@ PHP server pre AutoConnect OTA aktualizácie.
 1. Nahraj obsah priečinka `ota-server/` do document root (napr. `public_html/` alebo subdoména `fw.lnpay.eu`).
 2. Vytvor priečinok `bin/` a daj mu zápisové práva.
 3. Skopíruj `firmware.bin` z buildu:
-   ```
+   ```text
    .pio/build/esp32-8048s050/firmware.bin  →  bin/firmware.bin
    ```
 4. Pre poradové verzie môžeš premenovať: `fiat-hell-v1.2.0.bin`.
 
 ## Štruktúra
 
-```
+```text
 ota-server/
 ├── index.php    # handler pre katalóg aj download
 ├── .htaccess    # Apache rewrite

@@ -247,7 +247,13 @@ void startPriceBalanceTask(DeviceState *ds, SessionState *ss) {
   g_dataMutex = xSemaphoreCreateMutex();
   if (!g_requestQueue || !g_dataMutex)
     return;
-  xTaskCreate(priceBalanceTaskFunc, "priceBal", 8192, nullptr, 1, nullptr);
+  const BaseType_t created =
+      xTaskCreate(priceBalanceTaskFunc, "priceBal", 8192, nullptr, 1, nullptr);
+  if (created != pdPASS) {
+    Serial.println("PriceBalanceTask: xTaskCreate failed");
+    vQueueDelete(g_requestQueue);
+    g_requestQueue = nullptr;
+  }
 }
 
 void triggerPriceBalanceFetch(PriceBalanceRequest req) {
@@ -260,6 +266,10 @@ bool isPriceBalanceDataReady() { return g_dataReadyForUi; }
 bool consumePriceBalanceDataReady() {
   if (!g_dataReadyForUi)
     return false;
-  g_dataReadyForUi = false;
-  return true;
+  if (xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    g_dataReadyForUi = false;
+    xSemaphoreGive(g_dataMutex);
+    return true;
+  }
+  return false;
 }

@@ -63,14 +63,14 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   valuesRateSource.add("ExchangeApi");
   valuesRateSource.add("CoinYEP");
   valuesRateSource.add("Kraken");
-  if (strcmp(in.rateSource, "CoinGecko") == 0 || strcmp(in.rateSource, "Coingecko") == 0)
-    docGui1["checked"] = 1;
-  else if (strcmp(in.rateSource, "ExchangeApi") == 0)
+  if (in.rateSource && (strcmp(in.rateSource, "ExchangeApi") == 0))
     docGui1["checked"] = 2;
-  else if (strcmp(in.rateSource, "CoinYEP") == 0)
+  else if (in.rateSource && strcmp(in.rateSource, "CoinYEP") == 0)
     docGui1["checked"] = 3;
-  else
+  else if (in.rateSource && strcmp(in.rateSource, "Kraken") == 0)
     docGui1["checked"] = 4;
+  else
+    docGui1["checked"] = 1;  // CoinGecko is default for unknown/empty
 
   JsonObject docGui2 = docGui.createNestedObject();
   docGui2["name"] = "animated";

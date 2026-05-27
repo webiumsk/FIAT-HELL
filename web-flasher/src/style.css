@@ -197,7 +197,21 @@ input::placeholder { color: #555; }
   color: var(--text-dim);
   transition: all 0.15s;
 }
-.toggle-group input[type="radio"] { display: none; }
+.toggle-group input[type="radio"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.toggle-group input[type="radio"]:focus + label {
+  outline: 2px solid var(--orange);
+  outline-offset: -2px;
+}
 .toggle-group input[type="radio"]:checked + label {
   background: var(--orange);
   color: #000;

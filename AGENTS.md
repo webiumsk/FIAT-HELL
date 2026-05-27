@@ -85,6 +85,6 @@ Tento dokument popisuje kontext projektu a pravidlá pre úpravy kódu, aby agen
 
 - **Bill acceptor:** `docs/BILL_ACCEPTOR_NV10USB.md`
 - **OTA:** `ota-server/README.md`, konštanty `OTA_BASE_URL`, `OTA_CATALOG_URL` v `main.cpp`
-- **Konfigurácia:** `ConfigService`, súbory ako `/elements.json`, `/first.json`, `/second.json`, `/third.json`, `/gui.json` v SPIFFS
+- **Konfigurácia:** `ConfigService`, súbory, ako `/elements.json`, `/first.json`, `/second.json`, `/third.json`, `/gui.json` v SPIFFS
 
 Ak potrebuješ detaily konkrétnej funkcie (napr. platby, generovanie QR, bill acceptor protokol), hľadaj v `main.cpp` a v `src/services/` podľa kľúčových slov (napr. `lnurl`, `PaymentService`, `bill acceptor`).
