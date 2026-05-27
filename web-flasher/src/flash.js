@@ -48,7 +48,7 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
     log('');
     log('Flashujem firmware...');
     setProgress(5);
-    await esploader.write_flash({
+    await esploader.writeFlash({
       fileArray,
       flashSize: 'keep',
       eraseAll: false,
@@ -60,7 +60,7 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
     if (configFiles && Object.keys(configFiles).length > 0) {
       log('');
       log('Restartujem zariadenie...');
-      await esploader.hard_reset();
+      await esploader.hardReset();
       setProgress(93);
       log('Čakám na spustenie firmvéru (5 s)...');
       await delay(5000);
@@ -83,7 +83,7 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
       log('Konfigurácia uložená.');
     } else {
       log('Restartujem zariadenie...');
-      await esploader.hard_reset();
+      await esploader.hardReset();
     }
 
     setProgress(100);
