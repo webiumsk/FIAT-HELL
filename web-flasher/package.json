@@ -1,0 +1,15 @@
+{
+  "name": "fiat-hell-web-flasher",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "esptool-js": "^0.4.3",
+    "jszip": "^3.10.1"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0"
+  }
+}

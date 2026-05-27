@@ -30,19 +30,6 @@ jobs:
       - name: Build firmware
         run: pio run -e esp32-8048s050
 
-      - name: Copy binaries to web-flasher/bin/
-        run: |
-          cp .pio/build/esp32-8048s050/bootloader.bin web-flasher/bin/bootloader.bin
-          cp .pio/build/esp32-8048s050/partitions.bin web-flasher/bin/partitions.bin
-          cp .pio/build/esp32-8048s050/firmware.bin   web-flasher/bin/firmware.bin
-          # boot_app0.bin – zo PlatformIO balíka
-          BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" | head -1)
-          if [ -n "$BOOT_APP0" ]; then
-            cp "$BOOT_APP0" web-flasher/bin/boot_app0.bin
-          else
-            echo "WARN: boot_app0.bin nenájdený"
-          fi
-
       - name: Extract firmware version
         id: fwver
         run: |
@@ -50,16 +37,42 @@ jobs:
           echo "version=$VER" >> $GITHUB_OUTPUT
           echo "Firmware version: $VER"
 
-      - name: Update version in manifest.json
+      - name: Copy binaries to web-flasher/public/bin/
+        run: |
+          mkdir -p web-flasher/public/bin
+          cp .pio/build/esp32-8048s050/bootloader.bin web-flasher/public/bin/bootloader.bin
+          cp .pio/build/esp32-8048s050/partitions.bin  web-flasher/public/bin/partitions.bin
+          cp .pio/build/esp32-8048s050/firmware.bin    web-flasher/public/bin/firmware.bin
+          BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" | head -1)
+          if [ -n "$BOOT_APP0" ]; then
+            cp "$BOOT_APP0" web-flasher/public/bin/boot_app0.bin
+          else
+            echo "WARN: boot_app0.bin nenájdený"
+          fi
+
+      - name: Inject firmware version into web-flasher
         run: |
           VER="${{ steps.fwver.outputs.version }}"
-          sed -i "s/\"version\": \".*\"/\"version\": \"$VER\"/" web-flasher/manifest.json
+          sed -i "s/FW_VERSION_PLACEHOLDER/$VER/" web-flasher/src/config.js
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web-flasher/package-lock.json
+
+      - name: Build web flasher
+        run: |
+          cd web-flasher
+          npm ci
+          npm run build
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/esp32-s3' || startsWith(github.ref, 'refs/tags/')
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./web-flasher
+          publish_dir: ./web-flasher/dist
           publish_branch: gh-pages
           commit_message: "Deploy web flasher v${{ steps.fwver.outputs.version }}"

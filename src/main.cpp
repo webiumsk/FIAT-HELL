@@ -941,6 +941,36 @@ void setup() {
   if (format == true) {
     SPIFFS.format();
   }
+
+  // Serial config upload window: web installer sends WRITE_CONFIG:/file.json:{json}
+  // then CONFIG_DONE. Device writes files to SPIFFS and continues normal boot.
+  Serial.println("FIAT-HELL:CONFIG_READY");
+  {
+    const unsigned long cfgDeadline = millis() + 10000UL;
+    while (millis() < cfgDeadline) {
+      if (Serial.available()) {
+        String line = Serial.readStringUntil('\n');
+        line.trim();
+        if (line.startsWith("WRITE_CONFIG:")) {
+          // format: WRITE_CONFIG:/filename.json:{json_content}
+          const int colon2 = line.indexOf(':', 13);
+          if (colon2 > 13) {
+            String path    = line.substring(13, colon2);
+            String content = line.substring(colon2 + 1);
+            File f = SPIFFS.open(path, "w");
+            if (f) { f.print(content); f.close(); }
+            Serial.print("FIAT-HELL:WROTE:");
+            Serial.println(path);
+          }
+        } else if (line == "CONFIG_DONE") {
+          Serial.println("FIAT-HELL:CONFIG_SAVED");
+          break;
+        }
+      }
+      yield();
+    }
+  }
+
   // get the saved details and store in global variables
   File paramFile = FlashFS.open(PARAM_FILE, "r");
   if (paramFile) {
