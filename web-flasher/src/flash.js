@@ -30,7 +30,7 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
   try {
     log('Synchronizujem s bootloaderom...');
     log('(Ak treba: drž BOOT, stlač RESET, pusť BOOT, potom pokračuj)');
-    await esploader.main_fn();
+    await esploader.main();
     log('Spojenie nadviazané.');
 
     log('');
