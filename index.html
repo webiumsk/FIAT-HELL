@@ -4,343 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FIAT HELL – Web Flasher</title>
-  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/esp-web-tools.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    :root {
-      --orange: #FF9900;
-      --orange-dim: #cc7a00;
-      --bg: #0d0d0d;
-      --surface: #1a1a1a;
-      --surface2: #242424;
-      --border: #333;
-      --text: #e8e8e8;
-      --text-dim: #888;
-      --green: #22c55e;
-      --red: #ef4444;
-      --radius: 10px;
-    }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.5;
-      min-height: 100vh;
-    }
-
-    /* ── Layout ── */
-    .page { max-width: 860px; margin: 0 auto; padding: 0 16px 64px; }
-
-    /* ── Header ── */
-    header {
-      text-align: center;
-      padding: 48px 16px 32px;
-      border-bottom: 1px solid var(--border);
-      margin-bottom: 40px;
-    }
-    header h1 {
-      font-size: 2.6rem;
-      font-weight: 800;
-      color: var(--orange);
-      letter-spacing: -1px;
-      text-transform: uppercase;
-    }
-    header p {
-      color: var(--text-dim);
-      margin-top: 6px;
-      font-size: 1rem;
-    }
-    .browser-notice {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      margin-top: 14px;
-      padding: 7px 14px;
-      border-radius: 20px;
-      background: var(--surface2);
-      border: 1px solid var(--border);
-      font-size: 0.82rem;
-      color: var(--text-dim);
-    }
-    .browser-notice .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
-
-    /* ── Steps ── */
-    .steps {
-      display: flex;
-      gap: 0;
-      margin-bottom: 36px;
-      border-radius: var(--radius);
-      overflow: hidden;
-      border: 1px solid var(--border);
-    }
-    .step {
-      flex: 1;
-      padding: 14px 16px;
-      background: var(--surface);
-      font-size: 0.88rem;
-      color: var(--text-dim);
-      border-right: 1px solid var(--border);
-      cursor: pointer;
-      transition: background 0.15s;
-      user-select: none;
-    }
-    .step:last-child { border-right: none; }
-    .step.active { background: var(--surface2); color: var(--orange); }
-    .step .step-num {
-      display: inline-block;
-      width: 22px;
-      height: 22px;
-      line-height: 22px;
-      text-align: center;
-      border-radius: 50%;
-      background: var(--border);
-      color: var(--text);
-      font-size: 0.75rem;
-      font-weight: 700;
-      margin-right: 8px;
-    }
-    .step.active .step-num { background: var(--orange); color: #000; }
-
-    /* ── Section ── */
-    .section {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      margin-bottom: 16px;
-    }
-    .section-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 16px 20px;
-      cursor: pointer;
-      user-select: none;
-      border-radius: var(--radius);
-    }
-    .section-header:hover { background: var(--surface2); }
-    .section-title {
-      font-weight: 600;
-      font-size: 0.95rem;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .section-title .badge {
-      font-size: 0.72rem;
-      font-weight: 600;
-      padding: 2px 8px;
-      border-radius: 10px;
-      background: var(--orange);
-      color: #000;
-    }
-    .section-title .badge.optional {
-      background: var(--border);
-      color: var(--text-dim);
-    }
-    .chevron {
-      font-size: 1rem;
-      color: var(--text-dim);
-      transition: transform 0.2s;
-    }
-    .chevron.open { transform: rotate(180deg); }
-    .section-body {
-      display: none;
-      padding: 0 20px 20px;
-      border-top: 1px solid var(--border);
-    }
-    .section-body.open { display: block; }
-
-    /* ── Form ── */
-    .form-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-      margin-top: 16px;
-    }
-    .form-grid .full { grid-column: 1 / -1; }
-    label {
-      display: block;
-      font-size: 0.8rem;
-      color: var(--text-dim);
-      margin-bottom: 5px;
-    }
-    input[type="text"], input[type="password"], input[type="number"], select {
-      width: 100%;
-      padding: 9px 12px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text);
-      font-size: 0.88rem;
-      outline: none;
-      transition: border-color 0.15s;
-    }
-    input:focus, select:focus { border-color: var(--orange); }
-    input::placeholder { color: #555; }
-    .hint {
-      font-size: 0.75rem;
-      color: var(--text-dim);
-      margin-top: 4px;
-    }
-
-    /* ── Radio toggle ── */
-    .toggle-group {
-      display: flex;
-      gap: 0;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      overflow: hidden;
-      margin-top: 2px;
-    }
-    .toggle-group label {
-      flex: 1;
-      text-align: center;
-      padding: 8px 0;
-      margin: 0;
-      cursor: pointer;
-      font-size: 0.88rem;
-      color: var(--text-dim);
-      transition: all 0.15s;
-    }
-    .toggle-group input[type="radio"] { display: none; }
-    .toggle-group input[type="radio"]:checked + label {
-      background: var(--orange);
-      color: #000;
-      font-weight: 600;
-    }
-
-    /* ── Tab system for currency sections ── */
-    .tabs-label {
-      font-size: 0.8rem;
-      color: var(--text-dim);
-      margin: 16px 0 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    /* ── Buttons ── */
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 11px 22px;
-      border-radius: 7px;
-      font-size: 0.9rem;
-      font-weight: 600;
-      cursor: pointer;
-      border: none;
-      transition: background 0.15s, transform 0.1s;
-    }
-    .btn:active { transform: scale(0.98); }
-    .btn-primary { background: var(--orange); color: #000; }
-    .btn-primary:hover { background: #ffaa22; }
-    .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-    .btn-secondary:hover { background: var(--border); }
-    .btn-outline { background: transparent; color: var(--orange); border: 1px solid var(--orange); }
-    .btn-outline:hover { background: rgba(255,153,0,0.1); }
-    .btn-row { display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
-
-    /* ── Flash section ── */
-    .flash-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 28px;
-      text-align: center;
-    }
-    .flash-card h2 { font-size: 1.2rem; margin-bottom: 8px; }
-    .flash-card p { color: var(--text-dim); font-size: 0.9rem; margin-bottom: 20px; }
-    esp-web-install-button {
-      --esp-tools-button-color: var(--orange);
-      --esp-tools-button-text-color: #000;
-    }
-
-    /* ── Instructions ── */
-    .instructions {
-      background: var(--surface2);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 16px 20px;
-      margin-top: 16px;
-    }
-    .instructions ol { padding-left: 18px; }
-    .instructions li { font-size: 0.88rem; color: var(--text-dim); margin-bottom: 5px; }
-    .instructions li strong { color: var(--text); }
-    .instructions .kbd {
-      background: var(--border);
-      border-radius: 4px;
-      padding: 1px 6px;
-      font-family: monospace;
-      font-size: 0.82rem;
-    }
-
-    /* ── Alert ── */
-    .alert {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      padding: 12px 16px;
-      border-radius: 7px;
-      font-size: 0.85rem;
-      margin-bottom: 16px;
-    }
-    .alert-warning { background: rgba(255,153,0,0.1); border: 1px solid rgba(255,153,0,0.3); color: #ffbb44; }
-    .alert-info { background: rgba(96,165,250,0.08); border: 1px solid rgba(96,165,250,0.25); color: #93c5fd; }
-    .alert-success { background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.25); color: #86efac; }
-
-    /* ── Tab content toggle ── */
-    .panel { display: none; }
-    .panel.active { display: block; }
-
-    /* ── Download success toast ── */
-    #toast {
-      position: fixed;
-      bottom: 24px;
-      left: 50%;
-      transform: translateX(-50%) translateY(80px);
-      background: var(--green);
-      color: #000;
-      font-weight: 600;
-      padding: 12px 24px;
-      border-radius: 8px;
-      font-size: 0.9rem;
-      transition: transform 0.3s;
-      z-index: 100;
-      pointer-events: none;
-    }
-    #toast.show { transform: translateX(-50%) translateY(0); }
-
-    /* ── Page sections ── */
-    .page-panel { display: none; }
-    .page-panel.active { display: block; }
-
-    /* ── Divider ── */
-    .divider { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
-
-    /* ── Footer ── */
-    footer {
-      text-align: center;
-      padding: 24px 0;
-      color: var(--text-dim);
-      font-size: 0.82rem;
-      border-top: 1px solid var(--border);
-      margin-top: 48px;
-    }
-    footer a { color: var(--orange); text-decoration: none; }
-
-    @media (max-width: 600px) {
-      .form-grid { grid-template-columns: 1fr; }
-      .form-grid .full { grid-column: 1; }
-      header h1 { font-size: 2rem; }
-      .steps { flex-direction: column; }
-      .step { border-right: none; border-bottom: 1px solid var(--border); }
-      .step:last-child { border-bottom: none; }
-    }
-  </style>
+  <script type="module" crossorigin src="./assets/index-DHmi2sf1.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-BB_EiZQR.css">
 </head>
 <body>
 <div class="page">
@@ -348,7 +13,7 @@
   <!-- ── Header ── -->
   <header>
     <h1>⚡ FIAT HELL</h1>
-    <p>Bitcoin Lightning ATM — Web Flasher &amp; Konfigurátor</p>
+    <p>Bitcoin Lightning ATM — Web Flasher &amp; Konfigurátor <span id="fw-version" style="color:var(--orange-dim);font-size:0.85rem;"></span></p>
     <div class="browser-notice">
       <span class="dot"></span>
       Vyžaduje <strong>Chrome</strong> alebo <strong>Edge</strong> na desktope (Web Serial API)
@@ -369,8 +34,8 @@
   <div class="page-panel active" id="panel-config">
 
     <div class="alert alert-info">
-      ℹ️ Konfigurácia je <strong>voliteľná</strong>. Môžeš ju nastaviť aj po prvom zapnutí cez WiFi AP portál zariadenia.
-      Ak vyplníš polia nižšie, stiahni ZIP a nahraj JSON súbory do zariadenia.
+      ℹ️ Vyplň konfiguráciu nižšie a potom vo Flash kroku klikni na <strong>⚡ Flash + nahraj konfig</strong> — firmware aj nastavenia sa nahrajú automaticky cez USB.
+      Konfiguráciu môžeš zmeniť aj neskôr cez WiFi AP portál zariadenia.
     </div>
 
     <!-- Nastavenia ATM -->
@@ -612,12 +277,10 @@
     </div>
 
     <div class="instructions" style="margin-top:24px;">
-      <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:8px;"><strong style="color:var(--text);">Čo robiť so ZIP súborom?</strong></p>
+      <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:8px;"><strong style="color:var(--text);">Ako nahrať konfiguráciu?</strong></p>
       <ol>
-        <li>Po flashovaní zariadenie vytvorí WiFi AP <strong>"LN ATM-xxxx"</strong></li>
-        <li>Pripoj sa telefónom/PC k tejto sieti a otvor <strong>http://192.168.4.1</strong></li>
-        <li>Prejdi na <strong>Settings</strong> → príslušné stránky (First currency, Second currency…)</li>
-        <li>Skopíruj hodnoty z JSON súborov zo ZIP-u do formulárov a ulož</li>
+        <li><strong>Automaticky (odporúčané):</strong> Prejdi na Flash krok a klikni <strong>⚡ Flash + nahraj konfig</strong> — firmware aj nastavenia sa nahrajú naraz.</li>
+        <li><strong>Manuálne (záloha):</strong> Stiahni ZIP, po flashovaní sa pripoj na AP <strong>"LN ATM-xxxx"</strong>, otvor <strong>http://192.168.4.1</strong> a zadaj hodnoty z JSON súborov.</li>
       </ol>
     </div>
   </div>
@@ -631,33 +294,41 @@
 
     <div class="flash-card">
       <h2>Flash firmware na ESP32-S3</h2>
-      <p>Pripoj ESP32-8048S050 cez USB. Ak treba manuálny boot: drž <kbd>BOOT</kbd>, stlač <kbd>RESET</kbd>, pusť a klikni Flash.</p>
-      <esp-web-install-button manifest="manifest.json">
-        <button slot="activate" class="btn btn-primary" style="font-size:1.05rem;padding:14px 32px;">
-          ⚡ Flash FIAT HELL ATM
+      <p>Pripoj ESP32-8048S050 cez USB. Manuálny boot: drž <kbd>BOOT</kbd>, stlač <kbd>RESET</kbd>, pusť a klikni Flash.</p>
+
+      <!-- Browser / secure-context error -->
+      <div id="browser-error" class="alert alert-warning" style="display:none;margin-bottom:16px;text-align:left;"></div>
+
+      <!-- Action buttons -->
+      <div id="flash-actions" class="btn-row" style="justify-content:center;margin-top:0;">
+        <button id="btn-flash-config" class="btn btn-primary" style="font-size:1.05rem;padding:14px 32px;" onclick="connectAndFlashWithConfig()">
+          ⚡ Flash + nahraj konfig
         </button>
-        <span slot="unsupported">
-          <div class="alert alert-warning" style="margin:0;text-align:left;">
-            Tento prehliadač nepodporuje Web Serial. Použi Chrome alebo Edge na desktope (verzia 89+).
-          </div>
-        </span>
-        <span slot="not-allowed">
-          <div class="alert alert-warning" style="margin:0;text-align:left;">
-            Web Serial vyžaduje HTTPS. Otvor stránku cez <strong>https://</strong> (nie http://).
-          </div>
-        </span>
-      </esp-web-install-button>
+        <button id="btn-flash-only" class="btn btn-outline" onclick="connectAndFlashOnly()">
+          Flash bez konfigurácie
+        </button>
+      </div>
+
+      <!-- Progress -->
+      <div id="progress-wrap" class="progress-wrap">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+      <div id="progress-text" class="hint" style="display:none;margin-top:4px;text-align:center;"></div>
+
+      <!-- Terminal -->
+      <pre id="terminal" class="terminal"></pre>
     </div>
 
     <div class="instructions" style="margin-top:20px;">
-      <p style="font-size:0.88rem;font-weight:600;margin-bottom:10px;">Postup flashovania:</p>
+      <p style="font-size:0.88rem;font-weight:600;margin-bottom:10px;">Postup:</p>
       <ol>
+        <li>Vyplň konfiguráciu v Kroku 1 (alebo preskočiť — nastav neskôr cez portál)</li>
         <li>Pripoj ESP32-8048S050 cez USB kábel</li>
-        <li><strong>Manuálny boot do flash módu:</strong> drž <span class="kbd">BOOT</span>, stlač a pusť <span class="kbd">RESET</span>, potom pusť <span class="kbd">BOOT</span></li>
-        <li>Klikni na tlačidlo <strong>⚡ Flash FIAT HELL ATM</strong></li>
-        <li>Vyber správny COM port (napr. <code>COM3</code> na Windows, <code>/dev/ttyUSB0</code> na Linux)</li>
+        <li>Manuálny boot: drž <span class="kbd">BOOT</span>, stlač a pusť <span class="kbd">RESET</span>, potom pusť <span class="kbd">BOOT</span></li>
+        <li>Klikni na <strong>⚡ Flash + nahraj konfig</strong></li>
+        <li>Vyber COM port v dialógu prehliadača</li>
         <li>Počkaj na dokončenie (~2 min)</li>
-        <li>Po flashovaní stlač <span class="kbd">RESET</span></li>
+        <li>Zariadenie sa automaticky reštartuje</li>
       </ol>
     </div>
 
@@ -665,17 +336,6 @@
 
     <div class="alert alert-info">
       ℹ️ <strong>Windows driver:</strong> Ak port nevidíš, nainštaluj <a href="https://www.wch-ic.com/downloads/CH341SER_EXE.html" target="_blank" style="color:var(--orange);">CH340 driver</a>.
-    </div>
-
-    <div class="instructions">
-      <p style="font-size:0.88rem;font-weight:600;margin-bottom:10px;">Po prvom spustení:</p>
-      <ol>
-        <li>Zariadenie spustí WiFi AP <strong>"LN ATM-xxxx"</strong></li>
-        <li>Pripoj sa k tejto sieti (heslo: <code>changeme</code> alebo vlastné)</li>
-        <li>Prehliadač automaticky otvorí konfiguračný portál (captive portal)</li>
-        <li>Alebo manuálne otvor <strong>http://192.168.4.1</strong></li>
-        <li>Nastav WiFi, LNbits/Blink API kľúče, meny a bankovky</li>
-      </ol>
     </div>
 
     <div class="btn-row" style="margin-top:20px;">
@@ -692,242 +352,12 @@
   <p>
     <a href="https://github.com/webiumsk/fiat-hell" target="_blank">GitHub</a> ·
     <a href="https://github.com/webiumsk/fiat-hell/releases" target="_blank">Releases</a> ·
-    Powered by <a href="https://esphome.github.io/esp-web-tools/" target="_blank">ESP Web Tools</a>
+    Powered by <a href="https://github.com/espressif/esptool-js" target="_blank">esptool-js</a>
   </p>
 </footer>
 
 <!-- ── Toast ── -->
 <div id="toast">✓ ZIP stiahnutý</div>
 
-<script>
-/* ══════════════════ Panel switching ══════════════════ */
-function showPanel(name) {
-  document.querySelectorAll('.page-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
-  document.getElementById('panel-' + name).classList.add('active');
-  document.getElementById('tab-' + name).classList.add('active');
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-
-/* ══════════════════ Section accordion ══════════════════ */
-function toggleSection(id) {
-  const body = document.getElementById('body-' + id);
-  const chev = document.getElementById('chev-' + id);
-  const isOpen = body.classList.contains('open');
-  body.classList.toggle('open', !isOpen);
-  chev.classList.toggle('open', !isOpen);
-}
-
-/* ══════════════════ Funding source toggle ══════════════════ */
-function onFundingChange() {
-  const isLNbits = document.getElementById('fund_lnbits').checked;
-  document.querySelectorAll('.lnbits-fields').forEach(el => el.style.display = isLNbits ? '' : 'none');
-  document.querySelectorAll('.blink-fields').forEach(el => el.style.display = isLNbits ? 'none' : '');
-}
-
-/* ══════════════════ Helpers ══════════════════ */
-function v(id) { return document.getElementById(id).value.trim(); }
-function num(id) { const val = v(id); return val === '' ? '' : val; }
-
-/* ══════════════════ JSON generators ══════════════════ */
-
-function makeElementsJson() {
-  return [
-    { name: 'password',    value: v('ap_password') || 'changeme' },
-    { name: 'atmdesc',     value: v('atm_desc') },
-    { name: 'atmsubtitle', value: v('atm_subtitle') },
-    { name: 'atmtitle',    value: v('atm_title') || 'FIAT HELL' },
-  ];
-}
-
-function makeGuiJson() {
-  const funding  = document.querySelector('input[name="funding"]:checked').value;
-  const rate     = document.querySelector('input[name="ratesource"]:checked').value;
-  const animated = document.querySelector('input[name="animated"]:checked').value;
-
-  const rateIndex = { CoinGecko: 1, ExchangeApi: 2, CoinYEP: 3, Kraken: 4 }[rate] ?? 1;
-
-  return [
-    { name: 'fundingsource', value: ['Blink', 'LNbits'],
-      checked: funding === 'Blink' ? 1 : 2 },
-    { name: 'ratesource', value: ['CoinGecko', 'ExchangeApi', 'CoinYEP', 'Kraken'],
-      checked: rateIndex },
-    { name: 'animated', value: ['No', 'Yes'],
-      checked: animated === 'Yes' ? 2 : 1 },
-  ];
-}
-
-function makeFirstJson() {
-  const isLNbits = document.getElementById('fund_lnbits').checked;
-  // lnurl field is stored as "baseURL,secret,currencyATM"
-  const lnurlValue = [
-    v('cur1_lnurl_base'),
-    v('cur1_lnurl_secret'),
-    v('cur1_lnurl_atm') || v('cur1_code'),
-  ].join(',');
-
-  // Order MUST match ConfigService::loadFirst index order
-  return [
-    { name: 'blinkapikey',  value: isLNbits ? '' : v('cur1_blink_apikey') },
-    { name: 'blinkwalletid',value: isLNbits ? '' : v('cur1_blink_wallet') },
-    { name: 'lnurl',        value: isLNbits ? lnurlValue : '' },
-    { name: 'adminkey',     value: isLNbits ? v('cur1_adminkey') : '' },
-    { name: 'readkey',      value: isLNbits ? v('cur1_readkey')  : '' },
-    { name: 'currencyOne',  value: v('cur1_code') },
-    { name: 'billmech',     value: v('cur1_bills') },
-    { name: 'maxamount',    value: num('cur1_max') },
-    { name: 'charge1',      value: num('cur1_charge') },
-  ];
-}
-
-function makeSecondJson() {
-  if (!v('cur2_code')) return null;
-  const lnurlValue = [v('cur2_lnurl_base'), v('cur2_lnurl_secret'), v('cur2_lnurl_atm') || v('cur2_code')].join(',');
-  // Order MUST match ConfigService::loadSecond index order
-  return [
-    { name: 'currencyTwo', value: v('cur2_code') },
-    { name: 'lnurl2',      value: lnurlValue },
-    { name: 'billmech2',   value: v('cur2_bills') },
-    { name: 'maxamount2',  value: num('cur2_max') },
-    { name: 'charge2',     value: num('cur2_charge') },
-  ];
-}
-
-function makeThirdJson() {
-  if (!v('cur3_code')) return null;
-  const lnurlValue = [v('cur3_lnurl_base'), v('cur3_lnurl_secret'), v('cur3_lnurl_atm') || v('cur3_code')].join(',');
-  // Order MUST match ConfigService::loadThird index order
-  return [
-    { name: 'currencyThree', value: v('cur3_code') },
-    { name: 'lnurl3',        value: lnurlValue },
-    { name: 'billmech3',     value: v('cur3_bills') },
-    { name: 'maxamount3',    value: num('cur3_max') },
-    { name: 'charge3',       value: num('cur3_charge') },
-  ];
-}
-
-/* ══════════════════ README pre ZIP ══════════════════ */
-function makeReadmeText() {
-  const now = new Date().toISOString().slice(0, 10);
-  return `FIAT HELL ATM – konfigurácia (${now})
-=============================================
-
-Obsah ZIP:
-  elements.json  – Základné nastavenia ATM (heslo AP, nadpis)
-  gui.json       – Zdroj financovania, kurz, animácia
-  first.json     – Mena 1 (povinné)
-  second.json    – Mena 2 (ak je vyplnená)
-  third.json     – Mena 3 (ak je vyplnená)
-
-Postup nahrania do zariadenia:
-  1. Po flashovaní sa ATM spustí a vytvorí WiFi AP "LN ATM-xxxx"
-  2. Pripoj sa k tejto sieti (heslo: ${v('ap_password') || 'changeme'})
-  3. Otvor http://192.168.4.1 v prehliadači
-  4. Prejdi na každú sekciu (First currency, Second, Third, GUI settings)
-     a manuálne prepiš hodnoty podľa obsahu JSON súborov
-  5. V každej sekcii klikni na "Save"
-
-Dôležité:
-  - V poli "LNURLDevice" zadávaj hodnotu z poľa "lnurl"/"lnurl2"/"lnurl3"
-    v príslušnom JSON súbore (formát: baseURL,secret,currencyCode)
-  - Hodnota "billmech" je čiarkami oddelený zoznam hodnôt bankoviek
-`;
-}
-
-/* ══════════════════ Download ZIP ══════════════════ */
-async function downloadConfigZip() {
-  if (!v('cur1_code')) {
-    alert('Vyplň aspoň Kód meny pre Mena 1 (napr. EUR)');
-    // Auto-open the section
-    if (!document.getElementById('body-cur1').classList.contains('open')) {
-      toggleSection('cur1');
-    }
-    return;
-  }
-
-  const zip = new JSZip();
-
-  zip.file('elements.json', JSON.stringify(makeElementsJson(), null, 2));
-  zip.file('gui.json',      JSON.stringify(makeGuiJson(),      null, 2));
-  zip.file('first.json',    JSON.stringify(makeFirstJson(),    null, 2));
-
-  const second = makeSecondJson();
-  if (second) zip.file('second.json', JSON.stringify(second, null, 2));
-
-  const third = makeThirdJson();
-  if (third) zip.file('third.json', JSON.stringify(third, null, 2));
-
-  zip.file('NACITAJ_MA.txt', makeReadmeText());
-
-  const blob = await zip.generateAsync({ type: 'blob' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'fiat-hell-config.zip';
-  a.click();
-  URL.revokeObjectURL(url);
-
-  // Show toast
-  const toast = document.getElementById('toast');
-  toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), 2800);
-}
-
-/* ══════════════════ Clear form ══════════════════ */
-function clearForm() {
-  if (!confirm('Naozaj vymazať všetky zadané hodnoty?')) return;
-  document.querySelectorAll('input[type="text"], input[type="password"], input[type="number"]')
-    .forEach(el => { el.value = el.defaultValue || ''; });
-  document.querySelectorAll('input[type="radio"]').forEach(r => {
-    r.checked = r.defaultChecked;
-  });
-  onFundingChange();
-}
-
-/* ══════════════════ LocalStorage persist ══════════════════ */
-const STORAGE_KEY = 'fiat-hell-flasher-v1';
-
-function saveToStorage() {
-  const data = {};
-  document.querySelectorAll('input[type="text"], input[type="password"], input[type="number"]')
-    .forEach(el => { if (el.id) data[el.id] = el.value; });
-  document.querySelectorAll('input[type="radio"]:checked')
-    .forEach(r => { data['radio_' + r.name] = r.value; });
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-}
-
-function loadFromStorage() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    const data = JSON.parse(raw);
-    Object.entries(data).forEach(([key, val]) => {
-      if (key.startsWith('radio_')) {
-        const name = key.slice(6);
-        const radio = document.querySelector(`input[name="${name}"][value="${val}"]`);
-        if (radio) radio.checked = true;
-      } else {
-        const el = document.getElementById(key);
-        if (el) el.value = val;
-      }
-    });
-    onFundingChange();
-  } catch(e) { /* ignore */ }
-}
-
-/* ══════════════════ Init ══════════════════ */
-document.addEventListener('DOMContentLoaded', () => {
-  loadFromStorage();
-  onFundingChange();
-
-  // Auto-save on input
-  document.addEventListener('input',  saveToStorage);
-  document.addEventListener('change', saveToStorage);
-
-  // Open main sections by default
-  toggleSection('general');
-  toggleSection('cur1');
-});
-</script>
 </body>
 </html>
