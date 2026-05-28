@@ -66,30 +66,8 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
 
     if (configFiles && Object.keys(configFiles).length > 0) {
       setProgress(93);
-      log('Čakám na CONFIG_READY...');
-      // Open port immediately — device prints CONFIG_READY early in setup()
-      await port.open({ baudRate: 115200 });
-      try {
-        await waitForConfigReady(port, 8000);
-        log('Nahrávam konfiguráciu...');
-        const writer = port.writable.getWriter();
-        try {
-          for (const [name, content] of Object.entries(configFiles)) {
-            const line = `WRITE_CONFIG:${name}:${JSON.stringify(content)}\n`;
-            await writer.write(enc(line));
-            await delay(200);
-            log(`  ✓ ${name}`);
-          }
-          await writer.write(enc('CONFIG_DONE\n'));
-          await delay(800);
-        } finally {
-          writer.releaseLock();
-        }
-      } finally {
-        try { await port.close(); } catch (_) {}
-      }
+      await uploadConfig(port, configFiles, log);
       setProgress(98);
-      log('Konfigurácia uložená.');
     }
 
     setProgress(100);
@@ -105,24 +83,76 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
   }
 }
 
-// Reads from port until "FIAT-HELL:CONFIG_READY" is seen or timeout expires.
-// Releases the reader lock before returning so the writable side can be used.
-async function waitForConfigReady(port, timeoutMs) {
-  const reader = port.readable.getReader();
+// Opens the port at 115200, waits for CONFIG_READY, sends all config files,
+// then waits for CONFIG_SAVED. Device responses are shown in the terminal.
+async function uploadConfig(port, configFiles, log) {
+  log('Čakám na CONFIG_READY (zariadenie bootuje)...');
+  await port.open({ baudRate: 115200 });
+
   const decoder = new TextDecoder();
+  const reader  = port.readable.getReader();
   let buf = '';
-  // reader.cancel() resolves any pending read() with done=true
-  const timer = setTimeout(() => reader.cancel(), timeoutMs);
+  let configReadyReceived = false;
+  let configSavedReceived = false;
+
+  // Cancel the reader after 12 s if CONFIG_READY never arrives
+  let cancelTimer = setTimeout(() => reader.cancel(), 12000);
+
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      if (buf.includes('FIAT-HELL:CONFIG_READY')) break;
+
+      const text = decoder.decode(value, { stream: true });
+      buf += text;
+
+      // Show any FIAT-HELL: responses from device in terminal
+      for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('FIAT-HELL:')) log('  [device] ' + trimmed);
+      }
+
+      if (!configReadyReceived && buf.includes('FIAT-HELL:CONFIG_READY')) {
+        configReadyReceived = true;
+        clearTimeout(cancelTimer);
+
+        log('Nahrávam konfiguráciu...');
+        const writer = port.writable.getWriter();
+        try {
+          for (const [name, content] of Object.entries(configFiles)) {
+            const line = `WRITE_CONFIG:${name}:${JSON.stringify(content)}\n`;
+            await writer.write(enc(line));
+            await delay(200);
+            log(`  → ${name}`);
+          }
+          await writer.write(enc('CONFIG_DONE\n'));
+        } finally {
+          writer.releaseLock();
+        }
+
+        // Give the device 5 s to confirm CONFIG_SAVED
+        cancelTimer = setTimeout(() => reader.cancel(), 5000);
+      }
+
+      if (configReadyReceived && buf.includes('FIAT-HELL:CONFIG_SAVED')) {
+        configSavedReceived = true;
+        break;
+      }
     }
   } finally {
-    clearTimeout(timer);
+    clearTimeout(cancelTimer);
     try { reader.releaseLock(); } catch (_) {}
+    try { await port.close(); } catch (_) {}
+  }
+
+  if (!configReadyReceived) {
+    log('✗ CONFIG_READY neprišiel — zariadenie sa nenastartovalo alebo zlý USB port.');
+    throw new Error('CONFIG_READY timeout');
+  }
+  if (!configSavedReceived) {
+    log('⚠ Konfigurácia odoslaná, ale CONFIG_SAVED neprišiel — skontroluj sériový monitor.');
+  } else {
+    log('✓ Zariadenie potvrdilo uloženie konfigurácie.');
   }
 }
 
