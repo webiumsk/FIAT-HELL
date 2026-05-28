@@ -1233,6 +1233,48 @@ void setup() {
     pendingRestartAt = millis() + 2000UL;
   });
 
+  // Block AutoConnect's portal pages from STA clients and redirect AP clients
+  // to /setup. Registered before portal.begin() so these handlers take precedence.
+  // Without this, /_ac/reset or /_ac/update would be reachable from public WiFi.
+  {
+    auto acGuard = [isApClient]() {
+      const bool inConfigMode = portalRequestedByUser || portalRequiredForMissingConfig;
+      if (!isApClient() && !inConfigMode) {
+        server.send(403, "text/plain",
+          "Config portal only via AP — hold BOOT button 3 s to enable");
+        server.client().stop();
+        return;
+      }
+      server.sendHeader("Location", "/setup", true);
+      server.send(302, "text/plain", "");
+      server.client().stop();
+    };
+    // AutoConnect internal portal UI
+    server.on("/_ac",                acGuard);
+    server.on("/_ac/",               acGuard);
+    server.on("/_ac/config",         acGuard);
+    server.on("/_ac/open",           acGuard);
+    server.on("/_ac/savecredential", acGuard);
+    server.on("/_ac/devinfo",        acGuard);
+    server.on("/_ac/reset",          acGuard);
+    server.on("/_ac/update",         acGuard);
+    server.on("/_ac/update_do",      acGuard);
+    // AutoConnect Aux pages registered via portal.join()
+    server.on("/config",    acGuard);
+    server.on("/elements",  acGuard);
+    server.on("/save",      acGuard);
+    server.on("/first",     acGuard);
+    server.on("/savefirst", acGuard);
+    server.on("/second",    acGuard);
+    server.on("/savesecond",acGuard);
+    server.on("/third",     acGuard);
+    server.on("/savethird", acGuard);
+    server.on("/gui",       acGuard);
+    server.on("/savegui",   acGuard);
+    server.on("/ota",       acGuard);
+    server.on("/otado",     acGuard);
+  }
+
   elementsAux.load(FPSTR(PAGE_ELEMENTS));
   elementsAux.on([](AutoConnectAux &aux, PageArgument &arg) {
     File param = FlashFS.open(PARAM_FILE, "r");
