@@ -785,6 +785,57 @@ void to_upper(char *arr) {
   }
 }
 
+// Shared LVGL overlay for OTA progress (used by both /setup/ota and otaDoAux).
+static lv_obj_t *g_otaOverlay = nullptr;
+
+static String performOtaUpdate(const String& filename) {
+  if (filename.length() == 0 || !filename.endsWith(".bin"))
+    return "Neplatn&eacute; meno s&uacute;boru.";
+  const String url = String(OTA_BASE_URL) + "/" + filename;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPUpdate updater;
+  updater.setLedPin(-1); // GPIO2 is backlight — disable LED
+  updater.rebootOnUpdate(true);
+  g_otaOverlay = lv_obj_create(lv_scr_act());
+  lv_obj_set_size(g_otaOverlay, screenWidth, screenHeight);
+  lv_obj_set_pos(g_otaOverlay, 0, 0);
+  lv_obj_set_style_bg_color(g_otaOverlay, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(g_otaOverlay, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(g_otaOverlay, 0, 0);
+  lv_obj_clear_flag(g_otaOverlay, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *otaLabel = lv_label_create(g_otaOverlay);
+  lv_label_set_text(otaLabel, "Firmware update...\nPlease wait.");
+  lv_obj_center(otaLabel);
+  lv_obj_set_style_text_font(otaLabel, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_color(otaLabel, lv_color_white(), 0);
+  lv_obj_move_foreground(g_otaOverlay);
+  for (int i = 0; i < 8; i++) { lv_task_handler(); delay(30); }
+  updater.onStart([]() {
+    if (g_otaOverlay)
+      lv_label_set_text(lv_obj_get_child(g_otaOverlay, 0), "Downloading firmware...");
+    lv_task_handler();
+  });
+  updater.onProgress([](int curBytes, int totalBytes) {
+    if (g_otaOverlay && totalBytes > 0) {
+      char buf[48];
+      snprintf(buf, sizeof(buf), "Downloading... %d%%", (int)((100ULL * curBytes) / totalBytes));
+      lv_label_set_text(lv_obj_get_child(g_otaOverlay, 0), buf);
+    }
+    lv_task_handler();
+    yield();
+  });
+  HTTPUpdateResult res = updater.update(client, url);
+  if (g_otaOverlay) {
+    lv_obj_del(g_otaOverlay);
+    g_otaOverlay = nullptr;
+    lv_task_handler();
+  }
+  if (res == HTTP_UPDATE_OK)         return "OK &ndash; restartujem";
+  if (res == HTTP_UPDATE_NO_UPDATES) return "&Ziadna aktualizácia.";
+  return "Chyba: " + updater.getLastErrorString();
+}
+
 void setup() {
   Serial.begin(115200);
   delay(50);
@@ -1147,6 +1198,45 @@ void setup() {
     html.replace(F("%%ATM_SUBTITLE%%"),   esc(atmsubtitle));
     html.replace(F("%%ATM_DESC%%"),       esc(atmdesc));
     // ap_password is not pre-filled — user must enter it explicitly to change it
+
+    // Firmware version placeholder
+    html.replace(F("%%FW_VERSION%%"), F(FW_VERSION));
+
+    // OTA catalog — fetch live at page load; gracefully degrade if no internet
+    {
+      String otaOpts;
+      WiFiClientSecure cl;
+      cl.setInsecure();
+      HTTPClient ch;
+      ch.setTimeout(5000);
+      if (WiFi.isConnected() && ch.begin(cl, OTA_CATALOG_URL) && ch.GET() == 200) {
+        DynamicJsonDocument doc(2048);
+        if (deserializeJson(doc, ch.getString()) == DeserializationError::Ok
+            && doc.is<JsonArray>()) {
+          for (JsonObject item : doc.as<JsonArray>()) {
+            const char *name = item["name"] | "";
+            if (strlen(name) > 4 && item["type"] == "bin") {
+              otaOpts += "<option value=\"";
+              otaOpts += name;
+              otaOpts += "\">";
+              otaOpts += name;
+              const char *date = item["date"] | "";
+              size_t sz = item["size"] | 0;
+              if (date[0] || sz) { otaOpts += " ("; }
+              if (date[0]) otaOpts += date;
+              if (sz) { if (date[0]) otaOpts += ", "; otaOpts += String(sz / 1024) + " KB"; }
+              if (date[0] || sz) otaOpts += ")";
+              otaOpts += "</option>";
+            }
+          }
+        }
+      }
+      if (otaOpts.isEmpty())
+        otaOpts = "<option disabled>Nie je dostupn&yacute; internet</option>";
+      ch.end();
+      html.replace(F("%%OTA_OPTIONS%%"), otaOpts);
+    }
+
     server.send(200, "text/html", html);
   });
 
@@ -1232,6 +1322,17 @@ void setup() {
       "</body></html>");
 
     pendingRestartAt = millis() + 2000UL;
+  });
+
+  server.on("/setup/ota", HTTP_POST, [isApClient]() {
+    if (!isApClient()) { server.send(403, "text/plain", "AP only"); return; }
+    String otaMsg = performOtaUpdate(server.arg("ota_filename"));
+    String page = F("<html><body style='background:#111;color:#eee;font-family:sans-serif;padding:32px'>"
+                    "<h2 style='color:#f90'>OTA</h2><p>");
+    page += otaMsg;
+    page += F("</p><a href='/setup' style='color:#f90'>&#8592; Sp&auml;&#x165;</a>"
+              "</body></html>");
+    server.send(200, "text/html", page);
   });
 
   // Block AutoConnect's portal pages from STA clients and redirect AP clients

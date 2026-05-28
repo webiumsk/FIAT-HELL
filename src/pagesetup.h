@@ -83,6 +83,16 @@ button:active{background:#c70}
 <p class="hint">Heslo pre WiFi sieť "LN ATM-xxx" a pre webový konfig portál. Prázdne = zachovať aktuálne.</p>
 </div>
 
+<div class="card">
+<h2>Aktualizácia firmvéru</h2>
+<p>Aktuálna verzia: <strong>%%FW_VERSION%%</strong></p>
+<p class="hint">Zariadenie musí byť pripojené na internet (WiFi).</p>
+<form method="POST" action="/setup/ota">
+  <label>Vyberte verziu<select name="ota_filename" style="margin-top:6px">%%OTA_OPTIONS%%</select></label>
+  <button type="submit" style="margin-top:10px;background:#444;color:#eee;font-size:.95em;padding:10px">&#8593; Nainštalovať</button>
+</form>
+</div>
+
 <button type="submit">Uloziť a reštartovať</button>
 </form>
 </body>
