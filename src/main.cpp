@@ -1759,6 +1759,12 @@ void setup() {
   acConfig.autoRise = false; // set dynamically during startup based on mode
   acConfig.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
   acConfig.psk = deviceState.password; // Password for AP
+  // AutoConnect 1.4.2 defaults apip to 172.217.28.1 (Google IP, surprising).
+  // Force the standard 192.168.4.0/24 so the apClient subnet check works
+  // and so users see a familiar AP IP in the browser URL bar.
+  acConfig.apip    = IPAddress(192, 168, 4, 1);
+  acConfig.gateway = IPAddress(192, 168, 4, 1);
+  acConfig.netmask = IPAddress(255, 255, 255, 0);
   acConfig.menuItems =
       AC_MENUITEM_CONFIGNEW | AC_MENUITEM_OPENSSIDS |
       AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET | AC_MENUITEM_HOME;
@@ -2039,6 +2045,7 @@ void setup() {
         portalScreenShown = true;
       }
       Serial.println("Portal available. AP Name: " + acConfig.apid);
+      Serial.println("Portal AP IP: " + WiFi.softAPIP().toString());
       if (MDNS.begin("fiathell")) {
         MDNS.addService("http", "tcp", 80);
         Serial.println("mDNS: http://fiathell.local (config AP)");
