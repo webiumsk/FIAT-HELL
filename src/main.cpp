@@ -3977,11 +3977,13 @@ volatile bool isLoopReading = false;
  * and user input. It replaces blocking while/delay loops with non-blocking
  * state checks.
  */
-// Activated by 3-second long-press of BOOT button at runtime.
+// Activated by 3-second long-press of BOOT button OR 5 corner-taps at runtime.
 // Starts the AP, enables portal access, auto-closes after 5 minutes.
 static unsigned long configModeActiveUntil = 0;
+static lv_obj_t *configModeOverlay = nullptr;
 
 void triggerRuntimeConfigMode() {
+  if (configModeActiveUntil) return; // already active
   portalRequestedByUser   = true;
   acConfig.preserveAPMode = true;
   acConfig.autoReconnect  = false;
@@ -3990,6 +3992,28 @@ void triggerRuntimeConfigMode() {
   WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str(), acConfig.channel);
   configModeActiveUntil = millis() + 5UL * 60UL * 1000UL;
   Serial.println("Config mode active: " + acConfig.apid + " -> 192.168.4.1  (5 min)");
+
+  // Show on-screen overlay so the operator knows which AP to connect to
+  if (configModeOverlay) { lv_obj_del(configModeOverlay); }
+  configModeOverlay = lv_obj_create(lv_scr_act());
+  lv_obj_set_size(configModeOverlay, screenWidth, screenHeight);
+  lv_obj_set_pos(configModeOverlay, 0, 0);
+  lv_obj_set_style_bg_color(configModeOverlay, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(configModeOverlay, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(configModeOverlay, 0, 0);
+  lv_obj_clear_flag(configModeOverlay, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *cfgLbl = lv_label_create(configModeOverlay);
+  char cfgBuf[160];
+  snprintf(cfgBuf, sizeof(cfgBuf),
+    "Config mode\n\nWiFi: %s\nURL: http://192.168.4.1\n\nPripoj sa cez WiFi a otvor URL",
+    acConfig.apid.c_str());
+  lv_label_set_text(cfgLbl, cfgBuf);
+  lv_obj_set_style_text_font(cfgLbl, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_color(cfgLbl, lv_color_white(), 0);
+  lv_obj_set_style_text_align(cfgLbl, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_center(cfgLbl);
+  lv_obj_move_foreground(configModeOverlay);
+  lv_task_handler();
 }
 
 void handleUiStateMachine() {
@@ -4127,9 +4151,7 @@ void handleUiStateMachine() {
  * includes a delay of 5 milliseconds at the end of each iteration.
  */
 void loop() {
-  // Long-press BOOT (3 s) → config mode.
-  // Uses direct digitalRead so it works even when handleUiStateMachine() is
-  // skipped (e.g. while the AutoConnect portal is the active page).
+  // Long-press BOOT (3 s) → config mode. Fallback for dev/bench access.
   // BTN1 is active-low (pressed = LOW on GPIO 0).
   {
     static unsigned long btnPressStart = 0;
@@ -4149,6 +4171,32 @@ void loop() {
     }
   }
 
+  // Touch-based config trigger: tap top-left corner (x<80, y<80) 5× within 5 s.
+  // Primary field trigger — works when BOOT button is inside the enclosure.
+  {
+    static uint8_t cornerTapCount = 0;
+    static unsigned long lastCornerTap = 0;
+    const bool inTransaction = (currentUiState == UI_INSERTING_MONEY ||
+                                 currentUiState == UI_WAITING_FOR_BLINK_INVOICE);
+    if (!inTransaction && !suspendTouchPolling && !configModeActiveUntil) {
+      uint16_t tx, ty;
+      static bool prevTouched = false;
+      const bool nowTouched = lcd.getTouch(&tx, &ty);
+      // Count on leading edge only (touch start, not hold)
+      if (nowTouched && !prevTouched && tx < 80 && ty < 80) {
+        const unsigned long now = millis();
+        if (now - lastCornerTap > 5000) cornerTapCount = 0;
+        cornerTapCount++;
+        lastCornerTap = now;
+        if (cornerTapCount >= 5) {
+          cornerTapCount = 0;
+          triggerRuntimeConfigMode();
+        }
+      }
+      prevTouched = nowTouched;
+    }
+  }
+
   // Deferred restart (after /setup/save response has been sent)
   if (pendingRestartAt && millis() > pendingRestartAt) {
     pendingRestartAt = 0;
@@ -4164,6 +4212,11 @@ void loop() {
     portal.config(acConfig);
     if (WiFi.getMode() & WIFI_AP) WiFi.mode(WIFI_STA);
     Serial.println("Config mode timed out — AP closed");
+    if (configModeOverlay) {
+      lv_obj_del(configModeOverlay);
+      configModeOverlay = nullptr;
+      lv_task_handler();
+    }
   }
 
   lv_timer_handler();    // Let the GUI do its work
