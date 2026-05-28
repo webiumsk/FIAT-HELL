@@ -110,6 +110,13 @@ header p {
   cursor: pointer;
   user-select: none;
   border-radius: var(--radius);
+  /* button element resets */
+  width: 100%;
+  background: none;
+  border: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
 }
 .section-header:hover { background: var(--surface2); }
 .section-title {

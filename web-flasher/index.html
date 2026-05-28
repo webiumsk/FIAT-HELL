@@ -44,10 +44,11 @@
 
     <!-- Nastavenia ATM -->
     <div class="section" id="sec-general">
-      <div class="section-header" onclick="toggleSection('general')">
+      <button type="button" class="section-header" onclick="toggleSection('general')"
+              aria-expanded="false" aria-controls="body-general">
         <span class="section-title">Nastavenia ATM <span class="badge optional">voliteľné</span></span>
-        <span class="chevron" id="chev-general">▼</span>
-      </div>
+        <span class="chevron" id="chev-general" aria-hidden="true">▼</span>
+      </button>
       <div class="section-body" id="body-general">
         <div class="form-grid">
           <div>
@@ -61,7 +62,7 @@
           </div>
           <div>
             <label for="ap_password">Heslo WiFi AP portálu</label>
-            <input type="password" id="ap_password" placeholder="changeme" value="changeme">
+            <input type="password" id="ap_password" placeholder="min. 8 znakov" required minlength="8">
             <div class="hint">Heslo pre "LN ATM-xxxx" AP aj pre webový portál (meno: <strong>admin</strong>)</div>
           </div>
           <div>
@@ -83,10 +84,11 @@
 
     <!-- Zdroj financovania -->
     <div class="section" id="sec-funding">
-      <div class="section-header" onclick="toggleSection('funding')">
+      <button type="button" class="section-header" onclick="toggleSection('funding')"
+              aria-expanded="false" aria-controls="body-funding">
         <span class="section-title">Zdroj financovania <span class="badge optional">voliteľné</span></span>
-        <span class="chevron" id="chev-funding">▼</span>
-      </div>
+        <span class="chevron" id="chev-funding" aria-hidden="true">▼</span>
+      </button>
       <div class="section-body" id="body-funding">
         <div class="form-grid">
           <div class="full">
@@ -128,10 +130,11 @@
 
     <!-- Mena 1 -->
     <div class="section" id="sec-cur1">
-      <div class="section-header" onclick="toggleSection('cur1')">
+      <button type="button" class="section-header" onclick="toggleSection('cur1')"
+              aria-expanded="false" aria-controls="body-cur1">
         <span class="section-title">Mena 1 <span class="badge">povinné</span></span>
-        <span class="chevron" id="chev-cur1">▼</span>
-      </div>
+        <span class="chevron" id="chev-cur1" aria-hidden="true">▼</span>
+      </button>
       <div class="section-body" id="body-cur1">
         <div class="form-grid">
           <div>
@@ -198,10 +201,11 @@
 
     <!-- Mena 2 -->
     <div class="section" id="sec-cur2">
-      <div class="section-header" onclick="toggleSection('cur2')">
+      <button type="button" class="section-header" onclick="toggleSection('cur2')"
+              aria-expanded="false" aria-controls="body-cur2">
         <span class="section-title">Mena 2 <span class="badge optional">voliteľné</span></span>
-        <span class="chevron" id="chev-cur2">▼</span>
-      </div>
+        <span class="chevron" id="chev-cur2" aria-hidden="true">▼</span>
+      </button>
       <div class="section-body" id="body-cur2">
         <div class="form-grid">
           <div>
@@ -238,10 +242,11 @@
 
     <!-- Mena 3 -->
     <div class="section" id="sec-cur3">
-      <div class="section-header" onclick="toggleSection('cur3')">
+      <button type="button" class="section-header" onclick="toggleSection('cur3')"
+              aria-expanded="false" aria-controls="body-cur3">
         <span class="section-title">Mena 3 <span class="badge optional">voliteľné</span></span>
-        <span class="chevron" id="chev-cur3">▼</span>
-      </div>
+        <span class="chevron" id="chev-cur3" aria-hidden="true">▼</span>
+      </button>
       <div class="section-body" id="body-cur3">
         <div class="form-grid">
           <div>

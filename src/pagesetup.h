@@ -79,8 +79,8 @@ button:active{background:#c70}
 <label>Názov<input type="text" name="atm_title" value="%%ATM_TITLE%%"></label>
 <label>Podnadpis<input type="text" name="atm_subtitle" value="%%ATM_SUBTITLE%%"></label>
 <label>Popis<input type="text" name="atm_desc" value="%%ATM_DESC%%"></label>
-<label>Heslo pre AP a portál (meno: admin)<input type="text" name="ap_password" value="%%AP_PASSWORD%%"></label>
-<p class="hint">Heslo pre WiFi sieť "LN ATM-xxx" a pre webový konfig portál.</p>
+<label>Heslo pre AP a portál (meno: admin)<input type="password" name="ap_password" autocomplete="new-password" placeholder="ponechať nezmenené"></label>
+<p class="hint">Heslo pre WiFi sieť "LN ATM-xxx" a pre webový konfig portál. Prázdne = zachovať aktuálne.</p>
 </div>
 
 <button type="submit">Uloziť a reštartovať</button>

@@ -1117,6 +1117,8 @@ void setup() {
       String out(s);
       out.replace(F("&"), F("&amp;"));
       out.replace(F("\""), F("&quot;"));
+      out.replace(F("<"), F("&lt;"));
+      out.replace(F(">"), F("&gt;"));
       return out;
     };
 
@@ -1143,7 +1145,7 @@ void setup() {
     html.replace(F("%%ATM_TITLE%%"),      esc(atmtitle));
     html.replace(F("%%ATM_SUBTITLE%%"),   esc(atmsubtitle));
     html.replace(F("%%ATM_DESC%%"),       esc(atmdesc));
-    html.replace(F("%%AP_PASSWORD%%"),    esc(deviceStatePtr->password));
+    // ap_password is not pre-filled — user must enter it explicitly to change it
     server.send(200, "text/html", html);
   });
 
@@ -1173,7 +1175,8 @@ void setup() {
       auto add = [&](const char* n, const String& v) {
         JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
       };
-      add("password",    server.arg("ap_password"));
+      const String newPwd = server.arg("ap_password");
+      add("password",    newPwd.length() > 0 ? newPwd : String(deviceStatePtr->password));
       add("atmdesc",     server.arg("atm_desc"));
       add("atmsubtitle", server.arg("atm_subtitle"));
       add("atmtitle",    title.length() ? title : "FIAT HELL");

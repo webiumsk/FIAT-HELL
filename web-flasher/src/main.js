@@ -24,6 +24,8 @@ function toggleSection(id) {
   const isOpen = body.classList.contains('open');
   body.classList.toggle('open', !isOpen);
   chev.classList.toggle('open', !isOpen);
+  const btn = document.querySelector(`[aria-controls="body-${id}"]`);
+  if (btn) btn.setAttribute('aria-expanded', String(!isOpen));
 }
 
 function onFundingChange() {
@@ -43,11 +45,28 @@ function num(id) { const val = v(id); return val === '' ? '' : val; }
 ══════════════════════════════════════════════════════════════ */
 function makeElementsJson() {
   return [
-    { name: 'password',    value: v('ap_password') || 'changeme' },
+    { name: 'password',    value: v('ap_password') },
     { name: 'atmdesc',     value: v('atm_desc') },
     { name: 'atmsubtitle', value: v('atm_subtitle') },
     { name: 'atmtitle',    value: v('atm_title') || 'FIAT HELL' },
   ];
+}
+
+function validateConfig() {
+  const pwd = v('ap_password');
+  if (!pwd || pwd.length < 8 || pwd === 'changeme') {
+    alert('Heslo pre AP portál musí mať aspoň 8 znakov a nesmie byť "changeme".');
+    showPanel('config');
+    if (!document.getElementById('body-general').classList.contains('open')) toggleSection('general');
+    return false;
+  }
+  if (!v('cur1_code')) {
+    alert('Vyplň aspoň Kód meny pre Mena 1 (napr. EUR)');
+    showPanel('config');
+    if (!document.getElementById('body-cur1').classList.contains('open')) toggleSection('cur1');
+    return false;
+  }
+  return true;
 }
 
 function makeGuiJson() {
@@ -127,11 +146,7 @@ function makeConfigFiles() {
    Download config ZIP
 ══════════════════════════════════════════════════════════════ */
 async function downloadConfigZip() {
-  if (!v('cur1_code')) {
-    alert('Vyplň aspoň Kód meny pre Mena 1 (napr. EUR)');
-    if (!document.getElementById('body-cur1').classList.contains('open')) toggleSection('cur1');
-    return;
-  }
+  if (!validateConfig()) return;
 
   const zip = new JSZip();
   zip.file('elements.json', JSON.stringify(makeElementsJson(), null, 2));
@@ -239,12 +254,7 @@ function setFlashBusy(busy) {
    Flash actions
 ══════════════════════════════════════════════════════════════ */
 async function connectAndFlashWithConfig() {
-  if (!v('cur1_code')) {
-    alert('Pre nahranie konfigurácie vyplň aspoň Kód meny 1 (napr. EUR).');
-    showPanel('config');
-    if (!document.getElementById('body-cur1').classList.contains('open')) toggleSection('cur1');
-    return;
-  }
+  if (!validateConfig()) return;
   clearTerminal();
   setFlashBusy(true);
   try {
