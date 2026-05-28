@@ -52,7 +52,14 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
       if (deserializeJson(doc, payload) == DeserializationError::Ok &&
           doc["bitcoin"][curr.c_str()]) {
         *outFiatValue = doc["bitcoin"][curr.c_str()].as<float>();
+      } else {
+        Serial.printf("price[CoinGecko/%s]: JSON parse/missing field\n",
+                      targetCurrency.c_str());
       }
+    } else {
+      Serial.printf("price[CoinGecko/%s]: HTTP %d (%s)\n",
+                    targetCurrency.c_str(), code,
+                    HTTPClient::errorToString(code).c_str());
     }
     http.end();
     return;
@@ -79,7 +86,12 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
           *outFiatValue = String(lastStr).toFloat();
           break;
         }
+      } else {
+        Serial.printf("price[Kraken/%s]: JSON parse/error\n", pair.c_str());
       }
+    } else {
+      Serial.printf("price[Kraken/%s]: HTTP %d (%s)\n", pair.c_str(), code,
+                    HTTPClient::errorToString(code).c_str());
     }
     http.end();
     return;
@@ -94,7 +106,14 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
         String tempCurrency = String(currencySelected);
         tempCurrency.toLowerCase();
         *outFiatValue = doc["btc"][tempCurrency].as<float>();
+      } else {
+        Serial.printf("price[ExchangeApi/%s]: JSON parse failed\n",
+                      targetCurrency.c_str());
       }
+    } else {
+      Serial.printf("price[ExchangeApi/%s]: HTTP %d (%s)\n",
+                    targetCurrency.c_str(), code,
+                    HTTPClient::errorToString(code).c_str());
     }
     http.end();
   } else {
@@ -106,7 +125,14 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
       if (deserializeJson(doc, payload) == DeserializationError::Ok) {
         const char *priceStr = doc["price"] | "";
         *outFiatValue = String(priceStr).toFloat();
+      } else {
+        Serial.printf("price[CoinYEP/%s]: JSON parse failed\n",
+                      targetCurrency.c_str());
       }
+    } else {
+      Serial.printf("price[CoinYEP/%s]: HTTP %d (%s)\n",
+                    targetCurrency.c_str(), code,
+                    HTTPClient::errorToString(code).c_str());
     }
     http.end();
   }
@@ -155,7 +181,14 @@ static void taskFetchBalance(HTTPClient &http, DeviceState &ds,
         ss.balanceSats = doc["balance"];
         ss.fiatBalance =
             ((double)ss.balanceSats * fiatValue) / 100000000000.0;
+        Serial.printf("balance[LNbits]: %lld sats\n", (long long)ss.balanceSats);
+      } else {
+        Serial.println("balance[LNbits]: JSON parse failed");
       }
+    } else {
+      Serial.printf("balance[LNbits]: HTTP %d (%s) — keeping cached %lld sats\n",
+                    code, HTTPClient::errorToString(code).c_str(),
+                    (long long)ss.balanceSats);
     }
     http.end();
   } else if (strcmp(fundingSource, "Blink") == 0) {
@@ -184,18 +217,32 @@ static void taskFetchBalance(HTTPClient &http, DeviceState &ds,
       String payload = http.getString();
       DynamicJsonDocument respDoc(4096);
       if (deserializeJson(respDoc, payload) == DeserializationError::Ok) {
-        JsonArray wallets =
-            respDoc["data"]["me"]["defaultAccount"]["wallets"];
-        // Blink returns BTC wallet(s); use first wallet (same as original
-        // checkBalance) - balance is in sats, fiatValue converts to display
-        // currency (EUR, etc.)
-        if (wallets.size() > 0) {
-          JsonObject w = wallets[0];
-          ss.balanceSats = w["balance"];
-          ss.fiatBalance =
-              ((double)ss.balanceSats / 100000000.0) * fiatValue;
+        // Blink returns errors in payload even with HTTP 200
+        if (respDoc["errors"].is<JsonArray>() &&
+            respDoc["errors"].size() > 0) {
+          const char *msg = respDoc["errors"][0]["message"] | "(no message)";
+          Serial.printf("balance[Blink]: GraphQL error: %s\n", msg);
+        } else {
+          JsonArray wallets =
+              respDoc["data"]["me"]["defaultAccount"]["wallets"];
+          if (wallets.size() > 0) {
+            JsonObject w = wallets[0];
+            ss.balanceSats = w["balance"];
+            ss.fiatBalance =
+                ((double)ss.balanceSats / 100000000.0) * fiatValue;
+            Serial.printf("balance[Blink]: %lld sats\n",
+                          (long long)ss.balanceSats);
+          } else {
+            Serial.println("balance[Blink]: no wallets in response");
+          }
         }
+      } else {
+        Serial.println("balance[Blink]: JSON parse failed");
       }
+    } else {
+      Serial.printf("balance[Blink]: HTTP %d (%s) — keeping cached %lld sats\n",
+                    code, HTTPClient::errorToString(code).c_str(),
+                    (long long)ss.balanceSats);
     }
     http.end();
   }
@@ -229,11 +276,18 @@ static void priceBalanceTaskFunc(void *param) {
                     g_deviceState->rateSourceBuffer, &fv3);
 
     if (xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
-      g_sessionState->fiatValue = fiatValue;
-      g_sessionState->fiatValue1 = fv1;
-      g_sessionState->fiatValue2 = fv2;
-      g_sessionState->fiatValue3 = fv3;
-      taskFetchBalance(g_taskHttp, *g_deviceState, *g_sessionState, fiatValue);
+      // Only overwrite cached values when the fetch actually succeeded.
+      // A failed fetch leaves the local variable at 0; without this guard
+      // every transient network glitch nukes the last-known price.
+      if (fiatValue > 0.0f) g_sessionState->fiatValue  = fiatValue;
+      if (fv1 > 0.0f)       g_sessionState->fiatValue1 = fv1;
+      if (fv2 > 0.0f)       g_sessionState->fiatValue2 = fv2;
+      if (fv3 > 0.0f)       g_sessionState->fiatValue3 = fv3;
+      // Use the freshest available price for balance conversion
+      const float priceForBalance =
+          (fiatValue > 0.0f) ? fiatValue : g_sessionState->fiatValue;
+      taskFetchBalance(g_taskHttp, *g_deviceState, *g_sessionState,
+                       priceForBalance);
       g_dataReadyForUi = true;
       xSemaphoreGive(g_dataMutex);
     }
