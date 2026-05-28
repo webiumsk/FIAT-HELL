@@ -1118,7 +1118,14 @@ void setup() {
     }
     // Use deviceStatePtr-> for non-macro fields; bare macros for aliased fields.
     const bool isLNbitsMode = (strcmp(deviceStatePtr->fundingSourceBuffer, "LNbits") == 0);
+    const char *rs = deviceStatePtr->rateSourceBuffer;
     String html = FPSTR(SETUP_PAGE_HTML);
+
+    // Rate source dropdown — mark the active one as `selected`
+    html.replace(F("%%RS_COINGECKO%%"),   (strcmp(rs, "CoinGecko")   == 0) ? "selected" : "");
+    html.replace(F("%%RS_KRAKEN%%"),      (strcmp(rs, "Kraken")      == 0) ? "selected" : "");
+    html.replace(F("%%RS_EXCHANGEAPI%%"), (strcmp(rs, "ExchangeApi") == 0) ? "selected" : "");
+    html.replace(F("%%RS_COINYEP%%"),     (strcmp(rs, "CoinYEP")     == 0) ? "selected" : "");
 
     auto esc = [](const char* s) -> String {
       String out(s);
@@ -1229,7 +1236,7 @@ void setup() {
       if (f) { serializeJson(doc, f); f.close(); }
     }
 
-    // gui.json — preserve existing rateSource/animated, only update fundingSource
+    // gui.json — update fundingSource and rateSource; preserve animated
     {
       GuiConfig gui;
       if (!configService.loadGuiConfig(FlashFS, GUI_FILE, gui)) {
@@ -1240,6 +1247,11 @@ void setup() {
       strlcpy(gui.fundingSource,
               (funding == "LNbits") ? "LNbits" : "Blink",
               sizeof(gui.fundingSource));
+      const String rs = server.arg("ratesource");
+      if (rs == "CoinGecko" || rs == "Kraken" ||
+          rs == "ExchangeApi" || rs == "CoinYEP") {
+        strlcpy(gui.rateSource, rs.c_str(), sizeof(gui.rateSource));
+      }
       configService.saveGuiConfig(FlashFS, GUI_FILE, gui);
     }
 
