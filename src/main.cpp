@@ -1350,7 +1350,7 @@ void setup() {
   acConfig.homeUri = "/config";
   acConfig.reconnectInterval = 1;
   acConfig.channel = 6;        // Fixed channel for stable AP (avoids scan disrupting clients)
-  acConfig.beginTimeout = 45000;
+  acConfig.beginTimeout = 12000; // 12 s — fast fallback to AP if saved WiFi unreachable
   acConfig.immediateStart =
       false; // If we don't have WiFi saved, it will start AP
   acConfig.username = "admin";
