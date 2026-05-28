@@ -102,6 +102,12 @@ function makeThirdJson() {
   ];
 }
 
+function makeWifiJson() {
+  const ssid = v('wifi_ssid');
+  if (!ssid) return null;
+  return { ssid, password: document.getElementById('wifi_password').value };
+}
+
 function makeConfigFiles() {
   const files = {
     '/elements.json': makeElementsJson(),
@@ -112,6 +118,8 @@ function makeConfigFiles() {
   if (second) files['/second.json'] = second;
   const third = makeThirdJson();
   if (third) files['/third.json'] = third;
+  const wifi = makeWifiJson();
+  if (wifi) files['/wifi.json'] = wifi;
   return files;
 }
 
@@ -133,6 +141,8 @@ async function downloadConfigZip() {
   if (second) zip.file('second.json', JSON.stringify(second, null, 2));
   const third = makeThirdJson();
   if (third)  zip.file('third.json',  JSON.stringify(third,  null, 2));
+  const wifi = makeWifiJson();
+  if (wifi)   zip.file('wifi.json',   JSON.stringify(wifi,   null, 2));
 
   const blob = await zip.generateAsync({ type: 'blob' });
   const url  = URL.createObjectURL(blob);

@@ -51,7 +51,16 @@
       <div class="section-body" id="body-general">
         <div class="form-grid">
           <div>
-            <label for="ap_password">Heslo WiFi AP</label>
+            <label for="wifi_ssid">WiFi sieť (SSID)</label>
+            <input type="text" id="wifi_ssid" placeholder="Názov siete">
+            <div class="hint">Nahratá cez USB — nie je potrebné sa pripojiť na portál</div>
+          </div>
+          <div>
+            <label for="wifi_password">WiFi heslo</label>
+            <input type="password" id="wifi_password" placeholder="heslo siete">
+          </div>
+          <div>
+            <label for="ap_password">Heslo WiFi AP portálu</label>
             <input type="password" id="ap_password" placeholder="changeme" value="changeme">
             <div class="hint">Heslo pre "LN ATM-xxxx" prístupový bod</div>
           </div>

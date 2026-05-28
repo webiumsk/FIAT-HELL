@@ -1007,6 +1007,26 @@ void setup() {
   }
   bootStage(20, "main params loaded");
 
+  // Apply WiFi credentials from /wifi.json (written by web-flasher via USB).
+  // WiFi.begin() saves creds to NVS so AutoConnect finds them on next boot too.
+  {
+    File wifiFile = SPIFFS.open("/wifi.json", "r");
+    if (wifiFile) {
+      DynamicJsonDocument wifiDoc(256);
+      if (deserializeJson(wifiDoc, wifiFile) == DeserializationError::Ok) {
+        const char* ssid = wifiDoc["ssid"] | "";
+        const char* pwd  = wifiDoc["password"] | "";
+        if (ssid[0] != '\0') {
+          Serial.print("WiFi from /wifi.json: ");
+          Serial.println(ssid);
+          WiFi.begin(ssid, pwd);
+        }
+      }
+      wifiFile.close();
+    }
+  }
+  bootStage(21, "wifi.json applied");
+
   server.on("/", []() {
     const bool routeToConfigPortal =
         pendingPortalCompletion || portalRequestedByUser ||
@@ -1021,7 +1041,7 @@ void setup() {
     const String page = content + AUTOCONNECT_LINK(COG_24);
     server.send(200, "text/html", page);
   });
-  bootStage(21, "root route registered");
+  bootStage(22, "root route registered");
 
   auto redirectToConfigPortal = []() {
     server.sendHeader("Location", "/config", true);
