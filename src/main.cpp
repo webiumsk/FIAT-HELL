@@ -1037,11 +1037,24 @@ void setup() {
   }
   bootStage(21, "wifi.json applied");
 
-  server.on("/", []() {
+  // Returns true only when the request comes from a client on the AP subnet.
+  // Blocks portal access from the STA (public WiFi) interface.
+  auto isApClient = []() -> bool {
+    const IPAddress c = server.client().remoteIP();
+    return c[0] == 192 && c[1] == 168 && c[2] == 4;
+  };
+
+  server.on("/", [isApClient]() {
     const bool routeToConfigPortal =
         pendingPortalCompletion || portalRequestedByUser ||
         portalRequiredForMissingConfig || portal.isPortalAvailable();
     if (routeToConfigPortal) {
+      if (!isApClient()) {
+        server.send(403, "text/plain",
+          "Portal accessible only via AP — hold BOOT button 3 s to enable");
+        server.client().stop();
+        return;
+      }
       server.sendHeader("Location", "/config", true);
       server.send(302, "text/plain", "");
       server.client().stop();
@@ -1053,7 +1066,13 @@ void setup() {
   });
   bootStage(22, "root route registered");
 
-  auto redirectToConfigPortal = []() {
+  auto redirectToConfigPortal = [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "text/plain",
+        "Portal accessible only via AP — hold BOOT button 3 s to enable");
+      server.client().stop();
+      return;
+    }
     server.sendHeader("Location", "/config", true);
     server.send(302, "text/plain", "");
     server.client().stop();
@@ -3767,9 +3786,39 @@ volatile bool isLoopReading = false;
  * and user input. It replaces blocking while/delay loops with non-blocking
  * state checks.
  */
+// Activated by 3-second long-press of BOOT button at runtime.
+// Starts the AP, enables portal access, auto-closes after 5 minutes.
+static unsigned long configModeActiveUntil = 0;
+
+void triggerRuntimeConfigMode() {
+  portalRequestedByUser   = true;
+  acConfig.preserveAPMode = true;
+  acConfig.autoReconnect  = false;
+  portal.config(acConfig);
+  if (!(WiFi.getMode() & WIFI_AP)) WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str(), acConfig.channel);
+  configModeActiveUntil = millis() + 5UL * 60UL * 1000UL;
+  Serial.println("Config mode active: " + acConfig.apid + " -> 192.168.4.1  (5 min)");
+}
+
 void handleUiStateMachine() {
   unsigned long currentTime = millis();
   BTNA.read();
+
+  // Long press (3 s) anywhere except during a transaction -> runtime config mode
+  {
+    static bool configModeArmed = false;
+    const bool inTransaction = (currentUiState == UI_INSERTING_MONEY ||
+                                currentUiState == UI_WAITING_FOR_BLINK_INVOICE);
+    if (BTNA.pressedFor(3000) && !inTransaction) {
+      if (!configModeArmed) {
+        configModeArmed = true;
+        triggerRuntimeConfigMode();
+      }
+    } else if (!BTNA.isPressed()) {
+      configModeArmed = false;
+    }
+  }
 
   switch (currentUiState) {
   case UI_LOGO_WAIT: {
@@ -3901,6 +3950,17 @@ void handleUiStateMachine() {
  * includes a delay of 5 milliseconds at the end of each iteration.
  */
 void loop() {
+  // Auto-close config mode AP after 5-minute timeout
+  if (configModeActiveUntil && millis() > configModeActiveUntil) {
+    configModeActiveUntil   = 0;
+    portalRequestedByUser   = false;
+    acConfig.preserveAPMode = false;
+    acConfig.autoReconnect  = true;
+    portal.config(acConfig);
+    if (WiFi.getMode() & WIFI_AP) WiFi.mode(WIFI_STA);
+    Serial.println("Config mode timed out — AP closed");
+  }
+
   lv_timer_handler();    // Let the GUI do its work
   portal.handleClient(); // Already non‑blocking
 
