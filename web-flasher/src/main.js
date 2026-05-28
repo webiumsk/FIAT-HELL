@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { checkBrowserSupport, connectAndFlash } from './flash.js';
+import { checkBrowserSupport, connectAndFlash, uploadConfigOnly } from './flash.js';
 import { FW_VERSION } from './config.js';
 
 /* ══════════════════════════════════════════════════════════════
@@ -73,7 +73,9 @@ function makeGuiJson() {
   const funding  = document.querySelector('input[name="funding"]:checked').value;
   const rate     = document.querySelector('input[name="ratesource"]:checked').value;
   const animated = document.querySelector('input[name="animated"]:checked').value;
-  const rateIndex = { CoinGecko: 1, ExchangeApi: 2, CoinYEP: 3, Kraken: 4 }[rate] ?? 1;
+  // Firmware's ConfigService still parses the legacy 4-entry array; keep that
+  // shape so older firmwares stay compatible. UI only exposes 3 options.
+  const rateIndex = { CoinGecko: 1, ExchangeApi: 2, CoinYEP: 3, Kraken: 4 }[rate] ?? 3;
   return [
     { name: 'fundingsource', value: ['Blink', 'LNbits'], checked: funding === 'Blink' ? 1 : 2 },
     { name: 'ratesource',    value: ['CoinGecko', 'ExchangeApi', 'CoinYEP', 'Kraken'], checked: rateIndex },
@@ -189,14 +191,53 @@ function clearForm() {
 ══════════════════════════════════════════════════════════════ */
 const STORAGE_KEY = 'fiat-hell-flasher-v1';
 
+// Fields explicitly persisted to localStorage even though they're password-type.
+// These secrets are masked in the UI only to deter shoulder-surfing — the
+// operator still wants them remembered between sessions on their own machine.
+const PERSISTED_SECRETS = new Set(['cur1_blink_apikey']);
+
 function saveToStorage() {
   const data = {};
-  // password-type inputs are intentionally excluded from localStorage
+  // password-type inputs are intentionally excluded — except those in
+  // PERSISTED_SECRETS (e.g. the Blink API key shown as a masked field)
   document.querySelectorAll('input[type="text"], input[type="number"]')
     .forEach(el => { if (el.id) data[el.id] = el.value; });
+  PERSISTED_SECRETS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) data[id] = el.value;
+  });
   document.querySelectorAll('input[type="radio"]:checked')
     .forEach(r => { data['radio_' + r.name] = r.value; });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Secret input masking (Blink API key etc.)
+══════════════════════════════════════════════════════════════ */
+function fingerprintSecret(s) {
+  if (!s) return '';
+  if (s.length <= 8) return '••• (uložené, ' + s.length + ' znakov)';
+  return s.slice(0, 4) + ' ••• ' + s.slice(-4);
+}
+
+function updateSecretFingerprints() {
+  document.querySelectorAll('[id^="fp_"]').forEach(fpEl => {
+    const inputId = fpEl.id.slice(3);
+    const input = document.getElementById(inputId);
+    if (input) fpEl.textContent = input.value ? 'Uložené: ' + fingerprintSecret(input.value) : '';
+  });
+}
+
+function bindSecretToggles() {
+  document.querySelectorAll('.secret-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = document.getElementById(btn.dataset.target);
+      if (!input) return;
+      const reveal = input.type === 'password';
+      input.type = reveal ? 'text' : 'password';
+      btn.textContent = reveal ? '🙈' : '👁';
+    });
+  });
 }
 
 function loadFromStorage() {
@@ -248,6 +289,8 @@ function setProgress(pct) {
 function setFlashBusy(busy) {
   document.getElementById('btn-flash-config').disabled = busy;
   document.getElementById('btn-flash-only').disabled   = busy;
+  const cfgOnly = document.getElementById('btn-config-only');
+  if (cfgOnly) cfgOnly.disabled = busy;
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -282,6 +325,23 @@ async function connectAndFlashOnly() {
   }
 }
 
+// "Iba konfig" — pre už naflashované zariadenie. Neflashuje firmware,
+// iba reštartuje zariadenie cez RTS a nahraje config počas CONFIG_READY okna.
+async function uploadConfigOnlyAction() {
+  if (!validateConfig()) return;
+  clearTerminal();
+  setFlashBusy(true);
+  try {
+    await uploadConfigOnly({ log: appendToTerminal, setProgress, configFiles: makeConfigFiles() });
+  } catch (e) {
+    appendToTerminal('');
+    appendToTerminal('✗ Chyba: ' + e.message);
+    console.error(e);
+  } finally {
+    setFlashBusy(false);
+  }
+}
+
 /* ══════════════════════════════════════════════════════════════
    Init
 ══════════════════════════════════════════════════════════════ */
@@ -301,8 +361,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   loadFromStorage();
   onFundingChange();
+  bindSecretToggles();
+  updateSecretFingerprints();
 
-  document.addEventListener('input',  saveToStorage);
+  document.addEventListener('input',  () => { saveToStorage(); updateSecretFingerprints(); });
   document.addEventListener('change', saveToStorage);
 
   toggleSection('general');
@@ -317,5 +379,6 @@ document.addEventListener('DOMContentLoaded', () => {
     clearForm,
     connectAndFlashWithConfig,
     connectAndFlashOnly,
+    uploadConfigOnlyAction,
   });
 });

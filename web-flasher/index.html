@@ -94,26 +94,24 @@
           <div class="full">
             <label>Funding source</label>
             <div class="toggle-group">
-              <input type="radio" name="funding" id="fund_lnbits" value="LNbits" checked onchange="onFundingChange()">
-              <label for="fund_lnbits">LNbits</label>
-              <input type="radio" name="funding" id="fund_blink" value="Blink" onchange="onFundingChange()">
+              <input type="radio" name="funding" id="fund_blink" value="Blink" checked onchange="onFundingChange()">
               <label for="fund_blink">Blink</label>
+              <input type="radio" name="funding" id="fund_lnbits" value="LNbits" onchange="onFundingChange()">
+              <label for="fund_lnbits">LNbits</label>
             </div>
-            <div class="hint">LNbits funguje aj offline. Blink vyžaduje internet.</div>
+            <div class="hint">Blink je odporúčaný (vyžaduje internet). LNbits funguje aj offline.</div>
           </div>
           <div class="full">
             <label>Zdroj kurzu BTC</label>
             <div class="toggle-group">
-              <input type="radio" name="ratesource" id="rate_cg" value="CoinGecko" checked>
-              <label for="rate_cg">CoinGecko</label>
-              <input type="radio" name="ratesource" id="rate_ex" value="ExchangeApi">
-              <label for="rate_ex">ExchangeApi</label>
-              <input type="radio" name="ratesource" id="rate_cy" value="CoinYEP">
+              <input type="radio" name="ratesource" id="rate_cy" value="CoinYEP" checked>
               <label for="rate_cy">CoinYEP</label>
               <input type="radio" name="ratesource" id="rate_kr" value="Kraken">
               <label for="rate_kr">Kraken</label>
+              <input type="radio" name="ratesource" id="rate_ex" value="ExchangeApi">
+              <label for="rate_ex">ExchangeApi</label>
             </div>
-            <div class="hint">CoinGecko – odporúčané. ExchangeApi – pre exotické meny (HNL, …).</div>
+            <div class="hint">CoinYEP – odporúčané. ExchangeApi – pre exotické meny (HNL, …).</div>
           </div>
           <div class="full">
             <label>Animácia nadpisu</label>
@@ -189,7 +187,11 @@
           </div>
           <div class="blink-fields" style="display:none;">
             <label for="cur1_blink_apikey">Blink API key</label>
-            <input type="text" id="cur1_blink_apikey" placeholder="">
+            <div class="secret-wrap">
+              <input type="password" id="cur1_blink_apikey" placeholder="" autocomplete="off" spellcheck="false">
+              <button type="button" class="secret-toggle" data-target="cur1_blink_apikey" aria-label="Zobraziť / skryť">👁</button>
+            </div>
+            <div class="hint secret-fingerprint" id="fp_cur1_blink_apikey"></div>
           </div>
           <div class="blink-fields" style="display:none;">
             <label for="cur1_blink_wallet">Blink Wallet ID</label>
@@ -319,6 +321,9 @@
 
       <!-- Action buttons -->
       <div id="flash-actions" class="btn-row" style="justify-content:center;margin-top:0;">
+        <button id="btn-config-only" class="btn btn-outline" onclick="uploadConfigOnlyAction()">
+          ⬆ Iba konfig
+        </button>
         <button id="btn-flash-config" class="btn btn-primary" style="font-size:1.05rem;padding:14px 32px;" onclick="connectAndFlashWithConfig()">
           ⚡ Flash + nahraj konfig
         </button>

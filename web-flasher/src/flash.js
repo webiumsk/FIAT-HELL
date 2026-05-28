@@ -12,6 +12,20 @@ export function checkBrowserSupport() {
   return { ok: true };
 }
 
+// Pulse RTS low to reset the ESP32 (EN pin). Best-effort — some boards or
+// browsers may not support setSignals; the user can press RESET manually.
+async function pulseResetViaRTS(port, log) {
+  try {
+    await port.setSignals({ dataTerminalReady: false, requestToSend: true });
+    await delay(120);
+    await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+    return true;
+  } catch (e) {
+    if (log) log('Pozn.: auto-reset (RTS) sa nepodaril. Ak nič nepríde, stlač RESET na zariadení.');
+    return false;
+  }
+}
+
 export async function connectAndFlash({ log, setProgress, configFiles }) {
   log('Vyber COM port zariadenia...');
   const port = await navigator.serial.requestPort();
@@ -83,20 +97,16 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
   }
 }
 
-// Opens the port at 115200, waits for CONFIG_READY, sends all config files,
-// then waits for CONFIG_SAVED. Device responses are shown in the terminal.
-async function uploadConfig(port, configFiles, log) {
-  log('Čakám na CONFIG_READY (zariadenie bootuje)...');
-  await port.open({ baudRate: 115200 });
-
+// Core: assumes `port` is already open at 115200. Waits up to `readyTimeoutMs`
+// for CONFIG_READY, then writes each config file and waits for CONFIG_SAVED.
+async function streamConfigToOpenPort(port, configFiles, log, readyTimeoutMs = 12000) {
   const decoder = new TextDecoder();
   const reader  = port.readable.getReader();
   let buf = '';
   let configReadyReceived = false;
   let configSavedReceived = false;
 
-  // Cancel the reader after 12 s if CONFIG_READY never arrives
-  let cancelTimer = setTimeout(() => reader.cancel(), 12000);
+  let cancelTimer = setTimeout(() => reader.cancel(), readyTimeoutMs);
 
   try {
     while (true) {
@@ -106,7 +116,6 @@ async function uploadConfig(port, configFiles, log) {
       const text = decoder.decode(value, { stream: true });
       buf += text;
 
-      // Show any FIAT-HELL: responses from device in terminal
       for (const line of text.split('\n')) {
         const trimmed = line.trim();
         if (trimmed.startsWith('FIAT-HELL:')) log('  [device] ' + trimmed);
@@ -130,7 +139,6 @@ async function uploadConfig(port, configFiles, log) {
           writer.releaseLock();
         }
 
-        // Give the device 5 s to confirm CONFIG_SAVED
         cancelTimer = setTimeout(() => reader.cancel(), 5000);
       }
 
@@ -142,17 +150,59 @@ async function uploadConfig(port, configFiles, log) {
   } finally {
     clearTimeout(cancelTimer);
     try { reader.releaseLock(); } catch (_) {}
-    try { await port.close(); } catch (_) {}
   }
 
   if (!configReadyReceived) {
-    log('✗ CONFIG_READY neprišiel — zariadenie sa nenastartovalo alebo zlý USB port.');
+    log('✗ CONFIG_READY neprišiel — zariadenie sa nenaštartovalo, zlý USB port, alebo bežiaci firmware nepočúva.');
     throw new Error('CONFIG_READY timeout');
   }
   if (!configSavedReceived) {
     log('⚠ Konfigurácia odoslaná, ale CONFIG_SAVED neprišiel — skontroluj sériový monitor.');
   } else {
     log('✓ Zariadenie potvrdilo uloženie konfigurácie.');
+  }
+}
+
+// Post-flash wrapper: device just rebooted from esptool's hardReset(), so we
+// just need to open the port and wait for CONFIG_READY.
+async function uploadConfig(port, configFiles, log) {
+  log('Čakám na CONFIG_READY (zariadenie bootuje)...');
+  await port.open({ baudRate: 115200 });
+  try {
+    await streamConfigToOpenPort(port, configFiles, log);
+  } finally {
+    try { await port.close(); } catch (_) {}
+  }
+}
+
+// "Config only" flow: open the port, pulse RTS to reset the chip, then run
+// the same wait-and-send sequence. No flashing happens.
+export async function uploadConfigOnly({ log, setProgress, configFiles }) {
+  if (!configFiles || Object.keys(configFiles).length === 0)
+    throw new Error('Žiadne konfiguračné údaje');
+
+  log('Vyber COM port zariadenia...');
+  const port = await navigator.serial.requestPort();
+
+  log('Otváram port (115200)...');
+  await port.open({ baudRate: 115200 });
+  setProgress(10);
+
+  try {
+    log('Reštartujem zariadenie cez RTS (ak hardvér podporuje)...');
+    const rtsOk = await pulseResetViaRTS(port, log);
+    if (!rtsOk) log('Ak nič nepríde do 20 s, stlač RESET na zariadení.');
+    log('Čakám na CONFIG_READY (~10 s okno po štarte firmware)...');
+    setProgress(30);
+
+    // 20 s — covers boot delay + manual RESET press if RTS reset didn't work
+    await streamConfigToOpenPort(port, configFiles, log, 20000);
+    setProgress(95);
+    log('');
+    log('✓ Hotovo! Konfigurácia bola nahratá.');
+    setProgress(100);
+  } finally {
+    try { await port.close(); } catch (_) {}
   }
 }
 
