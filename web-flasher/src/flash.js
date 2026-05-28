@@ -57,33 +57,39 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
     setProgress(90);
     log('Firmware flashovaný!');
 
-    if (configFiles && Object.keys(configFiles).length > 0) {
-      log('');
-      log('Restartujem zariadenie...');
-      await esploader.hardReset();
-      setProgress(93);
-      log('Čakám na spustenie firmvéru (5 s)...');
-      await delay(5000);
+    log('');
+    log('Restartujem zariadenie...');
+    await esploader.hardReset();
+    // Disconnect releases all internal stream locks and resets the baud rate.
+    // We reopen the raw port at 115200 for config upload.
+    await transport.disconnect();
 
-      log('Nahrávam konfiguráciu...');
-      const writer = transport.device.writable.getWriter();
+    if (configFiles && Object.keys(configFiles).length > 0) {
+      setProgress(93);
+      log('Čakám na CONFIG_READY...');
+      // Open port immediately — device prints CONFIG_READY early in setup()
+      await port.open({ baudRate: 115200 });
       try {
-        for (const [name, content] of Object.entries(configFiles)) {
-          const line = `WRITE_CONFIG:${name}:${JSON.stringify(content)}\n`;
-          await writer.write(enc(line));
-          await delay(150);
-          log(`  ✓ ${name}`);
+        await waitForConfigReady(port, 8000);
+        log('Nahrávam konfiguráciu...');
+        const writer = port.writable.getWriter();
+        try {
+          for (const [name, content] of Object.entries(configFiles)) {
+            const line = `WRITE_CONFIG:${name}:${JSON.stringify(content)}\n`;
+            await writer.write(enc(line));
+            await delay(200);
+            log(`  ✓ ${name}`);
+          }
+          await writer.write(enc('CONFIG_DONE\n'));
+          await delay(800);
+        } finally {
+          writer.releaseLock();
         }
-        await writer.write(enc('CONFIG_DONE\n'));
-        await delay(500);
       } finally {
-        writer.releaseLock();
+        try { await port.close(); } catch (_) {}
       }
       setProgress(98);
       log('Konfigurácia uložená.');
-    } else {
-      log('Restartujem zariadenie...');
-      await esploader.hardReset();
     }
 
     setProgress(100);
@@ -96,6 +102,27 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
 
   } finally {
     try { await transport.disconnect(); } catch (_) {}
+  }
+}
+
+// Reads from port until "FIAT-HELL:CONFIG_READY" is seen or timeout expires.
+// Releases the reader lock before returning so the writable side can be used.
+async function waitForConfigReady(port, timeoutMs) {
+  const reader = port.readable.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  // reader.cancel() resolves any pending read() with done=true
+  const timer = setTimeout(() => reader.cancel(), timeoutMs);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      if (buf.includes('FIAT-HELL:CONFIG_READY')) break;
+    }
+  } finally {
+    clearTimeout(timer);
+    try { reader.releaseLock(); } catch (_) {}
   }
 }
 

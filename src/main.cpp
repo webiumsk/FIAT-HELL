@@ -944,30 +944,35 @@ void setup() {
 
   // Serial config upload window: web installer sends WRITE_CONFIG:/file.json:{json}
   // then CONFIG_DONE. Device writes files to SPIFFS and continues normal boot.
+  // Only blocks if data arrives within 300 ms — normal boots are not delayed.
   Serial.println("FIAT-HELL:CONFIG_READY");
   {
-    const unsigned long cfgDeadline = millis() + 10000UL;
-    while (millis() < cfgDeadline) {
-      if (Serial.available()) {
-        String line = Serial.readStringUntil('\n');
-        line.trim();
-        if (line.startsWith("WRITE_CONFIG:")) {
-          // format: WRITE_CONFIG:/filename.json:{json_content}
-          const int colon2 = line.indexOf(':', 13);
-          if (colon2 > 13) {
-            String filePath    = line.substring(13, colon2);
-            String fileContent = line.substring(colon2 + 1);
-            File f = SPIFFS.open(filePath, "w");
-            if (f) { f.print(fileContent); f.close(); }
-            Serial.print("FIAT-HELL:WROTE:");
-            Serial.println(filePath);
+    const unsigned long detectEnd = millis() + 2000UL;
+    while (millis() < detectEnd && !Serial.available()) yield();
+    if (Serial.available()) {
+      const unsigned long cfgDeadline = millis() + 10000UL;
+      while (millis() < cfgDeadline) {
+        if (Serial.available()) {
+          String line = Serial.readStringUntil('\n');
+          line.trim();
+          if (line.startsWith("WRITE_CONFIG:")) {
+            // format: WRITE_CONFIG:/filename.json:{json_content}
+            const int colon2 = line.indexOf(':', 13);
+            if (colon2 > 13) {
+              String filePath    = line.substring(13, colon2);
+              String fileContent = line.substring(colon2 + 1);
+              File f = SPIFFS.open(filePath, "w");
+              if (f) { f.print(fileContent); f.close(); }
+              Serial.print("FIAT-HELL:WROTE:");
+              Serial.println(filePath);
+            }
+          } else if (line == "CONFIG_DONE") {
+            Serial.println("FIAT-HELL:CONFIG_SAVED");
+            break;
           }
-        } else if (line == "CONFIG_DONE") {
-          Serial.println("FIAT-HELL:CONFIG_SAVED");
-          break;
         }
+        yield();
       }
-      yield();
     }
   }
 
