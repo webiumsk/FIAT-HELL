@@ -87,6 +87,7 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
 #include <AutoConnect.h>
 #include <AutoConnectCredential.h>
 #include <HTTPUpdate.h>
+#include <Update.h>
 #include <WiFiClientSecure.h>
 #include "PriceBalanceTask.h"
 #define AUTOCONNECT_USE_LOG 1
@@ -785,56 +786,10 @@ void to_upper(char *arr) {
   }
 }
 
-// Shared LVGL overlay for OTA progress (used by both /setup/ota and otaDoAux).
-static lv_obj_t *g_otaOverlay = nullptr;
-
-static String performOtaUpdate(const String& filename) {
-  if (filename.length() == 0 || !filename.endsWith(".bin"))
-    return "Neplatn&eacute; meno s&uacute;boru.";
-  const String url = String(OTA_BASE_URL) + "/" + filename;
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPUpdate updater;
-  updater.setLedPin(-1); // GPIO2 is backlight — disable LED
-  updater.rebootOnUpdate(true);
-  g_otaOverlay = lv_obj_create(lv_scr_act());
-  lv_obj_set_size(g_otaOverlay, screenWidth, screenHeight);
-  lv_obj_set_pos(g_otaOverlay, 0, 0);
-  lv_obj_set_style_bg_color(g_otaOverlay, lv_color_black(), 0);
-  lv_obj_set_style_bg_opa(g_otaOverlay, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(g_otaOverlay, 0, 0);
-  lv_obj_clear_flag(g_otaOverlay, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_t *otaLabel = lv_label_create(g_otaOverlay);
-  lv_label_set_text(otaLabel, "Firmware update...\nPlease wait.");
-  lv_obj_center(otaLabel);
-  lv_obj_set_style_text_font(otaLabel, &lv_font_montserrat_22, 0);
-  lv_obj_set_style_text_color(otaLabel, lv_color_white(), 0);
-  lv_obj_move_foreground(g_otaOverlay);
-  for (int i = 0; i < 8; i++) { lv_task_handler(); delay(30); }
-  updater.onStart([]() {
-    if (g_otaOverlay)
-      lv_label_set_text(lv_obj_get_child(g_otaOverlay, 0), "Downloading firmware...");
-    lv_task_handler();
-  });
-  updater.onProgress([](int curBytes, int totalBytes) {
-    if (g_otaOverlay && totalBytes > 0) {
-      char buf[48];
-      snprintf(buf, sizeof(buf), "Downloading... %d%%", (int)((100ULL * curBytes) / totalBytes));
-      lv_label_set_text(lv_obj_get_child(g_otaOverlay, 0), buf);
-    }
-    lv_task_handler();
-    yield();
-  });
-  HTTPUpdateResult res = updater.update(client, url);
-  if (g_otaOverlay) {
-    lv_obj_del(g_otaOverlay);
-    g_otaOverlay = nullptr;
-    lv_task_handler();
-  }
-  if (res == HTTP_UPDATE_OK)         return "OK &ndash; restartujem";
-  if (res == HTTP_UPDATE_NO_UPDATES) return "&Ziadna aktualizácia.";
-  return "Chyba: " + updater.getLastErrorString();
-}
+// State shared between OTA upload handler and done handler.
+// Browser uploads .bin via multipart POST — no internet on device required.
+static bool otaUploadAborted = false;
+static lv_obj_t *otaUploadOverlay = nullptr;
 
 void setup() {
   Serial.begin(115200);
@@ -1199,43 +1154,42 @@ void setup() {
     html.replace(F("%%ATM_DESC%%"),       esc(atmdesc));
     // ap_password is not pre-filled — user must enter it explicitly to change it
 
-    // Firmware version placeholder
-    html.replace(F("%%FW_VERSION%%"), F(FW_VERSION));
+    // Currencies 2 & 3 (LNbits only). Each lnurlN field is stored as CSV
+    // "baseUrl,secret,code"; split on first two commas for the form.
+    auto splitLnurlBase = [](const char* csv) -> String {
+      String l(csv);
+      const int c1 = l.indexOf(',');
+      return (c1 > 0) ? l.substring(0, c1) : String();
+    };
+    auto splitLnurlSecret = [](const char* csv) -> String {
+      String l(csv);
+      const int c1 = l.indexOf(',');
+      const int c2 = c1 >= 0 ? l.indexOf(',', c1 + 1) : -1;
+      if (c1 > 0 && c2 > c1) return l.substring(c1 + 1, c2);
+      return String();
+    };
+    auto billsCsvFromVec = [](const std::vector<int>& v) -> String {
+      String s;
+      for (size_t i = 0; i < v.size(); i++) { if (i) s += ','; s += v[i]; }
+      return s;
+    };
 
-    // OTA catalog — fetch live at page load; gracefully degrade if no internet
-    {
-      String otaOpts;
-      WiFiClientSecure cl;
-      cl.setInsecure();
-      HTTPClient ch;
-      ch.setTimeout(5000);
-      if (WiFi.isConnected() && ch.begin(cl, OTA_CATALOG_URL) && ch.GET() == 200) {
-        DynamicJsonDocument doc(2048);
-        if (deserializeJson(doc, ch.getString()) == DeserializationError::Ok
-            && doc.is<JsonArray>()) {
-          for (JsonObject item : doc.as<JsonArray>()) {
-            const char *name = item["name"] | "";
-            if (strlen(name) > 4 && item["type"] == "bin") {
-              otaOpts += "<option value=\"";
-              otaOpts += name;
-              otaOpts += "\">";
-              otaOpts += name;
-              const char *date = item["date"] | "";
-              size_t sz = item["size"] | 0;
-              if (date[0] || sz) { otaOpts += " ("; }
-              if (date[0]) otaOpts += date;
-              if (sz) { if (date[0]) otaOpts += ", "; otaOpts += String(sz / 1024) + " KB"; }
-              if (date[0] || sz) otaOpts += ")";
-              otaOpts += "</option>";
-            }
-          }
-        }
-      }
-      if (otaOpts.isEmpty())
-        otaOpts = "<option disabled>Nie je dostupn&yacute; internet</option>";
-      ch.end();
-      html.replace(F("%%OTA_OPTIONS%%"), otaOpts);
-    }
+    html.replace(F("%%CUR2_CODE%%"),         esc(currencyTwo));
+    html.replace(F("%%CUR2_LNURL_BASE%%"),   esc(splitLnurlBase(lnurl2).c_str()));
+    html.replace(F("%%CUR2_LNURL_SECRET%%"), esc(splitLnurlSecret(lnurl2).c_str()));
+    html.replace(F("%%CUR2_BILLS%%"),        billsCsvFromVec(billAmountIntTwo));
+    html.replace(F("%%CUR2_MAX%%"),          String(maxamount2, 0));
+    html.replace(F("%%CUR2_CHARGE%%"),       String(charge2, 2));
+
+    html.replace(F("%%CUR3_CODE%%"),         esc(currencyThree));
+    html.replace(F("%%CUR3_LNURL_BASE%%"),   esc(splitLnurlBase(lnurl3).c_str()));
+    html.replace(F("%%CUR3_LNURL_SECRET%%"), esc(splitLnurlSecret(lnurl3).c_str()));
+    html.replace(F("%%CUR3_BILLS%%"),        billsCsvFromVec(billAmountIntThree));
+    html.replace(F("%%CUR3_MAX%%"),          String(maxamount3, 0));
+    html.replace(F("%%CUR3_CHARGE%%"),       String(charge3, 2));
+
+    // Firmware version (OTA upload form doesn't need a catalog fetch)
+    html.replace(F("%%FW_VERSION%%"), F(FW_VERSION));
 
     server.send(200, "text/html", html);
   });
@@ -1314,6 +1268,54 @@ void setup() {
       if (f) { serializeJson(doc, f); f.close(); }
     }
 
+    // second.json — write iff cur2_code is filled; otherwise delete the file
+    {
+      const String code = server.arg("cur2_code");
+      if (code.length() > 0) {
+        DynamicJsonDocument doc(1024);
+        JsonArray arr = doc.to<JsonArray>();
+        const String lnurlVal =
+            server.arg("cur2_lnurl_base") + "," +
+            server.arg("cur2_lnurl_secret") + "," + code;
+        auto add = [&](const char* n, const String& v) {
+          JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
+        };
+        add("currencyTwo", code);
+        add("lnurl2",      lnurlVal);
+        add("billmech2",   server.arg("cur2_bills"));
+        add("maxamount2",  server.arg("cur2_max"));
+        add("charge2",     server.arg("cur2_charge"));
+        File f = FlashFS.open(SECOND_FILE, "w");
+        if (f) { serializeJson(doc, f); f.close(); }
+      } else {
+        FlashFS.remove(SECOND_FILE);
+      }
+    }
+
+    // third.json — same pattern
+    {
+      const String code = server.arg("cur3_code");
+      if (code.length() > 0) {
+        DynamicJsonDocument doc(1024);
+        JsonArray arr = doc.to<JsonArray>();
+        const String lnurlVal =
+            server.arg("cur3_lnurl_base") + "," +
+            server.arg("cur3_lnurl_secret") + "," + code;
+        auto add = [&](const char* n, const String& v) {
+          JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
+        };
+        add("currencyThree", code);
+        add("lnurl3",        lnurlVal);
+        add("billmech3",     server.arg("cur3_bills"));
+        add("maxamount3",    server.arg("cur3_max"));
+        add("charge3",       server.arg("cur3_charge"));
+        File f = FlashFS.open(THIRD_FILE, "w");
+        if (f) { serializeJson(doc, f); f.close(); }
+      } else {
+        FlashFS.remove(THIRD_FILE);
+      }
+    }
+
     server.send(200, "text/html",
       "<html><body style='background:#111;color:#eee;font-family:sans-serif;"
       "padding:32px;text-align:center'>"
@@ -1324,16 +1326,75 @@ void setup() {
     pendingRestartAt = millis() + 2000UL;
   });
 
-  server.on("/setup/ota", HTTP_POST, [isApClient]() {
-    if (!isApClient()) { server.send(403, "text/plain", "AP only"); return; }
-    String otaMsg = performOtaUpdate(server.arg("ota_filename"));
-    String page = F("<html><body style='background:#111;color:#eee;font-family:sans-serif;padding:32px'>"
-                    "<h2 style='color:#f90'>OTA</h2><p>");
-    page += otaMsg;
-    page += F("</p><a href='/setup' style='color:#f90'>&#8592; Sp&auml;&#x165;</a>"
-              "</body></html>");
-    server.send(200, "text/html", page);
-  });
+  // Multipart firmware upload: phone POSTs .bin via the AP connection.
+  // No internet needed on the device — bytes go straight into Update partition.
+  server.on("/setup/ota", HTTP_POST,
+    // Done handler — called after upload completes (success or failure)
+    [isApClient]() {
+      if (!isApClient()) { server.send(403, "text/plain", "AP only"); return; }
+      const bool ok = !otaUploadAborted && !Update.hasError();
+      String page = F("<html><body style='background:#111;color:#eee;font-family:sans-serif;padding:32px;text-align:center'>");
+      if (ok) {
+        page += F("<h2 style='color:#0c0'>&#10003; Firmware nahrat&yacute;</h2>"
+                  "<p>Zariadenie sa re&scaron;tartuje za 2 sekundy&hellip;</p>");
+      } else {
+        page += F("<h2 style='color:#f33'>&#10007; Chyba</h2><p>");
+        page += Update.errorString();
+        page += F("</p><a href='/setup' style='color:#f90'>&#8592; Sp&auml;&#x165;</a>");
+      }
+      page += F("</body></html>");
+      server.send(200, "text/html", page);
+      if (otaUploadOverlay) {
+        lv_obj_del(otaUploadOverlay);
+        otaUploadOverlay = nullptr;
+        lv_task_handler();
+      }
+      if (ok) pendingRestartAt = millis() + 2000UL;
+    },
+    // Upload handler — called repeatedly with chunks
+    [isApClient]() {
+      HTTPUpload& up = server.upload();
+      if (up.status == UPLOAD_FILE_START) {
+        otaUploadAborted = !isApClient();
+        if (otaUploadAborted) return;
+        Serial.printf("OTA upload begin: %s\n", up.filename.c_str());
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+          otaUploadAborted = true;
+          Update.printError(Serial);
+          return;
+        }
+        otaUploadOverlay = lv_obj_create(lv_scr_act());
+        lv_obj_set_size(otaUploadOverlay, screenWidth, screenHeight);
+        lv_obj_set_pos(otaUploadOverlay, 0, 0);
+        lv_obj_set_style_bg_color(otaUploadOverlay, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(otaUploadOverlay, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(otaUploadOverlay, 0, 0);
+        lv_obj_clear_flag(otaUploadOverlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t *l = lv_label_create(otaUploadOverlay);
+        lv_label_set_text(l, "Nahravam firmware...");
+        lv_obj_center(l);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_22, 0);
+        lv_obj_set_style_text_color(l, lv_color_white(), 0);
+        lv_obj_move_foreground(otaUploadOverlay);
+        lv_task_handler();
+      } else if (up.status == UPLOAD_FILE_WRITE && !otaUploadAborted) {
+        if (Update.write(up.buf, up.currentSize) != up.currentSize) {
+          otaUploadAborted = true;
+          Update.printError(Serial);
+        }
+      } else if (up.status == UPLOAD_FILE_END && !otaUploadAborted) {
+        if (!Update.end(true)) {  // true = set boot partition
+          otaUploadAborted = true;
+          Update.printError(Serial);
+        } else {
+          Serial.printf("OTA OK: %u bytes\n", up.totalSize);
+        }
+      } else if (up.status == UPLOAD_FILE_ABORTED) {
+        otaUploadAborted = true;
+        Update.abort();
+      }
+      yield();
+    });
 
   // Block AutoConnect's portal pages from STA clients and redirect AP clients
   // to /setup. Registered before portal.begin() so these handlers take precedence.
@@ -4078,10 +4139,9 @@ volatile bool isLoopReading = false;
  * and user input. It replaces blocking while/delay loops with non-blocking
  * state checks.
  */
-// Activated by 3-second long-press of BOOT button OR 5 corner-taps at runtime.
-// Starts the AP, enables portal access, auto-closes after 5 minutes.
+// Kept for forward compatibility but no longer called from runtime.
+// Portal mode is now triggered exclusively at boot (logo-tap or auto-detect).
 static unsigned long configModeActiveUntil = 0;
-static lv_obj_t *configModeOverlay = nullptr;
 
 void triggerRuntimeConfigMode() {
   if (configModeActiveUntil) return; // already active
@@ -4093,28 +4153,6 @@ void triggerRuntimeConfigMode() {
   WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str(), acConfig.channel);
   configModeActiveUntil = millis() + 5UL * 60UL * 1000UL;
   Serial.println("Config mode active: " + acConfig.apid + " -> 192.168.4.1  (5 min)");
-
-  // Show on-screen overlay so the operator knows which AP to connect to
-  if (configModeOverlay) { lv_obj_del(configModeOverlay); }
-  configModeOverlay = lv_obj_create(lv_scr_act());
-  lv_obj_set_size(configModeOverlay, screenWidth, screenHeight);
-  lv_obj_set_pos(configModeOverlay, 0, 0);
-  lv_obj_set_style_bg_color(configModeOverlay, lv_color_black(), 0);
-  lv_obj_set_style_bg_opa(configModeOverlay, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(configModeOverlay, 0, 0);
-  lv_obj_clear_flag(configModeOverlay, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_t *cfgLbl = lv_label_create(configModeOverlay);
-  char cfgBuf[160];
-  snprintf(cfgBuf, sizeof(cfgBuf),
-    "Config mode\n\nWiFi: %s\nURL: http://192.168.4.1\n\nPripoj sa cez WiFi a otvor URL",
-    acConfig.apid.c_str());
-  lv_label_set_text(cfgLbl, cfgBuf);
-  lv_obj_set_style_text_font(cfgLbl, &lv_font_montserrat_22, 0);
-  lv_obj_set_style_text_color(cfgLbl, lv_color_white(), 0);
-  lv_obj_set_style_text_align(cfgLbl, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_center(cfgLbl);
-  lv_obj_move_foreground(configModeOverlay);
-  lv_task_handler();
 }
 
 void handleUiStateMachine() {
@@ -4252,59 +4290,14 @@ void handleUiStateMachine() {
  * includes a delay of 5 milliseconds at the end of each iteration.
  */
 void loop() {
-  // Long-press BOOT (3 s) → config mode. Fallback for dev/bench access.
-  // BTN1 is active-low (pressed = LOW on GPIO 0).
-  {
-    static unsigned long btnPressStart = 0;
-    static bool btnLongFired = false;
-    const bool btnDown = (digitalRead(BTN1) == LOW);
-    if (btnDown) {
-      if (btnPressStart == 0) btnPressStart = millis();
-      if (!btnLongFired && (millis() - btnPressStart >= 3000)) {
-        btnLongFired = true;
-        const bool inTransaction = (currentUiState == UI_INSERTING_MONEY ||
-                                    currentUiState == UI_WAITING_FOR_BLINK_INVOICE);
-        if (!inTransaction) triggerRuntimeConfigMode();
-      }
-    } else {
-      btnPressStart = 0;
-      btnLongFired  = false;
-    }
-  }
-
-  // Touch-based config trigger: tap top-left corner (x<80, y<80) 5× within 5 s.
-  // Primary field trigger — works when BOOT button is inside the enclosure.
-  {
-    static uint8_t cornerTapCount = 0;
-    static unsigned long lastCornerTap = 0;
-    const bool inTransaction = (currentUiState == UI_INSERTING_MONEY ||
-                                 currentUiState == UI_WAITING_FOR_BLINK_INVOICE);
-    if (!inTransaction && !suspendTouchPolling && !configModeActiveUntil) {
-      uint16_t tx, ty;
-      static bool prevTouched = false;
-      const bool nowTouched = lcd.getTouch(&tx, &ty);
-      // Count on leading edge only (touch start, not hold)
-      if (nowTouched && !prevTouched && tx < 80 && ty < 80) {
-        const unsigned long now = millis();
-        if (now - lastCornerTap > 5000) cornerTapCount = 0;
-        cornerTapCount++;
-        lastCornerTap = now;
-        if (cornerTapCount >= 5) {
-          cornerTapCount = 0;
-          triggerRuntimeConfigMode();
-        }
-      }
-      prevTouched = nowTouched;
-    }
-  }
-
-  // Deferred restart (after /setup/save response has been sent)
+  // Deferred restart (after /setup/save or /setup/ota response has been sent)
   if (pendingRestartAt && millis() > pendingRestartAt) {
     pendingRestartAt = 0;
     ESP.restart();
   }
 
-  // Auto-close config mode AP after 5-minute timeout
+  // Auto-close config mode AP after 5-minute timeout (defensive — only ever
+  // triggered if triggerRuntimeConfigMode() was called by some future caller).
   if (configModeActiveUntil && millis() > configModeActiveUntil) {
     configModeActiveUntil   = 0;
     portalRequestedByUser   = false;
@@ -4313,11 +4306,6 @@ void loop() {
     portal.config(acConfig);
     if (WiFi.getMode() & WIFI_AP) WiFi.mode(WIFI_STA);
     Serial.println("Config mode timed out — AP closed");
-    if (configModeOverlay) {
-      lv_obj_del(configModeOverlay);
-      configModeOverlay = nullptr;
-      lv_task_handler();
-    }
   }
 
   lv_timer_handler();    // Let the GUI do its work

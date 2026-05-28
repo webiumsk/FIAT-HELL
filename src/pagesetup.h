@@ -2,6 +2,7 @@
 
 // Mobile-friendly config portal page served at /setup when device is in AP mode.
 // Uses CSS-only Blink/LNbits toggle (no JavaScript).
+// OTA upload is a separate form OUTSIDE the main settings form.
 static const char SETUP_PAGE_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -15,7 +16,7 @@ h1{color:#f90;font-size:1.3em;margin:0 0 2px}
 .sub{color:#555;font-size:.85em;margin:0 0 20px}
 h2{color:#888;font-size:.8em;margin:16px 0 8px;text-transform:uppercase;letter-spacing:.08em}
 label{display:block;color:#999;font-size:.85em;margin-top:10px}
-input[type=text],input[type=password],input[type=number]{
+input[type=text],input[type=password],input[type=number],input[type=file]{
   display:block;width:100%;padding:10px;margin-top:4px;
   background:#1e1e1e;color:#eee;border:1px solid #444;border-radius:6px;font-size:1em}
 input[name=funding]{position:absolute;opacity:0;width:0;height:0}
@@ -27,15 +28,18 @@ input[name=funding]{position:absolute;opacity:0;width:0;height:0}
 #fund_lnbits:not(:checked)~.lnbits-fields{display:none}
 .card{background:#181818;border-radius:10px;padding:14px;margin-top:12px}
 .hint{font-size:.78em;color:#555;margin:4px 0 0}
+.optional{color:#555;font-size:.75em;text-transform:none;letter-spacing:0;font-weight:normal}
 button{display:block;width:100%;margin-top:24px;padding:14px;
        background:#f90;color:#000;border:none;border-radius:8px;
        font-size:1.1em;font-weight:bold;cursor:pointer}
 button:active{background:#c70}
+button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-weight:normal;margin-top:10px}
 </style>
 </head>
 <body>
 <h1>&#9889; FIAT HELL</h1>
 <p class="sub">Nastavenia zariadenia</p>
+
 <form method="POST" action="/setup/save">
 
 <div class="card">
@@ -75,6 +79,28 @@ button:active{background:#c70}
 </div>
 
 <div class="card">
+<h2>Mena 2 <span class="optional">(voliteľné, LNbits)</span></h2>
+<p class="hint">Nechaj prázdne ak nepoužívaš druhú menu.</p>
+<label>Kód meny<input type="text" name="cur2_code" value="%%CUR2_CODE%%" maxlength="8"></label>
+<label>LNURL base URL<input type="text" name="cur2_lnurl_base" value="%%CUR2_LNURL_BASE%%"></label>
+<label>LNURL secret<input type="text" name="cur2_lnurl_secret" value="%%CUR2_LNURL_SECRET%%"></label>
+<label>Sumy bankoviek, CSV<input type="text" name="cur2_bills" value="%%CUR2_BILLS%%"></label>
+<label>Max suma (0 = bez limitu)<input type="number" name="cur2_max" value="%%CUR2_MAX%%" min="0" step="1"></label>
+<label>Poplatok %<input type="number" name="cur2_charge" value="%%CUR2_CHARGE%%" step="0.01" min="0"></label>
+</div>
+
+<div class="card">
+<h2>Mena 3 <span class="optional">(voliteľné, LNbits)</span></h2>
+<p class="hint">Nechaj prázdne ak nepoužívaš tretiu menu.</p>
+<label>Kód meny<input type="text" name="cur3_code" value="%%CUR3_CODE%%" maxlength="8"></label>
+<label>LNURL base URL<input type="text" name="cur3_lnurl_base" value="%%CUR3_LNURL_BASE%%"></label>
+<label>LNURL secret<input type="text" name="cur3_lnurl_secret" value="%%CUR3_LNURL_SECRET%%"></label>
+<label>Sumy bankoviek, CSV<input type="text" name="cur3_bills" value="%%CUR3_BILLS%%"></label>
+<label>Max suma (0 = bez limitu)<input type="number" name="cur3_max" value="%%CUR3_MAX%%" min="0" step="1"></label>
+<label>Poplatok %<input type="number" name="cur3_charge" value="%%CUR3_CHARGE%%" step="0.01" min="0"></label>
+</div>
+
+<div class="card">
 <h2>ATM</h2>
 <label>Názov<input type="text" name="atm_title" value="%%ATM_TITLE%%"></label>
 <label>Podnadpis<input type="text" name="atm_subtitle" value="%%ATM_SUBTITLE%%"></label>
@@ -83,17 +109,18 @@ button:active{background:#c70}
 <p class="hint">Heslo pre WiFi sieť "LN ATM-xxx" a pre webový konfig portál. Prázdne = zachovať aktuálne.</p>
 </div>
 
+<button type="submit">Uložiť a reštartovať</button>
+</form>
+
 <div class="card">
 <h2>Aktualizácia firmvéru</h2>
 <p>Aktuálna verzia: <strong>%%FW_VERSION%%</strong></p>
-<p class="hint">Zariadenie musí byť pripojené na internet (WiFi).</p>
-<form method="POST" action="/setup/ota">
-  <label>Vyberte verziu<select name="ota_filename" style="margin-top:6px">%%OTA_OPTIONS%%</select></label>
-  <button type="submit" style="margin-top:10px;background:#444;color:#eee;font-size:.95em;padding:10px">&#8593; Nainštalovať</button>
+<p class="hint">Nahraj .bin súbor z telefónu — internetové pripojenie zariadenia nie je potrebné.</p>
+<form method="POST" action="/setup/ota" enctype="multipart/form-data">
+  <label>Vyber .bin súbor<input type="file" name="firmware" accept=".bin,application/octet-stream" required></label>
+  <button type="submit" class="secondary">&#8593; Nahrať firmware</button>
 </form>
 </div>
 
-<button type="submit">Uloziť a reštartovať</button>
-</form>
 </body>
 </html>)rawliteral";
