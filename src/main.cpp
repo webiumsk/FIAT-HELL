@@ -85,6 +85,7 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
 }
 
 #include <AutoConnect.h>
+#include <AutoConnectCredential.h>
 #include <HTTPUpdate.h>
 #include <WiFiClientSecure.h>
 #include "PriceBalanceTask.h"
@@ -1007,8 +1008,9 @@ void setup() {
   }
   bootStage(20, "main params loaded");
 
-  // Apply WiFi credentials from /wifi.json (written by web-flasher via USB).
-  // WiFi.begin() saves creds to NVS so AutoConnect finds them on next boot too.
+  // Save WiFi credentials from /wifi.json into AutoConnect's NVS credential store.
+  // AutoConnect reads from there during portal.begin(), so this is the correct hook.
+  // The file is written by the web-flasher via USB serial (WRITE_CONFIG:/wifi.json).
   {
     File wifiFile = SPIFFS.open("/wifi.json", "r");
     if (wifiFile) {
@@ -1017,9 +1019,17 @@ void setup() {
         const char* ssid = wifiDoc["ssid"] | "";
         const char* pwd  = wifiDoc["password"] | "";
         if (ssid[0] != '\0') {
-          Serial.print("WiFi from /wifi.json: ");
+          AutoConnectCredential cred;
+          station_config_t stConfig;
+          memset(&stConfig, 0, sizeof(stConfig));
+          strlcpy((char*)stConfig.ssid,     ssid, sizeof(stConfig.ssid));
+          strlcpy((char*)stConfig.password, pwd,  sizeof(stConfig.password));
+          memset(stConfig.bssid, 0, sizeof(stConfig.bssid));
+          stConfig.dhcp = STA_DHCP;
+          cred.save(&stConfig);
+          Serial.print("WiFi credentials saved to AutoConnect NVS: ");
           Serial.println(ssid);
-          WiFi.begin(ssid, pwd);
+          SPIFFS.remove("/wifi.json"); // consumed — don't re-apply on every boot
         }
       }
       wifiFile.close();
