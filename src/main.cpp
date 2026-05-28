@@ -3805,20 +3805,6 @@ void handleUiStateMachine() {
   unsigned long currentTime = millis();
   BTNA.read();
 
-  // Long press (3 s) anywhere except during a transaction -> runtime config mode
-  {
-    static bool configModeArmed = false;
-    const bool inTransaction = (currentUiState == UI_INSERTING_MONEY ||
-                                currentUiState == UI_WAITING_FOR_BLINK_INVOICE);
-    if (BTNA.pressedFor(3000) && !inTransaction) {
-      if (!configModeArmed) {
-        configModeArmed = true;
-        triggerRuntimeConfigMode();
-      }
-    } else if (!BTNA.isPressed()) {
-      configModeArmed = false;
-    }
-  }
 
   switch (currentUiState) {
   case UI_LOGO_WAIT: {
@@ -3950,6 +3936,28 @@ void handleUiStateMachine() {
  * includes a delay of 5 milliseconds at the end of each iteration.
  */
 void loop() {
+  // Long-press BOOT (3 s) → config mode.
+  // Uses direct digitalRead so it works even when handleUiStateMachine() is
+  // skipped (e.g. while the AutoConnect portal is the active page).
+  // BTN1 is active-low (pressed = LOW on GPIO 0).
+  {
+    static unsigned long btnPressStart = 0;
+    static bool btnLongFired = false;
+    const bool btnDown = (digitalRead(BTN1) == LOW);
+    if (btnDown) {
+      if (btnPressStart == 0) btnPressStart = millis();
+      if (!btnLongFired && (millis() - btnPressStart >= 3000)) {
+        btnLongFired = true;
+        const bool inTransaction = (currentUiState == UI_INSERTING_MONEY ||
+                                    currentUiState == UI_WAITING_FOR_BLINK_INVOICE);
+        if (!inTransaction) triggerRuntimeConfigMode();
+      }
+    } else {
+      btnPressStart = 0;
+      btnLongFired  = false;
+    }
+  }
+
   // Auto-close config mode AP after 5-minute timeout
   if (configModeActiveUntil && millis() > configModeActiveUntil) {
     configModeActiveUntil   = 0;
