@@ -434,6 +434,7 @@ static String *contentPtr = nullptr;
 #include "pageone.h"
 #include "pagesecond.h"
 #include "pagethird.h"
+#include "pagesetup.h"
 
 WebServerClass *serverPtr = nullptr;
 AutoConnect *portalPtr = nullptr;
@@ -572,6 +573,7 @@ static bool portalRequiredForMissingConfig = false;
 static bool portalRequiredForWifiRecovery = false;
 static bool portalNetworkStateLogged = false;
 static bool pendingConfigReload = false;
+static unsigned long pendingRestartAt = 0;
 
 static bool allowSetupToContinueWhilePortalStaysAlive() {
   if (exitCaptivePortalLoopOnce) {
@@ -1055,7 +1057,7 @@ void setup() {
         server.client().stop();
         return;
       }
-      server.sendHeader("Location", "/config", true);
+      server.sendHeader("Location", "/setup", true);
       server.send(302, "text/plain", "");
       server.client().stop();
       return;
@@ -1073,17 +1075,160 @@ void setup() {
       server.client().stop();
       return;
     }
-    server.sendHeader("Location", "/config", true);
+    server.sendHeader("Location", "/setup", true);
     server.send(302, "text/plain", "");
     server.client().stop();
   };
 
   // Common captive-portal probe URLs used by Android, iPhone, and Windows.
-  server.on("/generate_204", redirectToConfigPortal);
-  server.on("/hotspot-detect.html", redirectToConfigPortal);
+  // Android: /generate_204 — return 204 when STA (no notification), 302 → /setup when AP.
+  server.on("/generate_204", [isApClient]() {
+    if (!isApClient()) { server.send(204, "text/plain", ""); return; }
+    server.sendHeader("Location", "/setup", true);
+    server.send(302, "text/plain", "");
+    server.client().stop();
+  });
+  // iOS/macOS: /hotspot-detect.html — return "Success" when STA, 302 → /setup when AP.
+  server.on("/hotspot-detect.html", [isApClient]() {
+    if (!isApClient()) {
+      server.send(200, "text/html",
+        "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+      return;
+    }
+    server.sendHeader("Location", "/setup", true);
+    server.send(302, "text/plain", "");
+    server.client().stop();
+  });
   server.on("/connecttest.txt", redirectToConfigPortal);
   server.on("/ncsi.txt", redirectToConfigPortal);
   server.on("/fwlink", redirectToConfigPortal);
+
+  // Lightweight mobile config portal — served only to AP clients (192.168.4.x).
+  server.on("/setup", HTTP_GET, [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "text/plain", "Setup only via AP — hold BOOT 3 s to enable");
+      return;
+    }
+    // Use deviceStatePtr-> for non-macro fields; bare macros for aliased fields.
+    const bool isLNbitsMode = (strcmp(deviceStatePtr->fundingSourceBuffer, "LNbits") == 0);
+    String html = FPSTR(SETUP_PAGE_HTML);
+
+    auto esc = [](const char* s) -> String {
+      String out(s);
+      out.replace(F("&"), F("&amp;"));
+      out.replace(F("\""), F("&quot;"));
+      return out;
+    };
+
+    // Build billmech CSV from vector (use macro alias directly to avoid double-expansion)
+    String billsCsv;
+    for (size_t i = 0; i < billAmountIntOne.size(); i++) {
+      if (i > 0) billsCsv += ',';
+      billsCsv += billAmountIntOne[i];
+    }
+
+    html.replace(F("%%WIFI_SSID%%"),      WiFi.isConnected() ? WiFi.SSID() : "");
+    html.replace(F("%%CHECKED_BLINK%%"),  isLNbitsMode ? "" : "checked");
+    html.replace(F("%%CHECKED_LNBITS%%"), isLNbitsMode ? "checked" : "");
+    html.replace(F("%%BLINK_APIKEY%%"),   esc(blinkapikey));
+    html.replace(F("%%BLINK_WALLET%%"),   esc(blinkwalletid));
+    html.replace(F("%%ADMINKEY%%"),       esc(adminkey));
+    html.replace(F("%%READKEY%%"),        esc(readkey));
+    html.replace(F("%%LNURL_BASE%%"),     esc(baseURLATM1));
+    html.replace(F("%%LNURL_SECRET%%"),   esc(secretATM1));
+    html.replace(F("%%CUR1_CODE%%"),      esc(currencyOne));
+    html.replace(F("%%CUR1_BILLS%%"),     billsCsv);
+    html.replace(F("%%CUR1_MAX%%"),       String(maxamount, 0));
+    html.replace(F("%%CUR1_CHARGE%%"),    String(charge1, 2));
+    html.replace(F("%%ATM_TITLE%%"),      esc(atmtitle));
+    html.replace(F("%%ATM_SUBTITLE%%"),   esc(atmsubtitle));
+    html.replace(F("%%ATM_DESC%%"),       esc(atmdesc));
+    html.replace(F("%%AP_PASSWORD%%"),    esc(deviceStatePtr->password));
+    server.send(200, "text/html", html);
+  });
+
+  server.on("/setup/save", HTTP_POST, [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "text/plain", "Setup only via AP");
+      return;
+    }
+
+    // Save WiFi credentials if provided
+    const String newSsid = server.arg("wifi_ssid");
+    if (newSsid.length() > 0) {
+      AutoConnectCredential cred;
+      station_config_t sc;
+      memset(&sc, 0, sizeof(sc));
+      strlcpy((char*)sc.ssid,     newSsid.c_str(),                     sizeof(sc.ssid));
+      strlcpy((char*)sc.password, server.arg("wifi_password").c_str(), sizeof(sc.password));
+      sc.dhcp = STA_DHCP;
+      cred.save(&sc);
+    }
+
+    // elements.json — [{name,value},...] array
+    {
+      DynamicJsonDocument doc(512);
+      JsonArray arr = doc.to<JsonArray>();
+      const String title = server.arg("atm_title");
+      auto add = [&](const char* n, const String& v) {
+        JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
+      };
+      add("password",    server.arg("ap_password"));
+      add("atmdesc",     server.arg("atm_desc"));
+      add("atmsubtitle", server.arg("atm_subtitle"));
+      add("atmtitle",    title.length() ? title : "FIAT HELL");
+      File f = FlashFS.open(PARAM_FILE, "w");
+      if (f) { serializeJson(doc, f); f.close(); }
+    }
+
+    // gui.json — preserve existing rateSource/animated, only update fundingSource
+    {
+      GuiConfig gui;
+      if (!configService.loadGuiConfig(FlashFS, GUI_FILE, gui)) {
+        strlcpy(gui.rateSource, "CoinGecko", sizeof(gui.rateSource));
+        strlcpy(gui.animated,   "No",        sizeof(gui.animated));
+      }
+      const String funding = server.arg("funding");
+      strlcpy(gui.fundingSource,
+              (funding == "LNbits") ? "LNbits" : "Blink",
+              sizeof(gui.fundingSource));
+      configService.saveGuiConfig(FlashFS, GUI_FILE, gui);
+    }
+
+    // first.json — [{name,value},...] array matching ConfigService::loadFirst() order
+    {
+      DynamicJsonDocument doc(1024);
+      JsonArray arr = doc.to<JsonArray>();
+      const bool isLNbitsMode = (server.arg("funding") == "LNbits");
+      const String lnurlVal =
+          server.arg("lnurl_base") + "," +
+          server.arg("lnurl_secret") + "," +
+          server.arg("cur1_code");
+      auto add = [&](const char* n, const String& v) {
+        JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
+      };
+      add("blinkapikey",   isLNbitsMode ? "" : server.arg("blink_apikey"));
+      add("blinkwalletid", isLNbitsMode ? "" : server.arg("blink_wallet"));
+      add("lnurl",         isLNbitsMode ? lnurlVal : "");
+      add("adminkey",      isLNbitsMode ? server.arg("adminkey") : "");
+      add("readkey",       isLNbitsMode ? server.arg("readkey")  : "");
+      add("currencyOne",   server.arg("cur1_code"));
+      add("billmech",      server.arg("cur1_bills"));
+      add("maxamount",     server.arg("cur1_max"));
+      add("charge1",       server.arg("cur1_charge"));
+      File f = FlashFS.open(FIRST_FILE, "w");
+      if (f) { serializeJson(doc, f); f.close(); }
+    }
+
+    server.send(200, "text/html",
+      "<html><body style='background:#111;color:#eee;font-family:sans-serif;"
+      "padding:32px;text-align:center'>"
+      "<h2 style='color:#f90'>&#10003; Ulozene!</h2>"
+      "<p>Zariadenie sa restartuje za 2 sekundy...</p>"
+      "</body></html>");
+
+    pendingRestartAt = millis() + 2000UL;
+  });
 
   elementsAux.load(FPSTR(PAGE_ELEMENTS));
   elementsAux.on([](AutoConnectAux &aux, PageArgument &arg) {
@@ -1396,7 +1541,7 @@ void setup() {
       AC_MENUITEM_CONFIGNEW | AC_MENUITEM_OPENSSIDS |
       AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET | AC_MENUITEM_HOME;
   acConfig.title = "LN ATM";
-  acConfig.homeUri = "/config";
+  acConfig.homeUri = "/setup";
   acConfig.reconnectInterval = 1;
   acConfig.channel = 6;        // Fixed channel for stable AP (avoids scan disrupting clients)
   acConfig.beginTimeout = 12000; // 12 s — fast fallback to AP if saved WiFi unreachable
@@ -3956,6 +4101,12 @@ void loop() {
       btnPressStart = 0;
       btnLongFired  = false;
     }
+  }
+
+  // Deferred restart (after /setup/save response has been sent)
+  if (pendingRestartAt && millis() > pendingRestartAt) {
+    pendingRestartAt = 0;
+    ESP.restart();
   }
 
   // Auto-close config mode AP after 5-minute timeout
