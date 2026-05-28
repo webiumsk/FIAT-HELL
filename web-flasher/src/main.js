@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import { checkBrowserSupport, connectAndFlash, uploadConfigOnly } from './flash.js';
-import { FW_VERSION } from './config.js';
+import { FW_VERSION, FLASH_PARTS, FLASH_OFFSETS, GITHUB_REPO } from './config.js';
 
 /* ══════════════════════════════════════════════════════════════
    Panel & accordion helpers
@@ -259,6 +259,123 @@ function loadFromStorage() {
 }
 
 /* ══════════════════════════════════════════════════════════════
+   GitHub releases — fetch, cache, dropdown
+══════════════════════════════════════════════════════════════ */
+const RELEASES_CACHE_KEY = 'gh-releases-v1';
+const RELEASES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const REQUIRED_ASSETS = ['bootloader.bin', 'partitions.bin', 'boot_app0.bin', 'firmware.bin'];
+
+// Cache of release id → flashParts mapping. Populated when dropdown is built.
+const releaseFlashParts = new Map();
+
+async function fetchReleases() {
+  // Try sessionStorage cache first
+  try {
+    const cached = sessionStorage.getItem(RELEASES_CACHE_KEY);
+    if (cached) {
+      const { at, data } = JSON.parse(cached);
+      if (Date.now() - at < RELEASES_CACHE_TTL_MS) return data;
+    }
+  } catch (_) {}
+
+  const url = `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=30`;
+  const resp = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
+  if (!resp.ok) throw new Error(`GitHub API HTTP ${resp.status}`);
+  const all = await resp.json();
+
+  const flashable = all
+    .filter(r => !r.draft)
+    .map(r => {
+      const assets = new Map((r.assets || []).map(a => [a.name.toLowerCase(), a]));
+      const parts = REQUIRED_ASSETS.map(name => {
+        const a = assets.get(name);
+        return a ? { name, url: a.browser_download_url, offset: FLASH_OFFSETS[name] } : null;
+      });
+      if (parts.some(p => p === null)) return null;
+      return {
+        id: r.id,
+        tag: r.tag_name,
+        name: r.name || r.tag_name,
+        date: r.published_at ? r.published_at.slice(0, 10) : '',
+        prerelease: !!r.prerelease,
+        parts,
+      };
+    })
+    .filter(r => r !== null);
+
+  try {
+    sessionStorage.setItem(RELEASES_CACHE_KEY, JSON.stringify({ at: Date.now(), data: flashable }));
+  } catch (_) {}
+  return flashable;
+}
+
+async function populateVersionDropdown() {
+  const sel = document.getElementById('fw-version-select');
+  if (!sel) return;
+  releaseFlashParts.clear();
+
+  let releases = [];
+  let error = null;
+  try {
+    releases = await fetchReleases();
+  } catch (e) {
+    error = e.message;
+  }
+
+  // Clear all options except the "local" first option
+  while (sel.options.length > 1) sel.remove(1);
+
+  if (error) {
+    const opt = document.createElement('option');
+    opt.disabled = true;
+    opt.textContent = `Chyba načítania GitHub releases (${error})`;
+    sel.add(opt);
+    return;
+  }
+  if (releases.length === 0) {
+    const opt = document.createElement('option');
+    opt.disabled = true;
+    opt.textContent = 'Žiadne release-y s firmware assets';
+    sel.add(opt);
+    return;
+  }
+
+  for (const r of releases) {
+    const key = 'release:' + r.id;
+    releaseFlashParts.set(key, r.parts.map(p => ({ path: p.url, offset: p.offset })));
+    const opt = document.createElement('option');
+    opt.value = key;
+    const tag = r.tag.startsWith('v') ? r.tag : 'v' + r.tag;
+    const pre = r.prerelease ? ' [pre-release]' : '';
+    opt.textContent = `${tag}${pre}  —  ${r.date}`;
+    sel.add(opt);
+  }
+
+  // Default selection: newest non-prerelease, else newest overall.
+  const defaultRelease = releases.find(r => !r.prerelease) || releases[0];
+  if (defaultRelease) sel.value = 'release:' + defaultRelease.id;
+  onVersionChange();
+}
+
+function selectedFlashParts() {
+  const sel = document.getElementById('fw-version-select');
+  if (!sel || sel.value === '__local__') return FLASH_PARTS;
+  return releaseFlashParts.get(sel.value) || FLASH_PARTS;
+}
+
+function onVersionChange() {
+  const sel = document.getElementById('fw-version-select');
+  const hint = document.getElementById('fw-version-hint');
+  if (!sel || !hint) return;
+  if (sel.value === '__local__') {
+    hint.textContent = 'Verzia zabundlená do tejto stránky pri jej deploye.';
+  } else {
+    const opt = sel.options[sel.selectedIndex];
+    hint.textContent = `.bin súbory sa stiahnu z GitHub release: ${opt.textContent.trim()}`;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
    Flash UI helpers
 ══════════════════════════════════════════════════════════════ */
 function getTerminal()  { return document.getElementById('terminal'); }
@@ -301,7 +418,12 @@ async function connectAndFlashWithConfig() {
   clearTerminal();
   setFlashBusy(true);
   try {
-    await connectAndFlash({ log: appendToTerminal, setProgress, configFiles: makeConfigFiles() });
+    await connectAndFlash({
+      log: appendToTerminal,
+      setProgress,
+      configFiles: makeConfigFiles(),
+      flashParts: selectedFlashParts(),
+    });
   } catch (e) {
     appendToTerminal('');
     appendToTerminal('✗ Chyba: ' + e.message);
@@ -315,7 +437,12 @@ async function connectAndFlashOnly() {
   clearTerminal();
   setFlashBusy(true);
   try {
-    await connectAndFlash({ log: appendToTerminal, setProgress, configFiles: null });
+    await connectAndFlash({
+      log: appendToTerminal,
+      setProgress,
+      configFiles: null,
+      flashParts: selectedFlashParts(),
+    });
   } catch (e) {
     appendToTerminal('');
     appendToTerminal('✗ Chyba: ' + e.message);
@@ -370,6 +497,9 @@ document.addEventListener('DOMContentLoaded', () => {
   toggleSection('general');
   toggleSection('cur1');
 
+  // Fire-and-forget — keeps the page interactive while GH API responds.
+  populateVersionDropdown().catch(e => console.error('Releases load failed:', e));
+
   // Expose functions for inline onclick handlers in HTML
   Object.assign(window, {
     showPanel,
@@ -380,5 +510,6 @@ document.addEventListener('DOMContentLoaded', () => {
     connectAndFlashWithConfig,
     connectAndFlashOnly,
     uploadConfigOnlyAction,
+    onVersionChange,
   });
 });

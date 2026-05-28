@@ -78,3 +78,16 @@ jobs:
           publish_dir: ./web-flasher/dist
           publish_branch: gh-pages
           commit_message: "Deploy web flasher v${{ steps.fwver.outputs.version }}"
+
+      - name: Create GitHub Release with firmware assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # softprops/action-gh-release@v2
+        with:
+          files: |
+            web-flasher/public/bin/bootloader.bin
+            web-flasher/public/bin/partitions.bin
+            web-flasher/public/bin/boot_app0.bin
+            web-flasher/public/bin/firmware.bin
+          generate_release_notes: true
+          name: "v${{ steps.fwver.outputs.version }}"
+          fail_on_unmatched_files: true

@@ -26,7 +26,10 @@ async function pulseResetViaRTS(port, log) {
   }
 }
 
-export async function connectAndFlash({ log, setProgress, configFiles }) {
+export async function connectAndFlash({ log, setProgress, configFiles, flashParts }) {
+  const parts = (flashParts && flashParts.length > 0) ? flashParts : FLASH_PARTS;
+  const isRemote = parts.some(p => /^https?:\/\//i.test(p.path));
+
   log('Vyber COM port zariadenia...');
   const port = await navigator.serial.requestPort();
   const transport = new Transport(port);
@@ -48,20 +51,27 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
     log('Spojenie nadviazané.');
 
     log('');
-    log('Načítavam firmware súbory...');
+    log(isRemote
+      ? 'Sťahujem firmware z GitHub release...'
+      : 'Načítavam lokálne firmware súbory...');
     const fileArray = [];
-    for (const part of FLASH_PARTS) {
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
       const resp = await fetch(part.path);
       if (!resp.ok) throw new Error(`Chyba pri načítaní ${part.path}: HTTP ${resp.status}`);
       const blob = await resp.blob();
       const data = await blobToBinaryString(blob);
       fileArray.push({ data, address: part.offset });
-      log(`  ✓ ${part.path}  (${(blob.size / 1024).toFixed(0)} kB)`);
+      const label = isRemote
+        ? `[${i + 1}/${parts.length}] ${part.path.split('/').pop()}`
+        : `  ✓ ${part.path}`;
+      log(`${label}  (${(blob.size / 1024).toFixed(0)} kB)`);
+      setProgress(Math.round(((i + 1) / parts.length) * 15)); // 0–15% during download
     }
 
     log('');
     log('Flashujem firmware...');
-    setProgress(5);
+    setProgress(15);
     await esploader.writeFlash({
       fileArray,
       flashSize: 'keep',
@@ -72,7 +82,7 @@ export async function connectAndFlash({ log, setProgress, configFiles }) {
     log('Firmware flashovaný!');
 
     log('');
-    log('Restartujem zariadenie...');
+    log('Reštartujem zariadenie...');
     await esploader.hardReset();
     // Disconnect releases all internal stream locks and resets the baud rate.
     // We reopen the raw port at 115200 for config upload.

@@ -319,6 +319,18 @@
       <!-- Browser / secure-context error -->
       <div id="browser-error" class="alert alert-warning" style="display:none;margin-bottom:16px;text-align:left;"></div>
 
+      <!-- Version picker -->
+      <div class="form-grid" style="margin-bottom:16px;">
+        <div class="full">
+          <label for="fw-version-select">Verzia firmvéru</label>
+          <select id="fw-version-select" onchange="onVersionChange()">
+            <option value="__local__">Najnovšia (lokálna kópia zo stránky)</option>
+            <option value="" disabled>Načítavam zoznam z GitHub releases…</option>
+          </select>
+          <div class="hint" id="fw-version-hint">Po výbere staršej verzie sa .bin súbory stiahnu z <a href="https://github.com/webiumsk/FIAT-HELL/releases" target="_blank" rel="noopener noreferrer" style="color:var(--orange);">GitHub releases</a>.</div>
+        </div>
+      </div>
+
       <!-- Action buttons -->
       <div id="flash-actions" class="btn-row" style="justify-content:center;margin-top:0;">
         <button id="btn-config-only" class="btn btn-outline" onclick="uploadConfigOnlyAction()">
