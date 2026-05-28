@@ -1102,6 +1102,7 @@ void setup() {
   server.on("/connecttest.txt", redirectToConfigPortal);
   server.on("/ncsi.txt", redirectToConfigPortal);
   server.on("/fwlink", redirectToConfigPortal);
+  server.on("/favicon.ico", []() { server.send(204, "text/plain", ""); });
 
   // Lightweight mobile config portal — served only to AP clients (192.168.4.x).
   server.on("/setup", HTTP_GET, [isApClient]() {
