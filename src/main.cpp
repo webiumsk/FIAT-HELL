@@ -591,6 +591,7 @@ void completeStartupAfterPortal() {
   }
 
   if (wifiStatus() && MDNS.begin("fiathell")) {
+    MDNS.addService("http", "tcp", 80);
     Serial.println("mDNS: http://fiathell.local");
   }
 
@@ -1121,11 +1122,13 @@ void setup() {
     const char *rs = deviceStatePtr->rateSourceBuffer;
     String html = FPSTR(SETUP_PAGE_HTML);
 
-    // Rate source dropdown — mark the active one as `selected`
-    html.replace(F("%%RS_COINGECKO%%"),   (strcmp(rs, "CoinGecko")   == 0) ? "selected" : "");
-    html.replace(F("%%RS_KRAKEN%%"),      (strcmp(rs, "Kraken")      == 0) ? "selected" : "");
-    html.replace(F("%%RS_EXCHANGEAPI%%"), (strcmp(rs, "ExchangeApi") == 0) ? "selected" : "");
-    html.replace(F("%%RS_COINYEP%%"),     (strcmp(rs, "CoinYEP")     == 0) ? "selected" : "");
+    // Rate source dropdown — mark the active one as `selected`.
+    // CoinYEP is the default for unknown/legacy "CoinGecko" values.
+    const bool rsKraken      = (strcmp(rs, "Kraken")      == 0);
+    const bool rsExchangeApi = (strcmp(rs, "ExchangeApi") == 0);
+    html.replace(F("%%RS_KRAKEN%%"),      rsKraken      ? "selected" : "");
+    html.replace(F("%%RS_EXCHANGEAPI%%"), rsExchangeApi ? "selected" : "");
+    html.replace(F("%%RS_COINYEP%%"),     (!rsKraken && !rsExchangeApi) ? "selected" : "");
 
     auto esc = [](const char* s) -> String {
       String out(s);
@@ -1240,16 +1243,15 @@ void setup() {
     {
       GuiConfig gui;
       if (!configService.loadGuiConfig(FlashFS, GUI_FILE, gui)) {
-        strlcpy(gui.rateSource, "CoinGecko", sizeof(gui.rateSource));
-        strlcpy(gui.animated,   "No",        sizeof(gui.animated));
+        strlcpy(gui.rateSource, "CoinYEP", sizeof(gui.rateSource));
+        strlcpy(gui.animated,   "No",      sizeof(gui.animated));
       }
       const String funding = server.arg("funding");
       strlcpy(gui.fundingSource,
               (funding == "LNbits") ? "LNbits" : "Blink",
               sizeof(gui.fundingSource));
       const String rs = server.arg("ratesource");
-      if (rs == "CoinGecko" || rs == "Kraken" ||
-          rs == "ExchangeApi" || rs == "CoinYEP") {
+      if (rs == "CoinYEP" || rs == "Kraken" || rs == "ExchangeApi") {
         strlcpy(gui.rateSource, rs.c_str(), sizeof(gui.rateSource));
       }
       configService.saveGuiConfig(FlashFS, GUI_FILE, gui);
@@ -2038,6 +2040,7 @@ void setup() {
       }
       Serial.println("Portal available. AP Name: " + acConfig.apid);
       if (MDNS.begin("fiathell")) {
+        MDNS.addService("http", "tcp", 80);
         Serial.println("mDNS: http://fiathell.local (config AP)");
       }
       digitalWrite(11, LOW);
@@ -2211,12 +2214,12 @@ void createPortalScreen() {
   lv_obj_set_style_text_font(portaltext2b, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(portaltext2b, LV_COLOR_WHITE, 0);*/
 
-  /*String LVGL_PORTAL_URL = "http://fiathell.local  or  192.168.4.1";
+  String LVGL_PORTAL_URL = "http://fiathell.local  alebo  http://192.168.4.1";
   lv_obj_t *portalurl = lv_label_create(screen_portal);
   lv_label_set_text(portalurl, LVGL_PORTAL_URL.c_str());
   lv_obj_align(portalurl, LV_ALIGN_TOP_MID, 0, 198);
   lv_obj_set_style_text_font(portalurl, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(portalurl, lv_color_hex(0x90EE90), 0);*/
+  lv_obj_set_style_text_color(portalurl, lv_color_hex(0x90EE90), 0);
 
   String LVGL_PORTAL_TEXT_THREE = "After connected, open ATM settings ";
   lv_obj_t *portaltextthree =

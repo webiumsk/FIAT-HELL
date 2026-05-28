@@ -52,10 +52,9 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
 <div class="card">
 <h2>Zdroj BTC ceny</h2>
 <select name="ratesource" style="display:block;width:100%;padding:10px;margin-top:4px;background:#1e1e1e;color:#eee;border:1px solid #444;border-radius:6px;font-size:1em">
-  <option value="CoinGecko"   %%RS_COINGECKO%%>CoinGecko</option>
+  <option value="CoinYEP"     %%RS_COINYEP%%>CoinYEP</option>
   <option value="Kraken"      %%RS_KRAKEN%%>Kraken</option>
   <option value="ExchangeApi" %%RS_EXCHANGEAPI%%>ExchangeApi (Fawaz)</option>
-  <option value="CoinYEP"     %%RS_COINYEP%%>CoinYEP</option>
 </select>
 <p class="hint">Ak jeden zdroj nefunguje (HTTP -1 / connection refused v logu), skús iný.</p>
 </div>
