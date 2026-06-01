@@ -228,18 +228,6 @@ function updateSecretFingerprints() {
   });
 }
 
-function bindSecretToggles() {
-  document.querySelectorAll('.secret-toggle').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const input = document.getElementById(btn.dataset.target);
-      if (!input) return;
-      const reveal = input.type === 'password';
-      input.type = reveal ? 'text' : 'password';
-      btn.textContent = reveal ? '🙈' : '👁';
-    });
-  });
-}
-
 function loadFromStorage() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -488,7 +476,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   loadFromStorage();
   onFundingChange();
-  bindSecretToggles();
   updateSecretFingerprints();
 
   document.addEventListener('input',  () => { saveToStorage(); updateSecretFingerprints(); });

@@ -184,23 +184,7 @@ input::placeholder { color: #555; }
   margin-top: 4px;
 }
 
-/* ── Masked secret input (Blink API key, etc.) ── */
-.secret-wrap { position: relative; }
-.secret-wrap input { padding-right: 38px; }
-.secret-toggle {
-  position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  background: transparent;
-  border: none;
-  color: var(--text-dim);
-  padding: 4px 8px;
-  font-size: 1rem;
-  cursor: pointer;
-  border-radius: 4px;
-}
-.secret-toggle:hover { color: var(--orange); background: var(--surface2); }
+/* ── Masked secret input fingerprint (Blink API key, etc.) ── */
 .secret-fingerprint {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.05em;

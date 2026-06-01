@@ -102,6 +102,7 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
 #include <Hash.h>
 
 #include <iostream>
+#include <algorithm>
 #include <vector>
 
 #include <cstring> // For memset
@@ -1202,6 +1203,64 @@ void setup() {
     html.replace(F("%%FW_VERSION%%"), F(FW_VERSION));
 
     server.send(200, "text/html", html);
+  });
+
+  // Scan nearby WiFi networks. Returns JSON: [{ssid,rssi,secure}, ...]
+  // sorted by RSSI desc, deduplicated by SSID, hidden SSIDs (empty) skipped.
+  // Blocks ~3 s during the scan; AP clients tolerate the brief beacon delay.
+  server.on("/setup/wifi-scan", HTTP_GET, [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "application/json", "[]");
+      return;
+    }
+    if (!(WiFi.getMode() & WIFI_MODE_STA)) {
+      WiFi.mode(WIFI_AP_STA);
+    }
+    int n = WiFi.scanNetworks(false, false);  // sync, no hidden
+    if (n < 0) n = 0;
+
+    struct Net { String ssid; int rssi; bool secure; };
+    std::vector<Net> nets;
+    nets.reserve(n);
+    for (int i = 0; i < n; i++) {
+      const String s = WiFi.SSID(i);
+      if (s.length() == 0) continue;
+      bool merged = false;
+      for (auto &e : nets) {
+        if (e.ssid == s) {
+          merged = true;
+          if (WiFi.RSSI(i) > e.rssi) {
+            e.rssi   = WiFi.RSSI(i);
+            e.secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+          }
+          break;
+        }
+      }
+      if (!merged) {
+        Net nt;
+        nt.ssid   = s;
+        nt.rssi   = WiFi.RSSI(i);
+        nt.secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+        nets.push_back(nt);
+      }
+    }
+    WiFi.scanDelete();
+
+    std::sort(nets.begin(), nets.end(),
+              [](const Net &a, const Net &b) { return a.rssi > b.rssi; });
+    if (nets.size() > 30) nets.resize(30);
+
+    DynamicJsonDocument doc(4096);
+    JsonArray arr = doc.to<JsonArray>();
+    for (auto &nt : nets) {
+      JsonObject o = arr.createNestedObject();
+      o["ssid"]   = nt.ssid;
+      o["rssi"]   = nt.rssi;
+      o["secure"] = nt.secure;
+    }
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
   });
 
   server.on("/setup/save", HTTP_POST, [isApClient]() {

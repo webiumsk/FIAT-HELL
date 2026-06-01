@@ -34,6 +34,13 @@ button{display:block;width:100%;margin-top:24px;padding:14px;
        font-size:1.1em;font-weight:bold;cursor:pointer}
 button:active{background:#c70}
 button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-weight:normal;margin-top:10px}
+#wifi-list{margin-top:8px}
+.wifi-item{display:flex;justify-content:space-between;align-items:center;width:100%;
+  margin:6px 0 0;padding:10px 12px;background:#1e1e1e;color:#eee;
+  border:1px solid #444;border-radius:6px;font-size:.95em;cursor:pointer;text-align:left}
+.wifi-item:active,.wifi-item.sel{border-color:#f90;background:#1a0d00}
+.wifi-item .wb{color:#888;font-size:.8em;margin-left:8px}
+.wifi-item .lk{color:#f90;margin-right:6px}
 </style>
 </head>
 <body>
@@ -45,8 +52,10 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
 <div class="card">
 <h2>WiFi</h2>
 <p class="hint">Vyplň iba ak chceš zmeniť sieť. Prázdne pole zachová aktuálne nastavenie.</p>
-<label>SSID (názov siete)<input type="text" name="wifi_ssid" value="%%WIFI_SSID%%"></label>
-<label>Heslo WiFi<input type="password" name="wifi_password" autocomplete="new-password"></label>
+<button type="button" class="secondary" onclick="scanWifi(this)">&#128269; Vyhľadať siete</button>
+<div id="wifi-list"></div>
+<label>SSID (názov siete)<input type="text" id="wifi_ssid" name="wifi_ssid" value="%%WIFI_SSID%%" autocomplete="off"></label>
+<label>Heslo WiFi<input type="password" id="wifi_password" name="wifi_password" autocomplete="new-password"></label>
 </div>
 
 <div class="card">
@@ -132,5 +141,39 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
 </form>
 </div>
 
+<script>
+function scanWifi(btn){
+  var lst=document.getElementById('wifi-list');
+  var orig=btn.textContent;
+  btn.disabled=true;btn.textContent='Hľadám…';
+  lst.innerHTML='<p class="hint">Skenujem 2.4GHz pásmo (5–8 s)…</p>';
+  fetch('/setup/wifi-scan',{cache:'no-store'}).then(function(r){
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return r.json();
+  }).then(function(arr){
+    btn.disabled=false;btn.textContent=orig;
+    if(!arr||!arr.length){lst.innerHTML='<p class="hint">Nenašli sa žiadne siete.</p>';return;}
+    var h='';
+    arr.forEach(function(n){
+      var s=(n.ssid||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      var bars=n.rssi>-55?'▂▄▆█':(n.rssi>-70?'▂▄▆_':(n.rssi>-80?'▂▄__':'▂___'));
+      var lk=n.secure?'<span class="lk">&#128274;</span>':'';
+      h+='<button type="button" class="wifi-item" data-ssid="'+s+'"><span>'+lk+s+'</span><span class="wb">'+bars+' '+n.rssi+' dBm</span></button>';
+    });
+    lst.innerHTML=h;
+    Array.prototype.forEach.call(lst.querySelectorAll('.wifi-item'),function(b){
+      b.addEventListener('click',function(){
+        Array.prototype.forEach.call(lst.querySelectorAll('.wifi-item'),function(x){x.classList.remove('sel');});
+        b.classList.add('sel');
+        document.getElementById('wifi_ssid').value=b.getAttribute('data-ssid');
+        var p=document.getElementById('wifi_password');p.value='';p.focus();
+      });
+    });
+  }).catch(function(e){
+    btn.disabled=false;btn.textContent=orig;
+    lst.innerHTML='<p class="hint">Chyba pri vyhľadávaní: '+e.message+'</p>';
+  });
+}
+</script>
 </body>
 </html>)rawliteral";
