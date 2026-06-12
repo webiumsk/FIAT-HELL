@@ -3,7 +3,7 @@
 //============EDIT IF USING DIFFERENT HARDWARE============//
 //========================================================//
 // v1.2.1
-#define FW_VERSION "1.2.6"
+#define FW_VERSION "1.2.7"
 
 bool format = false; // true for formatting FOSSA memory, use once, then make
                      // false and reflash
