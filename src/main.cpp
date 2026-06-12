@@ -4127,15 +4127,12 @@ void showQRCodeLVGL(const char *data) {
 }
 
 void printHeapStatus() {
-  Serial.print("Total heap: ");
-  Serial.println(ESP.getHeapSize());
+  // getHeapSize() / getMaxAllocHeap() volajú heap_caps_get_info(), ktorý
+  // iteruje cez všetky bloky pod zámkom s vypnutými interruptmi. Pri
+  // súčasnom TCP traffiku (Blink HTTPS) to spôsobilo Interrupt WDT
+  // timeout a deadlock — preto len rýchly counter read.
   Serial.print("Free heap: ");
   Serial.println(ESP.getFreeHeap());
-  Serial.print("Largest free block: ");
-  Serial.println(ESP.getMaxAllocHeap());
-  Serial.print("Heap fragmentation: ");
-  Serial.println((float)(ESP.getHeapSize() - ESP.getFreeHeap()) /
-                 ESP.getHeapSize() * 100.0);
 }
 
 /*void btn_reset_event_handler(lv_event_t *e) {
