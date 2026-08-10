@@ -54,7 +54,10 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   JsonArray valuesFundingSource = docGui0.createNestedArray("value");
   valuesFundingSource.add("Blink");
   valuesFundingSource.add("LNbits");
-  docGui0["checked"] = (strcmp(in.fundingSource, "Blink") == 0) ? 1 : 2;
+  valuesFundingSource.add("Flash");
+  docGui0["checked"] = (strcmp(in.fundingSource, "Blink") == 0)   ? 1
+                       : (strcmp(in.fundingSource, "Flash") == 0) ? 3
+                                                                  : 2;
 
   JsonObject docGui1 = docGui.createNestedObject();
   docGui1["name"] = "ratesource";

@@ -8,7 +8,7 @@ static const char PAGE_FIRST[] PROGMEM = R"(
     {
       "name": "textonlineblink",
       "type": "ACText",
-      "value": "Blink settings",
+      "value": "Blink / Flash settings",
       "style": "font-family:Arial;font-size:16px;font-weight:400;color:#191970;margin-botom:15px;padding-bottom:8px;"
     },
     {

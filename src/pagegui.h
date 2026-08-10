@@ -10,9 +10,10 @@ static const char PAGE_GUI[] PROGMEM = R"(
       "type": "ACRadio",
       "value": [
         "Blink",
-        "LNbits"
+        "LNbits",
+        "Flash"
       ],
-      "label": "Funding source 'blink' or 'lnbits'",
+      "label": "Funding source 'blink', 'lnbits' or 'flash'",
       "arrange": "horizontal",
       "checked": 1
     },
