@@ -1346,7 +1346,13 @@ void setCurrency(const char *newCurrency, bool skipInhibit = false) {
 void checkPrice() {
   if (strcmp(deviceState.rateSourceBuffer, "ExchangeApi") == 0) {
     checkPriceExchangeApi();
-  } else if (strcmp(deviceState.rateSourceBuffer, "Coingecko") == 0) {
+  } else {
+    // Accepts both "CoinGecko" (shared config) and legacy "Coingecko".
+    // CoinYEP/Kraken are only implemented on the S3 board; fall back here.
+    if (strcmp(deviceState.rateSourceBuffer, "CoinYEP") == 0 ||
+        strcmp(deviceState.rateSourceBuffer, "Kraken") == 0) {
+      Serial.println("Rate source not supported on WT32, using CoinGecko");
+    }
     checkPriceCoinGecko();
   }
 }
@@ -1855,7 +1861,7 @@ void updateMainScreenLabel() {
   }
   if (chargeValueLabel) { // Check if it has been initialized
     char buffer[32];
-    snprintf(buffer, sizeof(buffer), "%ld %%", chargeSelected);
+    snprintf(buffer, sizeof(buffer), "%.1f %%", chargeSelected);
     lv_label_set_text(chargeValueLabel, buffer);
   }
 
@@ -2022,8 +2028,8 @@ void createMainScreen() {
   lv_obj_set_style_text_font(fiatValueLabel, &lv_font_montserrat_16, 0);
   Serial.println("createMainScreen: fiatValueLabel created");
 
-  snprintf(buffer, sizeof(buffer), "%d %%",
-           chargeSelected); // Convert the int to a char array
+  snprintf(buffer, sizeof(buffer), "%.1f %%",
+           chargeSelected); // chargeSelected is a float percentage
   chargeValueLabel =
       lv_label_create(screen_main); // Create it on your main screen
   lv_label_set_text(chargeValueLabel,
