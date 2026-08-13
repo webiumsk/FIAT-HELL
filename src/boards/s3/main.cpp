@@ -2,8 +2,7 @@
 //== == = //
 //============EDIT IF USING DIFFERENT HARDWARE============//
 //========================================================//
-// v1.2.1
-#define FW_VERSION "1.2.7"
+#include "version.h"
 
 bool format = false; // true for formatting FOSSA memory, use once, then make
                      // false and reflash
