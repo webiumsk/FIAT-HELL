@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import { checkBrowserSupport, connectAndFlash, uploadConfigOnly } from './flash.js';
-import { FW_VERSION, FLASH_PARTS, FLASH_OFFSETS, GITHUB_REPO } from './config.js';
+import { FW_VERSION, BOARDS, DEFAULT_BOARD, GITHUB_REPO } from './config.js';
 
 /* ══════════════════════════════════════════════════════════════
    Panel & accordion helpers
@@ -29,9 +29,29 @@ function toggleSection(id) {
 }
 
 function onFundingChange() {
+  // Blink and Flash share the same credential fields (Galoy API).
   const isLNbits = document.getElementById('fund_lnbits').checked;
   document.querySelectorAll('.lnbits-fields').forEach(el => el.style.display = isLNbits ? '' : 'none');
   document.querySelectorAll('.blink-fields').forEach(el => el.style.display  = isLNbits ? 'none' : '');
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Board selection (S3 vs WT32 — different binaries and offsets)
+══════════════════════════════════════════════════════════════ */
+function selectedBoard() {
+  const checked = document.querySelector('input[name="board"]:checked');
+  return (checked && BOARDS[checked.value]) ? checked.value : DEFAULT_BOARD;
+}
+
+function onBoardChange() {
+  const board = BOARDS[selectedBoard()];
+  const bootHint = document.getElementById('boot-hint');
+  if (bootHint) {
+    bootHint.textContent = board.manualBoot
+      ? 'Manuálny boot: drž BOOT, stlač RESET, pusť a klikni Flash.'
+      : 'Doska sa resetne automaticky; ak flash nenabehne, drž BOOT pri pripájaní.';
+  }
+  populateVersionDropdown().catch(e => console.error('Releases load failed:', e));
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -76,8 +96,10 @@ function makeGuiJson() {
   // Firmware's ConfigService still parses the legacy 4-entry array; keep that
   // shape so older firmwares stay compatible. UI only exposes 3 options.
   const rateIndex = { CoinGecko: 1, ExchangeApi: 2, CoinYEP: 3, Kraken: 4 }[rate] ?? 3;
+  // Funding value array order must match pagegui.h: Blink, LNbits, Flash.
+  const fundingIndex = { Blink: 1, LNbits: 2, Flash: 3 }[funding] ?? 1;
   return [
-    { name: 'fundingsource', value: ['Blink', 'LNbits'], checked: funding === 'Blink' ? 1 : 2 },
+    { name: 'fundingsource', value: ['Blink', 'LNbits', 'Flash'], checked: fundingIndex },
     { name: 'ratesource',    value: ['CoinGecko', 'ExchangeApi', 'CoinYEP', 'Kraken'], checked: rateIndex },
     { name: 'animated',      value: ['No', 'Yes'], checked: animated === 'Yes' ? 2 : 1 },
   ];
@@ -249,15 +271,47 @@ function loadFromStorage() {
 /* ══════════════════════════════════════════════════════════════
    GitHub releases — fetch, cache, dropdown
 ══════════════════════════════════════════════════════════════ */
-const RELEASES_CACHE_KEY = 'gh-releases-v1';
+const RELEASES_CACHE_KEY = 'gh-releases-v2';
 const RELEASES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const REQUIRED_ASSETS = ['bootloader.bin', 'partitions.bin', 'boot_app0.bin', 'firmware.bin'];
 
-// Cache of release id → flashParts mapping. Populated when dropdown is built.
+// Cache of release id → flashParts mapping for the currently selected board.
 const releaseFlashParts = new Map();
 
+/**
+ * Resolve a release's assets into flash parts for one board.
+ * New releases carry board-suffixed assets (firmware-s3.bin, firmware-wt32.bin,
+ * per-board bootloader/partitions) plus a shared boot_app0.bin. Releases from
+ * before the dual-board split carry unsuffixed assets and are S3-only.
+ * Returns { parts, legacy } or null when the release can't flash this board.
+ */
+function resolveBoardParts(assetsByName, boardKey) {
+  const board = BOARDS[boardKey];
+  const get = n => assetsByName.get(n.toLowerCase());
+
+  const trySuffix = suffix => {
+    const parts = [];
+    for (const name of ['bootloader.bin', 'partitions.bin', 'firmware.bin']) {
+      const a = get(name.replace('.bin', suffix + '.bin'));
+      if (!a) return null;
+      parts.push({ path: a.browser_download_url, offset: board.offsets[name] });
+    }
+    const boot = get('boot_app0.bin') || get('boot_app0' + suffix + '.bin');
+    if (!boot) return null;
+    parts.push({ path: boot.browser_download_url, offset: board.offsets['boot_app0.bin'] });
+    return parts;
+  };
+
+  let parts = trySuffix(board.assetSuffix);
+  if (parts) return { parts, legacy: false };
+  if (boardKey === 's3') {
+    parts = trySuffix('');
+    if (parts) return { parts, legacy: true };
+  }
+  return null;
+}
+
 async function fetchReleases() {
-  // Try sessionStorage cache first
+  // Try sessionStorage cache first (raw asset lists, board-independent)
   try {
     const cached = sessionStorage.getItem(RELEASES_CACHE_KEY);
     if (cached) {
@@ -271,36 +325,31 @@ async function fetchReleases() {
   if (!resp.ok) throw new Error(`GitHub API HTTP ${resp.status}`);
   const all = await resp.json();
 
-  const flashable = all
+  const releases = all
     .filter(r => !r.draft)
-    .map(r => {
-      const assets = new Map((r.assets || []).map(a => [a.name.toLowerCase(), a]));
-      const parts = REQUIRED_ASSETS.map(name => {
-        const a = assets.get(name);
-        return a ? { name, url: a.browser_download_url, offset: FLASH_OFFSETS[name] } : null;
-      });
-      if (parts.some(p => p === null)) return null;
-      return {
-        id: r.id,
-        tag: r.tag_name,
-        name: r.name || r.tag_name,
-        date: r.published_at ? r.published_at.slice(0, 10) : '',
-        prerelease: !!r.prerelease,
-        parts,
-      };
-    })
-    .filter(r => r !== null);
+    .map(r => ({
+      id: r.id,
+      tag: r.tag_name,
+      name: r.name || r.tag_name,
+      date: r.published_at ? r.published_at.slice(0, 10) : '',
+      prerelease: !!r.prerelease,
+      assets: (r.assets || []).map(a => ({
+        name: a.name.toLowerCase(),
+        url: a.browser_download_url,
+      })),
+    }));
 
   try {
-    sessionStorage.setItem(RELEASES_CACHE_KEY, JSON.stringify({ at: Date.now(), data: flashable }));
+    sessionStorage.setItem(RELEASES_CACHE_KEY, JSON.stringify({ at: Date.now(), data: releases }));
   } catch (_) {}
-  return flashable;
+  return releases;
 }
 
 async function populateVersionDropdown() {
   const sel = document.getElementById('fw-version-select');
   if (!sel) return;
   releaseFlashParts.clear();
+  const boardKey = selectedBoard();
 
   let releases = [];
   let error = null;
@@ -312,6 +361,7 @@ async function populateVersionDropdown() {
 
   // Clear all options except the "local" first option
   while (sel.options.length > 1) sel.remove(1);
+  sel.value = '__local__';
 
   if (error) {
     const opt = document.createElement('option');
@@ -320,35 +370,45 @@ async function populateVersionDropdown() {
     sel.add(opt);
     return;
   }
-  if (releases.length === 0) {
+
+  const flashable = [];
+  for (const r of releases) {
+    const assetsByName = new Map(r.assets.map(a => [a.name, { browser_download_url: a.url }]));
+    const resolved = resolveBoardParts(assetsByName, boardKey);
+    if (resolved) flashable.push({ ...r, ...resolved });
+  }
+
+  if (flashable.length === 0) {
     const opt = document.createElement('option');
     opt.disabled = true;
-    opt.textContent = 'Žiadne release-y s firmware assets';
+    opt.textContent = `Žiadne release-y pre ${BOARDS[boardKey].label}`;
     sel.add(opt);
     return;
   }
 
-  for (const r of releases) {
+  for (const r of flashable) {
     const key = 'release:' + r.id;
-    releaseFlashParts.set(key, r.parts.map(p => ({ path: p.url, offset: p.offset })));
+    releaseFlashParts.set(key, r.parts);
     const opt = document.createElement('option');
     opt.value = key;
     const tag = r.tag.startsWith('v') ? r.tag : 'v' + r.tag;
     const pre = r.prerelease ? ' [pre-release]' : '';
-    opt.textContent = `${tag}${pre}  —  ${r.date}`;
+    const legacy = r.legacy ? ' [legacy S3]' : '';
+    opt.textContent = `${tag}${pre}${legacy}  —  ${r.date}`;
     sel.add(opt);
   }
 
   // Default selection: newest non-prerelease, else newest overall.
-  const defaultRelease = releases.find(r => !r.prerelease) || releases[0];
+  const defaultRelease = flashable.find(r => !r.prerelease) || flashable[0];
   if (defaultRelease) sel.value = 'release:' + defaultRelease.id;
   onVersionChange();
 }
 
 function selectedFlashParts() {
+  const localParts = BOARDS[selectedBoard()].localParts;
   const sel = document.getElementById('fw-version-select');
-  if (!sel || sel.value === '__local__') return FLASH_PARTS;
-  return releaseFlashParts.get(sel.value) || FLASH_PARTS;
+  if (!sel || sel.value === '__local__') return localParts;
+  return releaseFlashParts.get(sel.value) || localParts;
 }
 
 function onVersionChange() {
@@ -476,6 +536,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   loadFromStorage();
   onFundingChange();
+  onBoardChange();
   updateSecretFingerprints();
 
   document.addEventListener('input',  () => { saveToStorage(); updateSecretFingerprints(); });
@@ -484,14 +545,13 @@ document.addEventListener('DOMContentLoaded', () => {
   toggleSection('general');
   toggleSection('cur1');
 
-  // Fire-and-forget — keeps the page interactive while GH API responds.
-  populateVersionDropdown().catch(e => console.error('Releases load failed:', e));
-
   // Expose functions for inline onclick handlers in HTML
+  // (populateVersionDropdown already ran via onBoardChange above)
   Object.assign(window, {
     showPanel,
     toggleSection,
     onFundingChange,
+    onBoardChange,
     downloadConfigZip,
     clearForm,
     connectAndFlashWithConfig,

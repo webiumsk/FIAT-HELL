@@ -96,10 +96,12 @@
             <div class="toggle-group">
               <input type="radio" name="funding" id="fund_blink" value="Blink" checked onchange="onFundingChange()">
               <label for="fund_blink">Blink</label>
+              <input type="radio" name="funding" id="fund_flash" value="Flash" onchange="onFundingChange()">
+              <label for="fund_flash">Flash</label>
               <input type="radio" name="funding" id="fund_lnbits" value="LNbits" onchange="onFundingChange()">
               <label for="fund_lnbits">LNbits</label>
             </div>
-            <div class="hint">Blink je odporúčaný (vyžaduje internet). LNbits funguje aj offline.</div>
+            <div class="hint">Blink / Flash vyžadujú internet (Flash = náhrada Blinku pre EÚ). LNbits funguje aj offline.</div>
           </div>
           <div class="full">
             <label>Zdroj kurzu BTC</label>
@@ -183,15 +185,15 @@
 
           <!-- Blink sekcia pre mena 1 -->
           <div class="full blink-fields" style="display:none;">
-            <p class="tabs-label">Blink nastavenia</p>
+            <p class="tabs-label">Blink / Flash nastavenia</p>
           </div>
           <div class="blink-fields" style="display:none;">
-            <label for="cur1_blink_apikey">Blink API key</label>
+            <label for="cur1_blink_apikey">API key (Blink / Flash)</label>
             <input type="password" id="cur1_blink_apikey" placeholder="" autocomplete="off" spellcheck="false">
             <div class="hint secret-fingerprint" id="fp_cur1_blink_apikey"></div>
           </div>
           <div class="blink-fields" style="display:none;">
-            <label for="cur1_blink_wallet">Blink Wallet ID</label>
+            <label for="cur1_blink_wallet">Wallet ID (Blink / Flash)</label>
             <input type="text" id="cur1_blink_wallet" placeholder="">
           </div>
         </div>
@@ -310,11 +312,25 @@
     </div>
 
     <div class="flash-card">
-      <h2>Flash firmware na ESP32-S3</h2>
-      <p>Pripoj ESP32-8048S050 cez USB. Manuálny boot: drž <kbd>BOOT</kbd>, stlač <kbd>RESET</kbd>, pusť a klikni Flash.</p>
+      <h2>Flash firmware</h2>
+      <p>Pripoj zariadenie cez USB. <span id="boot-hint">Manuálny boot: drž <kbd>BOOT</kbd>, stlač <kbd>RESET</kbd>, pusť a klikni Flash.</span></p>
 
       <!-- Browser / secure-context error -->
       <div id="browser-error" class="alert alert-warning" style="display:none;margin-bottom:16px;text-align:left;"></div>
+
+      <!-- Board picker -->
+      <div class="form-grid" style="margin-bottom:16px;">
+        <div class="full">
+          <label>Doska (hardvér)</label>
+          <div class="toggle-group">
+            <input type="radio" name="board" id="board_s3" value="s3" checked onchange="onBoardChange()">
+            <label for="board_s3">ESP32-8048S050 (S3)</label>
+            <input type="radio" name="board" id="board_wt32" value="wt32" onchange="onBoardChange()">
+            <label for="board_wt32">WT32-SC01 (ESP32)</label>
+          </div>
+          <div class="hint">Každá doska má vlastný firmware a iné flash adresy — zlý výber = zariadenie nenabootuje.</div>
+        </div>
+      </div>
 
       <!-- Version picker -->
       <div class="form-grid" style="margin-bottom:16px;">
@@ -355,7 +371,7 @@
       <p style="font-size:0.88rem;font-weight:600;margin-bottom:10px;">Postup:</p>
       <ol>
         <li>Vyplň konfiguráciu v Kroku 1 (alebo preskočiť — nastav neskôr cez portál)</li>
-        <li>Pripoj ESP32-8048S050 cez USB kábel</li>
+        <li>Vyber dosku (S3 / WT32) a pripoj ju cez USB kábel</li>
         <li>Manuálny boot: drž <span class="kbd">BOOT</span>, stlač a pusť <span class="kbd">RESET</span>, potom pusť <span class="kbd">BOOT</span></li>
         <li>Klikni na <strong>⚡ Flash + nahraj konfig</strong></li>
         <li>Vyber COM port v dialógu prehliadača</li>

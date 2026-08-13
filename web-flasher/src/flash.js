@@ -1,5 +1,4 @@
 import { ESPLoader, Transport } from 'esptool-js';
-import { FLASH_PARTS } from './config.js';
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 const enc   = text => new TextEncoder().encode(text);
@@ -27,7 +26,8 @@ async function pulseResetViaRTS(port, log) {
 }
 
 export async function connectAndFlash({ log, setProgress, configFiles, flashParts }) {
-  const parts = (flashParts && flashParts.length > 0) ? flashParts : FLASH_PARTS;
+  const parts = flashParts;
+  if (!parts || parts.length === 0) throw new Error('Chýba zoznam firmware súborov');
   const isRemote = parts.some(p => /^https?:\/\//i.test(p.path));
 
   log('Vyber COM port zariadenia...');
