@@ -5,6 +5,7 @@
  */
 
 #include "PriceBalanceTask.h"
+#include "services/FundingService.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -23,7 +24,6 @@ static const char *krakenTickerAPI =
 static const char *exchangeapiConversionAPI =
     "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/"
     "currencies/btc.json";
-static const char *graphqlEndpoint = "https://api.blink.sv/graphql";
 
 static DeviceState *g_deviceState = nullptr;
 static SessionState *g_sessionState = nullptr;
@@ -191,60 +191,12 @@ static void taskFetchBalance(HTTPClient &http, DeviceState &ds,
                     (long long)ss.balanceSats);
     }
     http.end();
-  } else if (strcmp(fundingSource, "Blink") == 0) {
-    http.begin(graphqlEndpoint);
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("X-API-KEY", String(ds.blinkapikey));
-    const char *query = R"(
-    query Me {
-      me {
-        defaultAccount {
-          wallets {
-            id
-            walletCurrency
-            balance
-          }
-        }
-      }
+  } else if (FundingService::isGaloy(fundingSource)) {
+    // Blink and Flash share the Galoy API; the service also picks the BTC
+    // wallet (accounts may hold a fiat wallet first) and caches its id.
+    if (FundingService::fetchGaloyBalance(http, ds, ss, "BTC")) {
+      ss.fiatBalance = ((double)ss.balanceSats / 100000000.0) * fiatValue;
     }
-    )";
-    DynamicJsonDocument jsonDoc(1024);
-    jsonDoc["query"] = query;
-    String requestBody;
-    serializeJson(jsonDoc, requestBody);
-    int code = http.POST(requestBody);
-    if (code == 200) {
-      String payload = http.getString();
-      DynamicJsonDocument respDoc(4096);
-      if (deserializeJson(respDoc, payload) == DeserializationError::Ok) {
-        // Blink returns errors in payload even with HTTP 200
-        if (respDoc["errors"].is<JsonArray>() &&
-            respDoc["errors"].size() > 0) {
-          const char *msg = respDoc["errors"][0]["message"] | "(no message)";
-          Serial.printf("balance[Blink]: GraphQL error: %s\n", msg);
-        } else {
-          JsonArray wallets =
-              respDoc["data"]["me"]["defaultAccount"]["wallets"];
-          if (wallets.size() > 0) {
-            JsonObject w = wallets[0];
-            ss.balanceSats = w["balance"];
-            ss.fiatBalance =
-                ((double)ss.balanceSats / 100000000.0) * fiatValue;
-            Serial.printf("balance[Blink]: %lld sats\n",
-                          (long long)ss.balanceSats);
-          } else {
-            Serial.println("balance[Blink]: no wallets in response");
-          }
-        }
-      } else {
-        Serial.println("balance[Blink]: JSON parse failed");
-      }
-    } else {
-      Serial.printf("balance[Blink]: HTTP %d (%s) — keeping cached %lld sats\n",
-                    code, HTTPClient::errorToString(code).c_str(),
-                    (long long)ss.balanceSats);
-    }
-    http.end();
   }
 }
 
