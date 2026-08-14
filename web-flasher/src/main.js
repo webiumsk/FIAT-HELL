@@ -63,12 +63,16 @@ function num(id) { const val = v(id); return val === '' ? '' : val; }
 /* ══════════════════════════════════════════════════════════════
    JSON generators (order MUST match ConfigService load order)
 ══════════════════════════════════════════════════════════════ */
+// The firmware's ConfigService reads these files positionally, but the
+// AutoConnect portal re-loads them via loadElement(), which silently ignores
+// entries without a matching "type" — omit it and the portal shows empty
+// fields even though the device is configured.
 function makeElementsJson() {
   return [
-    { name: 'password',    value: v('ap_password') },
-    { name: 'atmdesc',     value: v('atm_desc') },
-    { name: 'atmsubtitle', value: v('atm_subtitle') },
-    { name: 'atmtitle',    value: v('atm_title') || 'FIAT HELL' },
+    { name: 'password',    type: 'ACInput', value: v('ap_password') },
+    { name: 'atmdesc',     type: 'ACInput', value: v('atm_desc') },
+    { name: 'atmsubtitle', type: 'ACInput', value: v('atm_subtitle') },
+    { name: 'atmtitle',    type: 'ACInput', value: v('atm_title') || 'FIAT HELL' },
   ];
 }
 
@@ -99,9 +103,9 @@ function makeGuiJson() {
   // Funding value array order must match pagegui.h: Blink, LNbits, Flash.
   const fundingIndex = { Blink: 1, LNbits: 2, Flash: 3 }[funding] ?? 1;
   return [
-    { name: 'fundingsource', value: ['Blink', 'LNbits', 'Flash'], checked: fundingIndex },
-    { name: 'ratesource',    value: ['CoinGecko', 'ExchangeApi', 'CoinYEP', 'Kraken'], checked: rateIndex },
-    { name: 'animated',      value: ['No', 'Yes'], checked: animated === 'Yes' ? 2 : 1 },
+    { name: 'fundingsource', type: 'ACRadio', value: ['Blink', 'LNbits', 'Flash'], checked: fundingIndex },
+    { name: 'ratesource',    type: 'ACRadio', value: ['CoinGecko', 'ExchangeApi', 'CoinYEP', 'Kraken'], checked: rateIndex },
+    { name: 'animated',      type: 'ACRadio', value: ['No', 'Yes'], checked: animated === 'Yes' ? 2 : 1 },
   ];
 }
 
@@ -109,15 +113,15 @@ function makeFirstJson() {
   const isLNbits = document.getElementById('fund_lnbits').checked;
   const lnurlValue = [v('cur1_lnurl_base'), v('cur1_lnurl_secret'), v('cur1_lnurl_atm') || v('cur1_code')].join(',');
   return [
-    { name: 'blinkapikey',   value: isLNbits ? '' : v('cur1_blink_apikey') },
-    { name: 'blinkwalletid', value: isLNbits ? '' : v('cur1_blink_wallet') },
-    { name: 'lnurl',         value: isLNbits ? lnurlValue : '' },
-    { name: 'adminkey',      value: isLNbits ? v('cur1_adminkey') : '' },
-    { name: 'readkey',       value: isLNbits ? v('cur1_readkey')  : '' },
-    { name: 'currencyOne',   value: v('cur1_code') },
-    { name: 'billmech',      value: v('cur1_bills') },
-    { name: 'maxamount',     value: num('cur1_max') },
-    { name: 'charge1',       value: num('cur1_charge') },
+    { name: 'blinkapikey',   type: 'ACInput', value: isLNbits ? '' : v('cur1_blink_apikey') },
+    { name: 'blinkwalletid', type: 'ACInput', value: isLNbits ? '' : v('cur1_blink_wallet') },
+    { name: 'lnurl',         type: 'ACInput', value: isLNbits ? lnurlValue : '' },
+    { name: 'adminkey',      type: 'ACInput', value: isLNbits ? v('cur1_adminkey') : '' },
+    { name: 'readkey',       type: 'ACInput', value: isLNbits ? v('cur1_readkey')  : '' },
+    { name: 'currencyOne',   type: 'ACInput', value: v('cur1_code') },
+    { name: 'billmech',      type: 'ACInput', value: v('cur1_bills') },
+    { name: 'maxamount',     type: 'ACInput', value: num('cur1_max') },
+    { name: 'charge1',       type: 'ACInput', value: num('cur1_charge') },
   ];
 }
 
@@ -125,11 +129,11 @@ function makeSecondJson() {
   if (!v('cur2_code')) return null;
   const lnurlValue = [v('cur2_lnurl_base'), v('cur2_lnurl_secret'), v('cur2_lnurl_atm') || v('cur2_code')].join(',');
   return [
-    { name: 'currencyTwo', value: v('cur2_code') },
-    { name: 'lnurl2',      value: lnurlValue },
-    { name: 'billmech2',   value: v('cur2_bills') },
-    { name: 'maxamount2',  value: num('cur2_max') },
-    { name: 'charge2',     value: num('cur2_charge') },
+    { name: 'currencyTwo', type: 'ACInput', value: v('cur2_code') },
+    { name: 'lnurl2',      type: 'ACInput', value: lnurlValue },
+    { name: 'billmech2',   type: 'ACInput', value: v('cur2_bills') },
+    { name: 'maxamount2',  type: 'ACInput', value: num('cur2_max') },
+    { name: 'charge2',     type: 'ACInput', value: num('cur2_charge') },
   ];
 }
 
@@ -137,11 +141,11 @@ function makeThirdJson() {
   if (!v('cur3_code')) return null;
   const lnurlValue = [v('cur3_lnurl_base'), v('cur3_lnurl_secret'), v('cur3_lnurl_atm') || v('cur3_code')].join(',');
   return [
-    { name: 'currencyThree', value: v('cur3_code') },
-    { name: 'lnurl3',        value: lnurlValue },
-    { name: 'billmech3',     value: v('cur3_bills') },
-    { name: 'maxamount3',    value: num('cur3_max') },
-    { name: 'charge3',       value: num('cur3_charge') },
+    { name: 'currencyThree', type: 'ACInput', value: v('cur3_code') },
+    { name: 'lnurl3',        type: 'ACInput', value: lnurlValue },
+    { name: 'billmech3',     type: 'ACInput', value: v('cur3_bills') },
+    { name: 'maxamount3',    type: 'ACInput', value: num('cur3_max') },
+    { name: 'charge3',       type: 'ACInput', value: num('cur3_charge') },
   ];
 }
 
