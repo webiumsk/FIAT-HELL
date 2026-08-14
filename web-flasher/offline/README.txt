@@ -6,11 +6,16 @@ Toto je plna kopia web flashera vratane firmware binariek pre obe dosky
 ziadne udaje sa nikam neposielaju (jedina volitelna sietova vec je zoznam
 starsich verzii z GitHubu; bez internetu funguje zabalena verzia firmware).
 
-Spustenie:
-  Windows:      dvojklik na start-windows.bat  (vyzaduje Python 3)
-  Linux/macOS:  ./start-linux-mac.sh
+Vyzaduje nainstalovany Python 3.
 
-Potom sa v prehliadaci Chrome alebo Edge otvori http://localhost:8123.
+Spustenie:
+  Windows:      dvojklik na start-windows.bat
+  Linux/macOS:  ./start-linux-mac.sh
+                (ak nie je spustitelny, v tomto priecinku spusti rucne:
+                 python3 -m http.server 8123 )
+
+Potom sa v prehliadaci Chrome alebo Edge otvori http://localhost:8123
+(pri rucnom spusteni ju otvor sam).
 Priamy dvojklik na index.html NEFUNGUJE - Web Serial API vyzaduje
 https alebo localhost, preto je potrebny lokalny server.
 

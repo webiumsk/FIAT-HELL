@@ -84,8 +84,16 @@ async function scanWifiAction() {
       const ssidEl = document.getElementById('wifi_ssid');
       // A datalist only offers entries matching the current text, so a
       // pre-filled SSID would hide the rest of the scan results — clear it
-      // to drop down the full list (picking re-saves it right away).
+      // to drop down the full list. But if the operator dismisses the list
+      // without picking anything, restore what they had so /wifi.json isn't
+      // silently dropped.
+      const prevSsid = ssidEl.value;
       ssidEl.value = '';
+      const restore = () => {
+        if (ssidEl.value === '') { ssidEl.value = prevSsid; saveToStorage(); }
+        ssidEl.removeEventListener('blur', restore);
+      };
+      ssidEl.addEventListener('blur', restore);
       ssidEl.focus();
     } else {
       setHint('Žiadne siete sa nenašli — skús znova bližšie k routeru.', 'err');
@@ -366,19 +374,48 @@ function makeConfigFiles() {
 /* ══════════════════════════════════════════════════════════════
    Download config ZIP
 ══════════════════════════════════════════════════════════════ */
+// The ZIP is a plaintext export for manual portal entry, so it can't carry a
+// device-kept secret. Replace any __KEEP__ marker with an empty string and
+// tell the operator which fields were left blank.
+function stripKeepMarkers(obj) {
+  let stripped = false;
+  const walk = (node) => {
+    if (Array.isArray(node)) node.forEach(walk);
+    else if (node && typeof node === 'object') {
+      for (const k of Object.keys(node)) {
+        if (typeof node[k] === 'string' && node[k].includes(KEEP)) {
+          node[k] = node[k] === KEEP ? '' : node[k].split(KEEP).join('');
+          stripped = true;
+        } else walk(node[k]);
+      }
+    }
+  };
+  walk(obj);
+  return stripped;
+}
+
 async function downloadConfigZip() {
   if (!validateConfig()) return;
 
+  let anyStripped = false;
+  const j = (obj) => { if (obj && stripKeepMarkers(obj)) anyStripped = true; return obj; };
+
   const zip = new JSZip();
-  zip.file('elements.json', JSON.stringify(makeElementsJson(), null, 2));
-  zip.file('gui.json',      JSON.stringify(makeGuiJson(),      null, 2));
-  zip.file('first.json',    JSON.stringify(makeFirstJson(),    null, 2));
-  const second = makeSecondJson();
+  zip.file('elements.json', JSON.stringify(j(makeElementsJson()), null, 2));
+  zip.file('gui.json',      JSON.stringify(makeGuiJson(),         null, 2));
+  zip.file('first.json',    JSON.stringify(j(makeFirstJson()),    null, 2));
+  const second = j(makeSecondJson());
   if (second) zip.file('second.json', JSON.stringify(second, null, 2));
-  const third = makeThirdJson();
+  const third = j(makeThirdJson());
   if (third)  zip.file('third.json',  JSON.stringify(third,  null, 2));
-  const wifi = makeWifiJson();
+  const wifi = j(makeWifiJson());
   if (wifi)   zip.file('wifi.json',   JSON.stringify(wifi,   null, 2));
+
+  if (anyStripped) {
+    alert('Pozn.: niektoré tajné hodnoty (kľúč/heslá) sú uložené v zariadení a '
+        + 'nie sú v ZIP-e — v exportovaných súboroch ostali prázdne. '
+        + 'Ak ich potrebuješ, prepíš príslušné polia pred exportom.');
+  }
 
   const blob = await zip.generateAsync({ type: 'blob' });
   const url  = URL.createObjectURL(blob);
@@ -411,13 +448,13 @@ function clearForm() {
 ══════════════════════════════════════════════════════════════ */
 const STORAGE_KEY = 'fiat-hell-flasher-v1';
 
-// Fields explicitly persisted to localStorage even though they're password-type.
-// These secrets are masked in the UI only to deter shoulder-surfing — the
-// operator still wants them remembered between sessions on their own machine.
-const PERSISTED_SECRETS = new Set(['cur1_blink_apikey']);
+// Secrets are never auto-persisted; they land in localStorage only when the
+// operator ticks "remember passwords + API key". Keeps the stored behavior
+// consistent with what the checkbox promises.
+const PERSISTED_SECRETS = new Set();
 
-// Persisted only when the operator opts in via the "remember passwords" box.
-const OPT_IN_SECRETS = ['wifi_password', 'ap_password'];
+// Persisted only when the operator opts in via the "remember" box.
+const OPT_IN_SECRETS = ['wifi_password', 'ap_password', 'cur1_blink_apikey'];
 
 function rememberSecretsEnabled() {
   const cb = document.getElementById('remember_secrets');
@@ -524,6 +561,10 @@ function applyProfile(data) {
     } else {
       const el = document.getElementById(key);
       if (el && (el.type === 'text' || el.type === 'number' || el.type === 'password')) {
+        // A profile carries real values (incl. empty secrets), so drop any
+        // device-kept placeholder state — otherwise secretVal would export
+        // __KEEP__ for a field the profile just set to empty.
+        clearKeptSecret(key);
         el.value = String(val);
       }
     }

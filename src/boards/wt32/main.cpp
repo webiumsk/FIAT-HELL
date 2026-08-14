@@ -271,6 +271,14 @@ String content = "<h1>ATM Access-point</br>For easy variable setting</h1>";
 
 WebServerClass server;
 AutoConnect portal(server);
+
+// True when the HTTP request comes from the device's own AP subnet
+// (AutoConnect default 192.168.4.x). Used to gate the Flash key wizard.
+static bool flashkeyIsApClient() {
+  const IPAddress c = server.client().remoteIP();
+  return c[0] == 192 && c[1] == 168 && c[2] == 4;
+}
+
 AutoConnectConfig config;
 AutoConnectAux elementsAux;
 AutoConnectAux saveAux;
@@ -474,11 +482,20 @@ void setup() {
     server.send(200, "text/html", content);
   });
 
-  // On-device Flash API key wizard (see pageflashkey.h)
+  // On-device Flash API key wizard (see pageflashkey.h). AP-only: it creates
+  // and reveals a spending API key, so restrict it to the local AP subnet.
   server.on("/flashkey", HTTP_GET, []() {
+    if (!flashkeyIsApClient()) {
+      server.send(403, "text/plain", "Wizard only via AP");
+      return;
+    }
     server.send(200, "text/html", flashKeyPageHtml(wifiStatus()));
   });
   server.on("/flashkey/run", HTTP_POST, []() {
+    if (!flashkeyIsApClient()) {
+      server.send(403, "text/plain", "Wizard only via AP");
+      return;
+    }
     server.send(200, "text/html",
                 flashKeyRunAndRender(http, deviceState, configService, FlashFS,
                                      FIRST_FILE, server.arg("phone"),
@@ -851,8 +868,11 @@ void setup() {
       ((strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 &&
         (deviceState.currencyATM[0] == '\0' || adminkey[0] == '\0' ||
          readkey[0] == '\0')) ||
-       (isGaloyMode &&
-        (blinkapikey[0] == '\0' || blinkwalletid[0] == '\0')) ||
+       // Both Galoy sources need the API key; only Blink needs a wallet id
+       // up front - Flash resolves its wallet via fetchGaloyBalance().
+       (isGaloyMode && blinkapikey[0] == '\0') ||
+       (paymentService.isBlink(deviceState.fundingSourceBuffer) &&
+        blinkwalletid[0] == '\0') ||
        (currencyOne[0] == '\0'));
 
   // Decide portal behavior once, then call portal.begin() once.

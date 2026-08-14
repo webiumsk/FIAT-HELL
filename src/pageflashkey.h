@@ -64,7 +64,29 @@ inline String flashKeyPageHtml(bool online) {
   return html;
 }
 
-inline String flashKeyResultHtml(bool ok, const String &detail) {
+// Escape text before embedding it in HTML — detail may carry error messages
+// straight from the Flash API and the API key itself.
+inline String flashKeyEscape(const String &in) {
+  String out;
+  out.reserve(in.length() + 8);
+  for (size_t i = 0; i < in.length(); i++) {
+    const char c = in[i];
+    switch (c) {
+    case '&': out += F("&amp;"); break;
+    case '<': out += F("&lt;"); break;
+    case '>': out += F("&gt;"); break;
+    case '"': out += F("&quot;"); break;
+    case '\'': out += F("&#39;"); break;
+    default: out += c;
+    }
+  }
+  return out;
+}
+
+// `detail` is always treated as plain text and escaped. `keyToShow`, when
+// non-empty, is rendered (escaped) in the styled key box.
+inline String flashKeyResultHtml(bool ok, const String &detail,
+                                 const String &keyToShow = String()) {
   String html = F("<!DOCTYPE html><html lang=\"sk\"><head><meta "
                   "charset=\"utf-8\"><meta name=\"viewport\" "
                   "content=\"width=device-width,initial-scale=1\">"
@@ -77,13 +99,19 @@ inline String flashKeyResultHtml(bool ok, const String &detail) {
               "<p>Toto je tvoj kluc &mdash; zobrazuje sa <b>len raz</b>. "
               "Odloz si ho na bezpecne miesto (napr. spravca hesiel):</p>"
               "<div class=key>");
-    html += detail;
+    html += flashKeyEscape(detail);
     html += F("</div><p>Wallet ID netreba &mdash; zariadenie si ho zisti "
               "samo.</p>");
   } else {
     html += F("<div class=err>&#10006; Nepodarilo sa: ");
-    html += detail;
-    html += F("</div><p>Vyziadaj si v appke novy SMS kod a <a "
+    html += flashKeyEscape(detail);
+    html += F("</div>");
+    if (keyToShow.length() > 0) {
+      html += F("<div class=key>");
+      html += flashKeyEscape(keyToShow);
+      html += F("</div>");
+    }
+    html += F("<p>Vyziadaj si v appke novy SMS kod a <a "
               "href=\"/flashkey\">skus znova</a>.</p>");
   }
   html += F("<p><a href=\"/\">&larr; spat</a></p></body></html>");
@@ -120,8 +148,10 @@ inline String flashKeyRunAndRender(HTTPClient &http, DeviceState &ds,
     // Key exists on the account but we couldn't persist it - show it so the
     // operator can enter it manually instead of losing it forever.
     return flashKeyResultHtml(
-        false, "kluc vznikol, ale zapis do zariadenia zlyhal - odloz si ho a "
-               "zadaj rucne v portali: <div class=key>" + apiKey + "</div>");
+        false,
+        "kluc vznikol, ale zapis do zariadenia zlyhal - odloz si ho a zadaj "
+        "rucne v portali:",
+        apiKey);
   }
   strlcpy(ds.blinkapikey, apiKey.c_str(), sizeof(ds.blinkapikey));
   Serial.println("flashkey: API key created and saved");

@@ -20,7 +20,7 @@
     </div>
     <p style="font-size:.75rem;color:var(--text-dim);margin-top:6px;">
       🔒 Statická stránka — tvoje údaje neopúšťajú prehliadač (idú len cez USB do zariadenia).
-      Jediné sieťové volanie je zoznam verzií z GitHubu. Detaily v Návode.
+      Zo siete sa načíta iba zoznam verzií z GitHubu a pri výbere staršej verzie aj jej .bin súbory. Detaily v Návode.
     </p>
   </header>
 
@@ -82,9 +82,9 @@
           <div class="full">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text);">
               <input type="checkbox" id="remember_secrets" style="width:auto;margin:0;" onchange="onRememberSecretsChange()">
-              Zapamätať aj heslá v tomto prehliadači
+              Zapamätať aj heslá a API kľúč v tomto prehliadači
             </label>
-            <div class="hint">Voliteľné — heslá sa uložia do localStorage tohto prehliadača, aby si ich nemusel zadávať pri každom použití. Nepoužívaj na cudzom počítači.</div>
+            <div class="hint">Voliteľné — heslá aj Flash/Blink API kľúč sa uložia do localStorage tohto prehliadača, aby si ich nemusel zadávať pri každom použití. Bez zaškrtnutia sa tajné hodnoty nepamätajú. Nepoužívaj na cudzom počítači.</div>
           </div>
           <div>
             <label for="atm_title">Nadpis ATM</label>
@@ -477,7 +477,7 @@
     <div class="instructions" style="margin-top:16px;">
       <p style="font-weight:600;margin-bottom:10px;">🔒 Súkromie a riešenie problémov</p>
       <ol>
-        <li><strong>Súkromie:</strong> táto stránka je statická (GitHub Pages) — všetko sa deje v tvojom prehliadači a cez USB kábel. Jediné sieťové volanie je zoznam verzií z GitHub API. Flash API kľúč vzniká priamo v zariadení a neprechádza cez túto stránku. Zdrojový kód je verejný; v releasoch je aj <strong>offline balík</strong> flashera.</li>
+        <li><strong>Súkromie:</strong> táto stránka je statická (GitHub Pages) — všetko sa deje v tvojom prehliadači a cez USB kábel. Zo siete sa načíta iba zoznam verzií z GitHub API a pri výbere staršej verzie firmvéru aj jej .bin súbory z GitHub releasov (lokálna verzia sa nesťahuje). Flash API kľúč vzniká priamo v zariadení a neprechádza cez túto stránku. Zdrojový kód je verejný; v releasoch je aj <strong>offline balík</strong> flashera.</li>
         <li><strong>Port sa nedá otvoriť / synchronizácia zlyhá:</strong> port smie používať len jeden program — zavri sériový monitor (PlatformIO/Arduino) a ostatné taby flashera.</li>
         <li><strong>Výplata zlyhá (PAYMENT FAILED):</strong> skontroluj zostatok Cash walletu (musí pokryť sumu + poplatok) a platnosť API kľúča.</li>
         <li><strong>Strata/únik API kľúča:</strong> v appke sa nedá spravovať — kľúč zrušíš vytvorením nového cez sprievodcu /flashkey (starý zneplatni cez apiKeyRevoke, návod v repozitári docs/OPERATOR.md).</li>

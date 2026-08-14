@@ -124,11 +124,19 @@ static void redactSecrets(const String &path, JsonDocument &doc) {
   }
 }
 
+static const char *const kConfigFiles[] = {"/elements.json", "/gui.json",
+                                           "/first.json",    "/second.json",
+                                           "/third.json",    "/wifi.json"};
+
+static bool isAllowedConfigPath(const String &path) {
+  for (auto p : kConfigFiles) {
+    if (path == p) return true;
+  }
+  return false;
+}
+
 static void dumpRedactedConfig(fs::FS &fs) {
-  static const char *const files[] = {"/elements.json", "/gui.json",
-                                      "/first.json",    "/second.json",
-                                      "/third.json",    "/wifi.json"};
-  for (auto path : files) {
+  for (auto path : kConfigFiles) {
     File f = fs.open(path, "r");
     if (!f) continue;
     DynamicJsonDocument doc(2400);
@@ -188,15 +196,20 @@ static String mergeKeepMarkers(fs::FS &fs, const String &path,
       if (!v || strstr(v, SECRET_KEEP_MARKER) == nullptr) continue;
       String stored;
       if (haveExisting) {
-        // match by name first, fall back to the same position
+        // Match by name; a matched (even empty) value is authoritative.
+        // Only fall back to the same position when NO name matched, so a
+        // reordered or unknown incoming name can't inherit an unrelated
+        // stored credential.
         const char *name = entry["name"] | "";
+        bool nameMatched = false;
         for (JsonObject old : existing.as<JsonArray>()) {
           if (strcmp(old["name"] | "", name) == 0) {
             stored = (const char *)(old["value"] | "");
+            nameMatched = true;
             break;
           }
         }
-        if (stored.length() == 0 && i < existing.as<JsonArray>().size()) {
+        if (!nameMatched && i < existing.as<JsonArray>().size()) {
           stored = (const char *)(existing[i]["value"] | "");
         }
       }
@@ -233,15 +246,21 @@ void runSerialConfigWindow(fs::FS &fs) {
         const int colon2 = line.indexOf(':', 13);
         if (colon2 > 13) {
           String filePath = line.substring(13, colon2);
-          String fileContent =
-              mergeKeepMarkers(fs, filePath, line.substring(colon2 + 1));
-          File f = fs.open(filePath, "w");
-          if (f) {
-            f.print(fileContent);
-            f.close();
+          if (!isAllowedConfigPath(filePath)) {
+            // Never let the serial channel write outside the known config set.
+            Serial.print("FIAT-HELL:REJECTED:");
+            Serial.println(filePath);
+          } else {
+            String fileContent =
+                mergeKeepMarkers(fs, filePath, line.substring(colon2 + 1));
+            File f = fs.open(filePath, "w");
+            if (f) {
+              f.print(fileContent);
+              f.close();
+            }
+            Serial.print("FIAT-HELL:WROTE:");
+            Serial.println(filePath);
           }
-          Serial.print("FIAT-HELL:WROTE:");
-          Serial.println(filePath);
         }
       } else if (line == "READ_CONFIG") {
         dumpRedactedConfig(fs);

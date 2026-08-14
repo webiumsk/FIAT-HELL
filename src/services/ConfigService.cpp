@@ -249,12 +249,29 @@ bool ConfigService::updateFirstBlinkApiKey(fs::FS &fs, const char *path,
 
   doc[0]["value"] = apiKey;
 
-  File out = fs.open(path, "w");
+  // Write to a temp file and only replace the original on a fully verified
+  // write, so a power loss mid-write can't corrupt /first.json and brick the
+  // config (this path stores the spending API key).
+  const size_t expected = measureJson(doc);
+  const String tmpPath = String(path) + ".tmp";
+
+  File out = fs.open(tmpPath.c_str(), "w");
   if (!out) {
     return false;
   }
-  serializeJson(doc, out);
+  const size_t written = serializeJson(doc, out);
   out.close();
+
+  if (written != expected) {
+    fs.remove(tmpPath.c_str());
+    return false;
+  }
+
+  fs.remove(path); // SPIFFS rename fails if the destination exists
+  if (!fs.rename(tmpPath.c_str(), path)) {
+    fs.remove(tmpPath.c_str());
+    return false;
+  }
   return true;
 }
 

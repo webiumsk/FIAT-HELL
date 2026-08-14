@@ -84,8 +84,10 @@ webstránku ani tretiu stranu.
 ## 6. Bezpečnosť
 
 - **Čo kam ide:** flasher je statická stránka — všetky údaje ostávajú
-  v prehliadači a idú len cez USB do zariadenia. Jediné sieťové volanie je
-  zoznam verzií z GitHub API. API kľúč vzniká v zariadení.
+  v prehliadači a idú len cez USB do zariadenia. Zo siete sa načíta iba
+  zoznam verzií z GitHub API a pri výbere staršej verzie firmvéru aj jej
+  .bin súbory z GitHub releasov (lokálna „Najnovšia" verzia sa nesťahuje).
+  API kľúč vzniká v zariadení.
 - **Profil súbor** obsahuje heslá a kľúč v čitateľnej podobe — ukladaj na
   šifrovaný disk alebo do správcu hesiel.
 - **Únik/rotácia kľúča:** vytvor nový kľúč cez `/flashkey` (starý ostáva

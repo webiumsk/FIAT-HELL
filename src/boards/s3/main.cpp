@@ -1083,11 +1083,21 @@ void setup() {
   server.on("/fwlink", redirectToConfigPortal);
   server.on("/favicon.ico", []() { server.send(204, "text/plain", ""); });
 
-  // On-device Flash API key wizard (see pageflashkey.h)
-  server.on("/flashkey", HTTP_GET, []() {
+  // On-device Flash API key wizard (see pageflashkey.h). AP-only: it creates
+  // and reveals a spending API key, so restrict it to the local AP just like
+  // the other config routes.
+  server.on("/flashkey", HTTP_GET, [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "text/plain", "Wizard only via AP — hold BOOT 3 s to enable");
+      return;
+    }
     server.send(200, "text/html", flashKeyPageHtml(wifiStatus()));
   });
-  server.on("/flashkey/run", HTTP_POST, []() {
+  server.on("/flashkey/run", HTTP_POST, [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "text/plain", "Wizard only via AP — hold BOOT 3 s to enable");
+      return;
+    }
     server.send(200, "text/html",
                 flashKeyRunAndRender(http, deviceState, configService, FlashFS,
                                      FIRST_FILE, server.arg("phone"),
@@ -2017,8 +2027,11 @@ void setup() {
       ((strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 &&
         (deviceState.currencyATM[0] == '\0' || adminkey[0] == '\0' ||
          readkey[0] == '\0')) ||
-       (isGaloyMode &&
-        (blinkapikey[0] == '\0' || blinkwalletid[0] == '\0')) ||
+       // Both Galoy sources need the API key; only Blink needs a wallet id
+       // up front - Flash resolves its wallet via fetchGaloyBalance().
+       (isGaloyMode && blinkapikey[0] == '\0') ||
+       (paymentService.isBlink(deviceState.fundingSourceBuffer) &&
+        blinkwalletid[0] == '\0') ||
        (currencyOne[0] == '\0'));
 
   const bool shouldOpenPortalNow =
