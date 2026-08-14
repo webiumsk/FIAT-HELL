@@ -3437,10 +3437,19 @@ bool checkBoltInvoice() {
  */
 bool getBlinkLnURL(const char *invoice) {
   // Snapshot the wallet id under the background task's mutex — the task
-  // rewrites deviceState.blinkwalletid during periodic balance fetches.
+  // rewrites deviceState.blinkwalletid during periodic balance fetches and
+  // holds the mutex across its HTTP calls, so allow a generous wait.
   char walletId[128];
-  if (!priceBalanceCopyWalletId(walletId, sizeof(walletId))) {
+  const PriceBalanceWalletIdResult idResult =
+      priceBalanceCopyWalletId(walletId, sizeof(walletId), 30000);
+  if (idResult == PB_WALLETID_TASK_NOT_RUNNING) {
+    // No concurrent writer exists; reading deviceState directly is safe.
     strlcpy(walletId, blinkwalletid, sizeof(walletId));
+  } else if (idResult == PB_WALLETID_TIMEOUT) {
+    // Writer may be mid-update — paying with a possibly torn id risks a
+    // payout from the wrong wallet. Fail; the UI shows the error screen.
+    Serial.println("Payout aborted: wallet id snapshot timed out");
+    return false;
   }
   return FundingService::payInvoice(http, deviceState, invoice, walletId);
 }

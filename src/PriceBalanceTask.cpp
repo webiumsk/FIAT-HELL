@@ -267,14 +267,15 @@ void triggerPriceBalanceFetch(PriceBalanceRequest req) {
     xQueueSend(g_requestQueue, &req, 0);
 }
 
-bool priceBalanceCopyWalletId(char *dst, size_t dstSize) {
+PriceBalanceWalletIdResult priceBalanceCopyWalletId(char *dst, size_t dstSize,
+                                                    uint32_t timeoutMs) {
   if (!g_deviceState || !g_dataMutex)
-    return false;
-  if (xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(1000)) != pdTRUE)
-    return false;
+    return PB_WALLETID_TASK_NOT_RUNNING;
+  if (xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(timeoutMs)) != pdTRUE)
+    return PB_WALLETID_TIMEOUT;
   strlcpy(dst, g_deviceState->blinkwalletid, dstSize);
   xSemaphoreGive(g_dataMutex);
-  return true;
+  return PB_WALLETID_OK;
 }
 
 bool isPriceBalanceDataReady() { return g_dataReadyForUi; }
