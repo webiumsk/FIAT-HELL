@@ -254,6 +254,19 @@ const STORAGE_KEY = 'fiat-hell-flasher-v1';
 // operator still wants them remembered between sessions on their own machine.
 const PERSISTED_SECRETS = new Set(['cur1_blink_apikey']);
 
+// Persisted only when the operator opts in via the "remember passwords" box.
+const OPT_IN_SECRETS = ['wifi_password', 'ap_password'];
+
+function rememberSecretsEnabled() {
+  const cb = document.getElementById('remember_secrets');
+  return !!(cb && cb.checked);
+}
+
+function onRememberSecretsChange() {
+  saveToStorage();
+  updateSecretFingerprints();
+}
+
 function saveToStorage() {
   const data = {};
   // password-type inputs are intentionally excluded — except those in
@@ -264,6 +277,13 @@ function saveToStorage() {
     const el = document.getElementById(id);
     if (el) data[id] = el.value;
   });
+  data['remember_secrets'] = rememberSecretsEnabled();
+  if (rememberSecretsEnabled()) {
+    OPT_IN_SECRETS.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) data[id] = el.value;
+    });
+  }
   document.querySelectorAll('input[type="radio"]:checked')
     .forEach(r => { data['radio_' + r.name] = r.value; });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -295,6 +315,9 @@ function loadFromStorage() {
       if (key.startsWith('radio_')) {
         const radio = document.querySelector(`input[name="${key.slice(6)}"][value="${val}"]`);
         if (radio) radio.checked = true;
+      } else if (key === 'remember_secrets') {
+        const cb = document.getElementById('remember_secrets');
+        if (cb) cb.checked = !!val;
       } else {
         const el = document.getElementById(key);
         if (el) el.value = val;
@@ -302,6 +325,72 @@ function loadFromStorage() {
     });
     onFundingChange();
   } catch (_) {}
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Profile file export/import (whole form incl. passwords)
+══════════════════════════════════════════════════════════════ */
+function collectProfile() {
+  const data = {};
+  document.querySelectorAll('input[type="text"], input[type="number"], input[type="password"]')
+    .forEach(el => { if (el.id) data[el.id] = el.value; });
+  document.querySelectorAll('input[type="radio"]:checked')
+    .forEach(r => { data['radio_' + r.name] = r.value; });
+  return data;
+}
+
+function saveProfile() {
+  if (!confirm('Profil bude obsahovať aj heslá a API kľúč v čitateľnej podobe.\n'
+             + 'Ulož ho na bezpečné miesto (napr. šifrovaný disk / správca hesiel).\n\nPokračovať?')) return;
+  const blob = new Blob(
+    [JSON.stringify({ _format: 'fiat-hell-profile-v1', ...collectProfile() }, null, 2)],
+    { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'fiat-hell-profil.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function applyProfile(data) {
+  Object.entries(data).forEach(([key, val]) => {
+    if (key === '_format') return;
+    if (key.startsWith('radio_')) {
+      const radio = document.querySelector(`input[name="${key.slice(6)}"][value="${val}"]`);
+      if (radio) radio.checked = true;
+    } else {
+      const el = document.getElementById(key);
+      if (el && (el.type === 'text' || el.type === 'number' || el.type === 'password')) {
+        el.value = String(val);
+      }
+    }
+  });
+  onFundingChange();
+  onBoardChange();
+  saveToStorage();
+  updateSecretFingerprints();
+}
+
+function loadProfileFromFile(input) {
+  const file = input.files && input.files[0];
+  input.value = ''; // allow re-selecting the same file later
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (data._format !== 'fiat-hell-profile-v1') {
+        alert('Toto nevyzerá ako FIAT-HELL profil.');
+        return;
+      }
+      applyProfile(data);
+      alert('Profil načítaný.');
+    } catch (e) {
+      alert('Súbor sa nedá prečítať: ' + e.message);
+    }
+  };
+  reader.readAsText(file);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -596,6 +685,9 @@ document.addEventListener('DOMContentLoaded', () => {
     onFundingChange,
     onBoardChange,
     scanWifiAction,
+    onRememberSecretsChange,
+    saveProfile,
+    loadProfileFromFile,
     downloadConfigZip,
     clearForm,
     connectAndFlashWithConfig,

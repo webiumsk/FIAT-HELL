@@ -18,6 +18,10 @@
       <span class="dot"></span>
       Vyžaduje <strong>Chrome</strong> alebo <strong>Edge</strong> na desktope (Web Serial API)
     </div>
+    <p style="font-size:.75rem;color:var(--text-dim);margin-top:6px;">
+      🔒 Statická stránka — tvoje údaje neopúšťajú prehliadač (idú len cez USB do zariadenia).
+      Jediné sieťové volanie je zoznam verzií z GitHubu. Detaily v Návode.
+    </p>
   </header>
 
   <!-- ── Step tabs ── -->
@@ -31,6 +35,11 @@
             aria-controls="panel-flash" aria-selected="false"
             onclick="showPanel('flash')">
       <span class="step-num">2</span> Flash firmvéru
+    </button>
+    <button type="button" class="step" id="tab-guide" role="tab"
+            aria-controls="panel-guide" aria-selected="false"
+            onclick="showPanel('guide')">
+      <span class="step-num">?</span> Návod
     </button>
   </div>
 
@@ -62,11 +71,20 @@
           <div>
             <label for="wifi_password">WiFi heslo</label>
             <input type="password" id="wifi_password" placeholder="heslo siete">
+            <div class="hint secret-fingerprint" id="fp_wifi_password"></div>
           </div>
           <div>
             <label for="ap_password">Heslo WiFi AP portálu</label>
             <input type="password" id="ap_password" placeholder="min. 8 znakov" required minlength="8">
             <div class="hint">Heslo pre "LN ATM-xxxx" AP aj pre webový portál (meno: <strong>admin</strong>)</div>
+            <div class="hint secret-fingerprint" id="fp_ap_password"></div>
+          </div>
+          <div class="full">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text);">
+              <input type="checkbox" id="remember_secrets" style="width:auto;margin:0;" onchange="onRememberSecretsChange()">
+              Zapamätať aj heslá v tomto prehliadači
+            </label>
+            <div class="hint">Voliteľné — heslá sa uložia do localStorage tohto prehliadača, aby si ich nemusel zadávať pri každom použití. Nepoužívaj na cudzom počítači.</div>
           </div>
           <div>
             <label for="atm_title">Nadpis ATM</label>
@@ -293,6 +311,14 @@
       <button class="btn btn-outline" onclick="showPanel('flash')">
         Prejsť na Flash →
       </button>
+      <button class="btn btn-outline" onclick="saveProfile()">
+        💾 Uložiť profil
+      </button>
+      <button class="btn btn-outline" onclick="document.getElementById('profile-file-input').click()">
+        📂 Načítať profil
+      </button>
+      <input type="file" id="profile-file-input" accept=".json,application/json"
+             style="display:none" onchange="loadProfileFromFile(this)">
       <button class="btn btn-secondary" onclick="clearForm()">
         Vymazať formulár
       </button>
@@ -392,6 +418,65 @@
     <div class="btn-row" style="margin-top:20px;">
       <button class="btn btn-secondary" onclick="showPanel('config')">
         ← Konfigurácia
+      </button>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════ NÁVOD ════════════════════════════════ -->
+  <div class="page-panel" id="panel-guide">
+
+    <div class="instructions">
+      <p style="font-weight:600;margin-bottom:10px;">1️⃣ Získaj Flash API kľúč (robí sa priamo v ATM)</p>
+      <ol>
+        <li>Nainštaluj si appku <strong>Flash</strong> (<a href="https://play.google.com/store/apps/details?id=com.lnflash" target="_blank" rel="noopener noreferrer" style="color:var(--orange);">Android</a> / <a href="https://apps.apple.com/us/app/flash-bitcoin-wallet/id6711339709" target="_blank" rel="noopener noreferrer" style="color:var(--orange);">iOS</a>) a zaregistruj sa svojím telefónnym číslom.</li>
+        <li>V appke prejdi do <strong>Cash</strong> walletu a vlož si doň prostriedky na výplaty (ATM vypláca z Cash walletu — Bitcoin wallet v appke je non-custodiálny a ATM ho použiť nevie).</li>
+        <li>Naflashuj ATM (kroky 2–3 nižšie), pripoj ho na WiFi a otvor v prehliadači stránku zariadenia <strong>/flashkey</strong> (odkaz je aj v portáli pri poli API kľúč).</li>
+        <li>Postupuj podľa sprievodcu: v appke si vyžiadaš SMS kód, ale <strong>zadáš ho do sprievodcu</strong> (nie do appky). Kľúč sa vytvorí a uloží priamo do zariadenia — nikam inam sa neposiela. Zobrazí sa <strong>len raz</strong>, odlož si ho.</li>
+      </ol>
+    </div>
+
+    <div class="instructions" style="margin-top:16px;">
+      <p style="font-weight:600;margin-bottom:10px;">2️⃣ Konfigurácia (Krok 1)</p>
+      <ol>
+        <li>Vyplň menu, hodnoty bankoviek, poplatok a heslo AP portálu (min. 8 znakov).</li>
+        <li><strong>WiFi:</strong> ak už je v zariadení FIAT-HELL firmvér, klikni <strong>📶 Načítať siete zo zariadenia</strong> a vyber sieť zo zoznamu; pri úplne prvom flashi zadaj názov ručne.</li>
+        <li><strong>Heslá:</strong> štandardne sa nepamätajú. Zaškrtni „Zapamätať aj heslá", ak chceš, aby ostali v tomto prehliadači, alebo použi <strong>💾 Uložiť profil</strong> — celý formulár (vrátane hesiel) sa uloží do súboru, ktorý si držíš sám a kedykoľvek načítaš aj na inom počítači.</li>
+        <li>Funding source <strong>Flash</strong>: API kľúč vyplň, ak ho už máš zo sprievodcu; Wallet ID si zariadenie zistí samo.</li>
+      </ol>
+    </div>
+
+    <div class="instructions" style="margin-top:16px;">
+      <p style="font-weight:600;margin-bottom:10px;">3️⃣ Flash (Krok 2)</p>
+      <ol>
+        <li>Vyber <strong>dosku</strong> — každá má vlastný firmware a iné flash adresy.</li>
+        <li><strong>ESP32-8048S050 (S3):</strong> pred flashom drž <span class="kbd">BOOT</span>, stlač a pusť <span class="kbd">RESET</span>, potom pusť <span class="kbd">BOOT</span>. <strong>WT32-SC01:</strong> resetne sa sám.</li>
+        <li>Klikni <strong>⚡ Flash + nahraj konfig</strong> a vyber COM port. Firmware aj konfigurácia sa nahrajú naraz (~2 min).</li>
+        <li>Pri už naflashovanom zariadení stačí <strong>⬆ Iba konfig</strong> — bez flashovania.</li>
+      </ol>
+    </div>
+
+    <div class="instructions" style="margin-top:16px;">
+      <p style="font-weight:600;margin-bottom:10px;">4️⃣ Prvé spustenie</p>
+      <ol>
+        <li>Zariadenie sa reštartuje, pripojí na WiFi a hlavná obrazovka ukáže kurz a zostatok tvojho Cash walletu. Ak ukazuje OFFLINE, skontroluj WiFi; ak 0, skontroluj Cash zostatok a API kľúč.</li>
+        <li>Nastavenia zmeníš cez AP portál: podrž <span class="kbd">BOOT</span> pri štarte (S3) alebo klikni na logo, pripoj sa na AP <strong>LN ATM-xxxx</strong> a otvor <strong>http://192.168.4.1</strong> (meno <strong>admin</strong> + tvoje heslo portálu).</li>
+        <li>Skúšobná výplata: vlož najmenšiu bankovku a vyplať si ju do vlastnej peňaženky.</li>
+      </ol>
+    </div>
+
+    <div class="instructions" style="margin-top:16px;">
+      <p style="font-weight:600;margin-bottom:10px;">🔒 Súkromie a riešenie problémov</p>
+      <ol>
+        <li><strong>Súkromie:</strong> táto stránka je statická (GitHub Pages) — všetko sa deje v tvojom prehliadači a cez USB kábel. Jediné sieťové volanie je zoznam verzií z GitHub API. Flash API kľúč vzniká priamo v zariadení a neprechádza cez túto stránku. Zdrojový kód je verejný; v releasoch je aj <strong>offline balík</strong> flashera.</li>
+        <li><strong>Port sa nedá otvoriť / synchronizácia zlyhá:</strong> port smie používať len jeden program — zavri sériový monitor (PlatformIO/Arduino) a ostatné taby flashera.</li>
+        <li><strong>Výplata zlyhá (PAYMENT FAILED):</strong> skontroluj zostatok Cash walletu (musí pokryť sumu + poplatok) a platnosť API kľúča.</li>
+        <li><strong>Strata/únik API kľúča:</strong> v appke sa nedá spravovať — kľúč zrušíš vytvorením nového cez sprievodcu /flashkey (starý zneplatni cez apiKeyRevoke, návod v repozitári docs/OPERATOR.md).</li>
+      </ol>
+    </div>
+
+    <div class="btn-row" style="margin-top:20px;">
+      <button class="btn btn-primary" onclick="showPanel('config')">
+        Začať konfiguráciou →
       </button>
     </div>
   </div>
