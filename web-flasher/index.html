@@ -361,7 +361,12 @@
             <input type="radio" name="board" id="board_wt32" value="wt32" onchange="onBoardChange()">
             <label for="board_wt32">WT32-SC01 (ESP32)</label>
           </div>
-          <div class="hint">Každá doska má vlastný firmware a iné flash adresy — zlý výber = zariadenie nenabootuje.</div>
+          <div class="hint">
+            Nevieš, ktorú máš? Pozri <strong>nápis na zadnej strane dosky</strong>:<br>
+            • <strong>ESP32-8048S050</strong> — veľký 5-palcový displej (800×480), nápis „ESP32-8048S050" / „Sunton"<br>
+            • <strong>WT32-SC01</strong> — menší 3,5-palcový displej (480×320), nápis „WT32-SC01"<br>
+            Každá doska má vlastný firmware a iné flash adresy — zlý výber = zariadenie nenabootuje (oprava: flashni znova so správnou doskou).
+          </div>
         </div>
       </div>
 
@@ -453,7 +458,7 @@
     <div class="instructions" style="margin-top:16px;">
       <p style="font-weight:600;margin-bottom:10px;">3️⃣ Flash (Krok 2)</p>
       <ol>
-        <li>Vyber <strong>dosku</strong> — každá má vlastný firmware a iné flash adresy.</li>
+        <li>Vyber <strong>dosku</strong> — každá má vlastný firmware a iné flash adresy. Model zistíš z nápisu na zadnej strane dosky: „ESP32-8048S050" = veľký 5" displej, „WT32-SC01" = menší 3,5" displej.</li>
         <li><strong>ESP32-8048S050 (S3):</strong> pred flashom drž <span class="kbd">BOOT</span>, stlač a pusť <span class="kbd">RESET</span>, potom pusť <span class="kbd">BOOT</span>. <strong>WT32-SC01:</strong> resetne sa sám.</li>
         <li>Klikni <strong>⚡ Flash + nahraj konfig</strong> a vyber COM port. Firmware aj konfigurácia sa nahrajú naraz (~2 min).</li>
         <li>Pri už naflashovanom zariadení stačí <strong>⬆ Iba konfig</strong> — bez flashovania.</li>
