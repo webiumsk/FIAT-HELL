@@ -95,6 +95,7 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
 #include <JC_Button.h>
 #include <SPI.h>
 
+#include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <Bitcoin.h>
 #include <HTTPClient.h>
@@ -569,6 +570,32 @@ static int billAcceptorRead() {
 
 static bool exitCaptivePortalLoopOnce = false;
 static bool suspendTouchPolling = false;
+
+// Own captive-portal DNS. AutoConnect only starts its DNS from handleClient
+// when its whileCaptivePortal callback returns true, and it isn't involved at
+// all when we bring up the AP manually - so the config AP had no DNS and
+// phones showed "connected, no internet" instead of the sign-in prompt. We
+// run our own resolver (all names -> softAP IP) whenever the AP is up, and
+// tell AutoConnect to keep its hands off port 53 (see the callback below).
+static DNSServer apDnsServer;
+static bool apDnsRunning = false;
+
+static void ensureApDns() {
+  if (apDnsRunning) return;
+  if (!(WiFi.getMode() & WIFI_AP)) return;
+  apDnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  if (apDnsServer.start(53, "*", WiFi.softAPIP())) {
+    apDnsRunning = true;
+    Serial.println("Captive DNS started -> " + WiFi.softAPIP().toString());
+  }
+}
+
+static void stopApDns() {
+  if (!apDnsRunning) return;
+  apDnsServer.stop();
+  apDnsRunning = false;
+  Serial.println("Captive DNS stopped");
+}
 static bool pendingPortalCompletion = false;
 static bool appStartupCompleted = false;
 static bool portalRequestedByUser = false;
@@ -579,6 +606,9 @@ static bool pendingConfigReload = false;
 static unsigned long pendingRestartAt = 0;
 
 static bool allowSetupToContinueWhilePortalStaysAlive() {
+  // When our own captive DNS owns port 53, returning false here keeps
+  // AutoConnect from starting a second DNS server on the same port.
+  if (apDnsRunning) return false;
   if (exitCaptivePortalLoopOnce) {
     exitCaptivePortalLoopOnce = false;
     Serial.println("Leaving blocking captive portal loop; keeping portal alive");
@@ -2113,6 +2143,7 @@ void setup() {
       }
       Serial.println("Portal available. AP Name: " + acConfig.apid);
       Serial.println("Portal AP IP: " + WiFi.softAPIP().toString());
+      ensureApDns();
       if (MDNS.begin("fiathell")) {
         MDNS.addService("http", "tcp", 80);
         Serial.println("mDNS: http://fiathell.local (config AP)");
@@ -3946,6 +3977,7 @@ void triggerRuntimeConfigMode() {
   portal.config(acConfig);
   if (!(WiFi.getMode() & WIFI_AP)) WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str(), acConfig.channel);
+  ensureApDns();
   configModeActiveUntil = millis() + 5UL * 60UL * 1000UL;
   Serial.println("Config mode active: " + acConfig.apid + " -> 192.168.4.1  (5 min)");
 }
@@ -4112,11 +4144,24 @@ void loop() {
     acConfig.preserveAPMode = false;
     acConfig.autoReconnect  = true;
     portal.config(acConfig);
+    stopApDns();
     if (WiFi.getMode() & WIFI_AP) WiFi.mode(WIFI_STA);
     Serial.println("Config mode timed out — AP closed");
   }
 
   lv_timer_handler();    // Let the GUI do its work
+
+  // Own captive-portal DNS: claim port 53 before AutoConnect's handleClient so
+  // its callback keeps it from starting a second resolver. Keep it running
+  // while the AP is up (so the sign-in prompt appears on phones), stop it once
+  // the AP is gone.
+  if (WiFi.getMode() & WIFI_AP) {
+    ensureApDns();
+    if (apDnsRunning) apDnsServer.processNextRequest();
+  } else {
+    stopApDns();
+  }
+
   portal.handleClient(); // Already non‑blocking
 
   if (pendingConfigReload) {
@@ -4133,6 +4178,7 @@ void loop() {
           Serial.println("Re-enabling config AP alongside STA");
           WiFi.mode(WIFI_AP_STA);
           WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str());
+          ensureApDns();
         }
 
         Serial.println("WiFi connected in config portal; staying in settings mode");
