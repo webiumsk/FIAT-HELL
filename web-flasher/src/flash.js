@@ -185,6 +185,63 @@ async function uploadConfig(port, configFiles, log) {
   }
 }
 
+// WiFi scan via the serial provisioning window: reset the device, wait for
+// CONFIG_READY, send SCAN_WIFI and parse the FIAT-HELL:WIFI_LIST line.
+// Requires FIAT-HELL firmware already on the device.
+export async function scanWifiViaSerial({ log }) {
+  log('Vyber COM port zariadenia...');
+  const port = await navigator.serial.requestPort();
+  await port.open({ baudRate: 115200 });
+
+  try {
+    log('Reštartujem zariadenie cez RTS (ak hardvér podporuje)...');
+    const rtsOk = await pulseResetViaRTS(port, log);
+    if (!rtsOk) log('Ak nič nepríde do 20 s, stlač RESET na zariadení.');
+    log('Čakám na CONFIG_READY...');
+
+    const decoder = new TextDecoder();
+    const reader  = port.readable.getReader();
+    let buf = '';
+    let networks = null;
+    let readySeen = false;
+    let cancelTimer = setTimeout(() => reader.cancel(), 20000);
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        if (!readySeen && buf.includes('FIAT-HELL:CONFIG_READY')) {
+          readySeen = true;
+          clearTimeout(cancelTimer);
+          log('Zariadenie pripravené, skenujem siete (~5 s)...');
+          const writer = port.writable.getWriter();
+          try { await writer.write(enc('SCAN_WIFI\n')); }
+          finally { writer.releaseLock(); }
+          cancelTimer = setTimeout(() => reader.cancel(), 15000);
+        }
+
+        const m = buf.match(/FIAT-HELL:WIFI_LIST:(\[.*?\])\s*\n/);
+        if (m) {
+          try { networks = JSON.parse(m[1]); } catch (_) { networks = []; }
+          break;
+        }
+      }
+    } finally {
+      clearTimeout(cancelTimer);
+      try { reader.releaseLock(); } catch (_) {}
+    }
+
+    if (!readySeen) throw new Error('CONFIG_READY neprišiel — je v zariadení FIAT-HELL firmvér?');
+    if (networks === null) throw new Error('Zoznam sietí neprišiel — skús znova.');
+    log(`Nájdených sietí: ${networks.length}`);
+    return networks;
+  } finally {
+    try { await port.close(); } catch (_) {}
+  }
+}
+
 // "Config only" flow: open the port, pulse RTS to reset the chip, then run
 // the same wait-and-send sequence. No flashing happens.
 export async function uploadConfigOnly({ log, setProgress, configFiles }) {

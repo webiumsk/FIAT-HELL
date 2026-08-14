@@ -124,6 +124,7 @@ LV_IMG_DECLARE(lnbits);
 #include "services/ConfigService.h"
 #include "services/FundingService.h"
 #include "services/PaymentService.h"
+#include "services/SerialConfigService.h"
 #include "services/UiController.h"
 // pageflashkey.h must come before the http/field alias macros below
 #include "pageflashkey.h"
@@ -953,39 +954,9 @@ void setup() {
     SPIFFS.format();
   }
 
-  // Serial config upload window: web installer sends WRITE_CONFIG:/file.json:{json}
-  // then CONFIG_DONE. Device writes files to SPIFFS and continues normal boot.
-  // Only blocks if data arrives within 300 ms — normal boots are not delayed.
-  Serial.println("FIAT-HELL:CONFIG_READY");
-  {
-    const unsigned long detectEnd = millis() + 2000UL;
-    while (millis() < detectEnd && !Serial.available()) yield();
-    if (Serial.available()) {
-      const unsigned long cfgDeadline = millis() + 10000UL;
-      while (millis() < cfgDeadline) {
-        if (Serial.available()) {
-          String line = Serial.readStringUntil('\n');
-          line.trim();
-          if (line.startsWith("WRITE_CONFIG:")) {
-            // format: WRITE_CONFIG:/filename.json:{json_content}
-            const int colon2 = line.indexOf(':', 13);
-            if (colon2 > 13) {
-              String filePath    = line.substring(13, colon2);
-              String fileContent = line.substring(colon2 + 1);
-              File f = SPIFFS.open(filePath, "w");
-              if (f) { f.print(fileContent); f.close(); }
-              Serial.print("FIAT-HELL:WROTE:");
-              Serial.println(filePath);
-            }
-          } else if (line == "CONFIG_DONE") {
-            Serial.println("FIAT-HELL:CONFIG_SAVED");
-            break;
-          }
-        }
-        yield();
-      }
-    }
-  }
+  // Serial provisioning window for the web flasher (config upload + WiFi
+  // scan) - see services/SerialConfigService.h for the protocol.
+  SerialConfigService::runSerialConfigWindow(SPIFFS);
 
   // get the saved details and store in global variables
   File paramFile = FlashFS.open(PARAM_FILE, "r");

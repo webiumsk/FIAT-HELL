@@ -53,8 +53,11 @@
         <div class="form-grid">
           <div>
             <label for="wifi_ssid">WiFi sieť (SSID)</label>
-            <input type="text" id="wifi_ssid" placeholder="Názov siete">
-            <div class="hint">Nahratá cez USB — nie je potrebné sa pripojiť na portál</div>
+            <input type="text" id="wifi_ssid" placeholder="Názov siete" list="wifi_networks">
+            <datalist id="wifi_networks"></datalist>
+            <button type="button" class="btn btn-outline" style="margin-top:6px;font-size:.85rem;padding:6px 12px;"
+                    id="btn-scan-wifi" onclick="scanWifiAction()">📶 Načítať siete zo zariadenia</button>
+            <div class="hint" id="wifi-scan-hint">Nahratá cez USB — netreba portál. Sken sietí funguje, keď je v zariadení FIAT-HELL firmvér (pri prvom flashi zadaj názov ručne).</div>
           </div>
           <div>
             <label for="wifi_password">WiFi heslo</label>

@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { checkBrowserSupport, connectAndFlash, uploadConfigOnly } from './flash.js';
+import { checkBrowserSupport, connectAndFlash, uploadConfigOnly, scanWifiViaSerial } from './flash.js';
 import { FW_VERSION, BOARDS, DEFAULT_BOARD, GITHUB_REPO } from './config.js';
 
 /* ══════════════════════════════════════════════════════════════
@@ -52,6 +52,38 @@ function onBoardChange() {
       : 'Doska sa resetne automaticky; ak flash nenabehne, drž BOOT pri pripájaní.';
   }
   populateVersionDropdown().catch(e => console.error('Releases load failed:', e));
+}
+
+/* ══════════════════════════════════════════════════════════════
+   WiFi scan via device serial (SCAN_WIFI protocol command)
+══════════════════════════════════════════════════════════════ */
+async function scanWifiAction() {
+  const btn  = document.getElementById('btn-scan-wifi');
+  const hint = document.getElementById('wifi-scan-hint');
+  btn.disabled = true;
+  const origHint = hint.textContent;
+  try {
+    hint.textContent = 'Skenujem…';
+    const networks = await scanWifiViaSerial({ log: m => { hint.textContent = m; } });
+    const dl = document.getElementById('wifi_networks');
+    dl.innerHTML = '';
+    for (const n of networks) {
+      const opt = document.createElement('option');
+      opt.value = n.ssid;
+      opt.label = `${n.ssid} (${n.rssi} dBm${n.secure ? '' : ', otvorená'})`;
+      dl.appendChild(opt);
+    }
+    hint.textContent = networks.length
+      ? `Nájdených ${networks.length} sietí — vyber zo zoznamu v poli SSID.`
+      : 'Žiadne siete sa nenašli — skús znova bližšie k routeru.';
+    if (networks.length) document.getElementById('wifi_ssid').focus();
+  } catch (e) {
+    hint.textContent = '✗ ' + e.message;
+    console.error(e);
+    setTimeout(() => { hint.textContent = origHint; }, 8000);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -563,6 +595,7 @@ document.addEventListener('DOMContentLoaded', () => {
     toggleSection,
     onFundingChange,
     onBoardChange,
+    scanWifiAction,
     downloadConfigZip,
     clearForm,
     connectAndFlashWithConfig,
