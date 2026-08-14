@@ -60,11 +60,17 @@ function onBoardChange() {
 async function scanWifiAction() {
   const btn  = document.getElementById('btn-scan-wifi');
   const hint = document.getElementById('wifi-scan-hint');
+  const setHint = (msg, tone) => {
+    hint.textContent = msg;
+    hint.style.color = tone === 'err' ? 'var(--red, #f66)'
+                     : tone === 'ok'  ? 'var(--green, #6f6)'
+                     : '';
+    hint.style.fontWeight = tone ? '600' : '';
+  };
   btn.disabled = true;
-  const origHint = hint.textContent;
   try {
-    hint.textContent = 'Skenujem…';
-    const networks = await scanWifiViaSerial({ log: m => { hint.textContent = m; } });
+    setHint('Skenujem… (zariadenie sa reštartuje, trvá to ~10 s)');
+    const networks = await scanWifiViaSerial({ log: m => setHint(m) });
     const dl = document.getElementById('wifi_networks');
     dl.innerHTML = '';
     for (const n of networks) {
@@ -73,14 +79,18 @@ async function scanWifiAction() {
       opt.label = `${n.ssid} (${n.rssi} dBm${n.secure ? '' : ', otvorená'})`;
       dl.appendChild(opt);
     }
-    hint.textContent = networks.length
-      ? `Nájdených ${networks.length} sietí — vyber zo zoznamu v poli SSID.`
-      : 'Žiadne siete sa nenašli — skús znova bližšie k routeru.';
-    if (networks.length) document.getElementById('wifi_ssid').focus();
+    if (networks.length) {
+      setHint(`✓ Nájdených ${networks.length} sietí — klikni do poľa SSID a vyber zo zoznamu.`, 'ok');
+      const ssidEl = document.getElementById('wifi_ssid');
+      ssidEl.focus();
+      // Empty field shows the datalist immediately on focus in Chrome
+    } else {
+      setHint('Žiadne siete sa nenašli — skús znova bližšie k routeru.', 'err');
+    }
   } catch (e) {
-    hint.textContent = '✗ ' + e.message;
+    // Persistent, prominent error — no auto-hide, the operator must see why.
+    setHint('✗ ' + e.message, 'err');
     console.error(e);
-    setTimeout(() => { hint.textContent = origHint; }, 8000);
   } finally {
     btn.disabled = false;
   }

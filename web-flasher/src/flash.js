@@ -191,7 +191,12 @@ async function uploadConfig(port, configFiles, log) {
 export async function scanWifiViaSerial({ log }) {
   log('Vyber COM port zariadenia...');
   const port = await navigator.serial.requestPort();
-  await port.open({ baudRate: 115200 });
+  try {
+    await port.open({ baudRate: 115200 });
+  } catch (e) {
+    throw new Error('Port sa nedá otvoriť — pravdepodobne ho drží iný program '
+                  + '(sériový monitor, iný tab flashera). Zavri ho a skús znova.');
+  }
 
   try {
     log('Reštartujem zariadenie cez RTS (ak hardvér podporuje)...');
@@ -233,8 +238,15 @@ export async function scanWifiViaSerial({ log }) {
       try { reader.releaseLock(); } catch (_) {}
     }
 
-    if (!readySeen) throw new Error('CONFIG_READY neprišiel — je v zariadení FIAT-HELL firmvér?');
-    if (networks === null) throw new Error('Zoznam sietí neprišiel — skús znova.');
+    if (!readySeen) {
+      throw new Error('Zariadenie sa neohlásilo (CONFIG_READY neprišiel). '
+                    + 'Skontroluj, či je v ňom FIAT-HELL firmvér a či port nedrží iný program; '
+                    + 'prípadne stlač RESET na zariadení hneď po kliknutí.');
+    }
+    if (networks === null) {
+      throw new Error('Zariadenie sa ohlásilo, ale zoznam sietí neposlalo — '
+                    + 'firmvér je pravdepodobne starší bez podpory skenu. Preflashuj na aktuálnu verziu.');
+    }
     log(`Nájdených sietí: ${networks.length}`);
     return networks;
   } finally {
