@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FIAT HELL – Web Flasher</title>
-  <script type="module" crossorigin src="./assets/index-r2u2-FX6.js"></script>
+  <script type="module" crossorigin src="./assets/index-JC12WYfA.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-BjsgrJU5.css">
 </head>
 <body>
@@ -18,6 +18,10 @@
       <span class="dot"></span>
       Vyžaduje <strong>Chrome</strong> alebo <strong>Edge</strong> na desktope (Web Serial API)
     </div>
+    <p style="font-size:.75rem;color:var(--text-dim);margin-top:6px;">
+      🔒 Statická stránka — tvoje údaje neopúšťajú prehliadač (idú len cez USB do zariadenia).
+      Zo siete sa načíta iba zoznam verzií z GitHubu a pri výbere staršej verzie aj jej .bin súbory. Detaily v Návode.
+    </p>
   </header>
 
   <!-- ── Step tabs ── -->
@@ -31,6 +35,11 @@
             aria-controls="panel-flash" aria-selected="false"
             onclick="showPanel('flash')">
       <span class="step-num">2</span> Flash firmvéru
+    </button>
+    <button type="button" class="step" id="tab-guide" role="tab"
+            aria-controls="panel-guide" aria-selected="false"
+            onclick="showPanel('guide')">
+      <span class="step-num">?</span> Návod
     </button>
   </div>
 
@@ -53,17 +62,29 @@
         <div class="form-grid">
           <div>
             <label for="wifi_ssid">WiFi sieť (SSID)</label>
-            <input type="text" id="wifi_ssid" placeholder="Názov siete">
-            <div class="hint">Nahratá cez USB — nie je potrebné sa pripojiť na portál</div>
+            <input type="text" id="wifi_ssid" placeholder="Názov siete" list="wifi_networks">
+            <datalist id="wifi_networks"></datalist>
+            <button type="button" class="btn btn-outline" style="margin-top:6px;font-size:.85rem;padding:6px 12px;"
+                    id="btn-scan-wifi" onclick="scanWifiAction()">📶 Načítať siete zo zariadenia</button>
+            <div class="hint" id="wifi-scan-hint">Nahratá cez USB — netreba portál. Sken sietí funguje, keď je v zariadení FIAT-HELL firmvér (pri prvom flashi zadaj názov ručne).</div>
           </div>
           <div>
             <label for="wifi_password">WiFi heslo</label>
             <input type="password" id="wifi_password" placeholder="heslo siete">
+            <div class="hint secret-fingerprint" id="fp_wifi_password"></div>
           </div>
           <div>
             <label for="ap_password">Heslo WiFi AP portálu</label>
             <input type="password" id="ap_password" placeholder="min. 8 znakov" required minlength="8">
             <div class="hint">Heslo pre "LN ATM-xxxx" AP aj pre webový portál (meno: <strong>admin</strong>)</div>
+            <div class="hint secret-fingerprint" id="fp_ap_password"></div>
+          </div>
+          <div class="full">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text);">
+              <input type="checkbox" id="remember_secrets" style="width:auto;margin:0;" onchange="onRememberSecretsChange()">
+              Zapamätať aj heslá a API kľúč v tomto prehliadači
+            </label>
+            <div class="hint">Voliteľné — heslá aj Flash/Blink API kľúč sa uložia do localStorage tohto prehliadača, aby si ich nemusel zadávať pri každom použití. Bez zaškrtnutia sa tajné hodnoty nepamätajú. Nepoužívaj na cudzom počítači.</div>
           </div>
           <div>
             <label for="atm_title">Nadpis ATM</label>
@@ -96,10 +117,12 @@
             <div class="toggle-group">
               <input type="radio" name="funding" id="fund_blink" value="Blink" checked onchange="onFundingChange()">
               <label for="fund_blink">Blink</label>
+              <input type="radio" name="funding" id="fund_flash" value="Flash" onchange="onFundingChange()">
+              <label for="fund_flash">Flash</label>
               <input type="radio" name="funding" id="fund_lnbits" value="LNbits" onchange="onFundingChange()">
               <label for="fund_lnbits">LNbits</label>
             </div>
-            <div class="hint">Blink je odporúčaný (vyžaduje internet). LNbits funguje aj offline.</div>
+            <div class="hint">Blink / Flash vyžadujú internet (Flash = náhrada Blinku pre EÚ). LNbits funguje aj offline.</div>
           </div>
           <div class="full">
             <label>Zdroj kurzu BTC</label>
@@ -183,15 +206,15 @@
 
           <!-- Blink sekcia pre mena 1 -->
           <div class="full blink-fields" style="display:none;">
-            <p class="tabs-label">Blink nastavenia</p>
+            <p class="tabs-label">Blink / Flash nastavenia</p>
           </div>
           <div class="blink-fields" style="display:none;">
-            <label for="cur1_blink_apikey">Blink API key</label>
+            <label for="cur1_blink_apikey">API key (Blink / Flash)</label>
             <input type="password" id="cur1_blink_apikey" placeholder="" autocomplete="off" spellcheck="false">
             <div class="hint secret-fingerprint" id="fp_cur1_blink_apikey"></div>
           </div>
           <div class="blink-fields" style="display:none;">
-            <label for="cur1_blink_wallet">Blink Wallet ID</label>
+            <label for="cur1_blink_wallet">Wallet ID (Blink / Flash)</label>
             <input type="text" id="cur1_blink_wallet" placeholder="">
           </div>
         </div>
@@ -282,16 +305,28 @@
 
     <!-- Akcie -->
     <div class="btn-row">
+      <button class="btn btn-outline" onclick="loadFromDeviceAction()">
+        ⬇ Načítať zo zariadenia
+      </button>
       <button class="btn btn-primary" onclick="downloadConfigZip()">
         ⬇ Stiahnuť konfig ZIP
       </button>
       <button class="btn btn-outline" onclick="showPanel('flash')">
         Prejsť na Flash →
       </button>
+      <button class="btn btn-outline" onclick="saveProfile()">
+        💾 Uložiť profil
+      </button>
+      <button class="btn btn-outline" onclick="document.getElementById('profile-file-input').click()">
+        📂 Načítať profil
+      </button>
+      <input type="file" id="profile-file-input" accept=".json,application/json"
+             style="display:none" onchange="loadProfileFromFile(this)">
       <button class="btn btn-secondary" onclick="clearForm()">
         Vymazať formulár
       </button>
     </div>
+    <div class="hint" id="device-load-status" style="margin-top:8px;"></div>
 
     <div class="instructions" style="margin-top:24px;">
       <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:8px;"><strong style="color:var(--text);">Ako nahrať konfiguráciu?</strong></p>
@@ -310,11 +345,30 @@
     </div>
 
     <div class="flash-card">
-      <h2>Flash firmware na ESP32-S3</h2>
-      <p>Pripoj ESP32-8048S050 cez USB. Manuálny boot: drž <kbd>BOOT</kbd>, stlač <kbd>RESET</kbd>, pusť a klikni Flash.</p>
+      <h2>Flash firmware</h2>
+      <p>Pripoj zariadenie cez USB. <span id="boot-hint">Manuálny boot: drž <kbd>BOOT</kbd>, stlač <kbd>RESET</kbd>, pusť a klikni Flash.</span></p>
 
       <!-- Browser / secure-context error -->
       <div id="browser-error" class="alert alert-warning" style="display:none;margin-bottom:16px;text-align:left;"></div>
+
+      <!-- Board picker -->
+      <div class="form-grid" style="margin-bottom:16px;">
+        <div class="full">
+          <label>Doska (hardvér)</label>
+          <div class="toggle-group">
+            <input type="radio" name="board" id="board_s3" value="s3" checked onchange="onBoardChange()">
+            <label for="board_s3">ESP32-8048S050 (S3)</label>
+            <input type="radio" name="board" id="board_wt32" value="wt32" onchange="onBoardChange()">
+            <label for="board_wt32">WT32-SC01 (ESP32)</label>
+          </div>
+          <div class="hint">
+            Nevieš, ktorú máš? Pozri <strong>nápis na zadnej strane dosky</strong>:<br>
+            • <strong>ESP32-8048S050</strong> — veľký 5-palcový displej (800×480), nápis „ESP32-8048S050" / „Sunton"<br>
+            • <strong>WT32-SC01</strong> — menší 3,5-palcový displej (480×320), nápis „WT32-SC01"<br>
+            Každá doska má vlastný firmware a iné flash adresy — zlý výber = zariadenie nenabootuje (oprava: flashni znova so správnou doskou).
+          </div>
+        </div>
+      </div>
 
       <!-- Version picker -->
       <div class="form-grid" style="margin-bottom:16px;">
@@ -355,7 +409,7 @@
       <p style="font-size:0.88rem;font-weight:600;margin-bottom:10px;">Postup:</p>
       <ol>
         <li>Vyplň konfiguráciu v Kroku 1 (alebo preskočiť — nastav neskôr cez portál)</li>
-        <li>Pripoj ESP32-8048S050 cez USB kábel</li>
+        <li>Vyber dosku (S3 / WT32) a pripoj ju cez USB kábel</li>
         <li>Manuálny boot: drž <span class="kbd">BOOT</span>, stlač a pusť <span class="kbd">RESET</span>, potom pusť <span class="kbd">BOOT</span></li>
         <li>Klikni na <strong>⚡ Flash + nahraj konfig</strong></li>
         <li>Vyber COM port v dialógu prehliadača</li>
@@ -373,6 +427,66 @@
     <div class="btn-row" style="margin-top:20px;">
       <button class="btn btn-secondary" onclick="showPanel('config')">
         ← Konfigurácia
+      </button>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════ NÁVOD ════════════════════════════════ -->
+  <div class="page-panel" id="panel-guide">
+
+    <div class="instructions">
+      <p style="font-weight:600;margin-bottom:10px;">1️⃣ Získaj Flash API kľúč (robí sa priamo v ATM)</p>
+      <ol>
+        <li>Nainštaluj si appku <strong>Flash</strong> (<a href="https://play.google.com/store/apps/details?id=com.lnflash" target="_blank" rel="noopener noreferrer" style="color:var(--orange);">Android</a> / <a href="https://apps.apple.com/us/app/flash-bitcoin-wallet/id6711339709" target="_blank" rel="noopener noreferrer" style="color:var(--orange);">iOS</a>) a zaregistruj sa svojím telefónnym číslom.</li>
+        <li>V appke prejdi do <strong>Cash</strong> walletu a vlož si doň prostriedky na výplaty (ATM vypláca z Cash walletu — Bitcoin wallet v appke je non-custodiálny a ATM ho použiť nevie).</li>
+        <li>Naflashuj ATM (kroky 2–3 nižšie), pripoj ho na WiFi a otvor v prehliadači stránku zariadenia <strong>/flashkey</strong> (odkaz je aj v portáli pri poli API kľúč).</li>
+        <li>Postupuj podľa sprievodcu: v appke si vyžiadaš SMS kód, ale <strong>zadáš ho do sprievodcu</strong> (nie do appky). Kľúč sa vytvorí a uloží priamo do zariadenia — nikam inam sa neposiela. Zobrazí sa <strong>len raz</strong>, odlož si ho.</li>
+      </ol>
+    </div>
+
+    <div class="instructions" style="margin-top:16px;">
+      <p style="font-weight:600;margin-bottom:10px;">2️⃣ Konfigurácia (Krok 1)</p>
+      <ol>
+        <li><strong>Už nakonfigurované ATM?</strong> Klikni <strong>⬇ Načítať zo zariadenia</strong> — formulár sa naplní aktuálnymi hodnotami. Kľúče a heslá zariadenie nikdy neposiela: príslušné polia ukážu „uložené v zariadení" a pri nahratí sa nezmenia, pokiaľ ich neprepíšeš.</li>
+        <li>Vyplň menu, hodnoty bankoviek, poplatok a heslo AP portálu (min. 8 znakov).</li>
+        <li><strong>WiFi:</strong> ak už je v zariadení FIAT-HELL firmvér, klikni <strong>📶 Načítať siete zo zariadenia</strong> a vyber sieť zo zoznamu; pri úplne prvom flashi zadaj názov ručne.</li>
+        <li><strong>Heslá:</strong> štandardne sa nepamätajú. Zaškrtni „Zapamätať aj heslá", ak chceš, aby ostali v tomto prehliadači, alebo použi <strong>💾 Uložiť profil</strong> — celý formulár (vrátane hesiel) sa uloží do súboru, ktorý si držíš sám a kedykoľvek načítaš aj na inom počítači.</li>
+        <li>Funding source <strong>Flash</strong>: API kľúč vyplň, ak ho už máš zo sprievodcu; Wallet ID si zariadenie zistí samo.</li>
+      </ol>
+    </div>
+
+    <div class="instructions" style="margin-top:16px;">
+      <p style="font-weight:600;margin-bottom:10px;">3️⃣ Flash (Krok 2)</p>
+      <ol>
+        <li>Vyber <strong>dosku</strong> — každá má vlastný firmware a iné flash adresy. Model zistíš z nápisu na zadnej strane dosky: „ESP32-8048S050" = veľký 5" displej, „WT32-SC01" = menší 3,5" displej.</li>
+        <li><strong>ESP32-8048S050 (S3):</strong> pred flashom drž <span class="kbd">BOOT</span>, stlač a pusť <span class="kbd">RESET</span>, potom pusť <span class="kbd">BOOT</span>. <strong>WT32-SC01:</strong> resetne sa sám.</li>
+        <li>Klikni <strong>⚡ Flash + nahraj konfig</strong> a vyber COM port. Firmware aj konfigurácia sa nahrajú naraz (~2 min).</li>
+        <li>Pri už naflashovanom zariadení stačí <strong>⬆ Iba konfig</strong> — bez flashovania.</li>
+      </ol>
+    </div>
+
+    <div class="instructions" style="margin-top:16px;">
+      <p style="font-weight:600;margin-bottom:10px;">4️⃣ Prvé spustenie</p>
+      <ol>
+        <li>Zariadenie sa reštartuje, pripojí na WiFi a hlavná obrazovka ukáže kurz a zostatok tvojho Cash walletu. Ak ukazuje OFFLINE, skontroluj WiFi; ak 0, skontroluj Cash zostatok a API kľúč.</li>
+        <li>Nastavenia zmeníš cez AP portál: podrž <span class="kbd">BOOT</span> pri štarte (S3) alebo klikni na logo, pripoj sa na AP <strong>LN ATM-xxxx</strong> a otvor <strong>http://192.168.4.1</strong> (meno <strong>admin</strong> + tvoje heslo portálu).</li>
+        <li>Skúšobná výplata: vlož najmenšiu bankovku a vyplať si ju do vlastnej peňaženky.</li>
+      </ol>
+    </div>
+
+    <div class="instructions" style="margin-top:16px;">
+      <p style="font-weight:600;margin-bottom:10px;">🔒 Súkromie a riešenie problémov</p>
+      <ol>
+        <li><strong>Súkromie:</strong> táto stránka je statická (GitHub Pages) — všetko sa deje v tvojom prehliadači a cez USB kábel. Zo siete sa načíta iba zoznam verzií z GitHub API a pri výbere staršej verzie firmvéru aj jej .bin súbory z GitHub releasov (lokálna verzia sa nesťahuje). Flash API kľúč vzniká priamo v zariadení a neprechádza cez túto stránku. Zdrojový kód je verejný; v releasoch je aj <strong>offline balík</strong> flashera.</li>
+        <li><strong>Port sa nedá otvoriť / synchronizácia zlyhá:</strong> port smie používať len jeden program — zavri sériový monitor (PlatformIO/Arduino) a ostatné taby flashera.</li>
+        <li><strong>Výplata zlyhá (PAYMENT FAILED):</strong> skontroluj zostatok Cash walletu (musí pokryť sumu + poplatok) a platnosť API kľúča.</li>
+        <li><strong>Strata/únik API kľúča:</strong> v appke sa nedá spravovať — kľúč zrušíš vytvorením nového cez sprievodcu /flashkey (starý zneplatni cez apiKeyRevoke, návod v repozitári docs/OPERATOR.md).</li>
+      </ol>
+    </div>
+
+    <div class="btn-row" style="margin-top:20px;">
+      <button class="btn btn-primary" onclick="showPanel('config')">
+        Začať konfiguráciou →
       </button>
     </div>
   </div>
