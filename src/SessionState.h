@@ -24,7 +24,8 @@ enum UiState {
   UI_SHOWING_QR,
   UI_WAITING_FOR_TAP,
   UI_WAITING_FOR_BLINK_INVOICE,
-  UI_THANK_YOU
+  UI_THANK_YOU,
+  UI_PAYMENT_ERROR
 };
 
 /**
@@ -72,7 +73,9 @@ struct SessionState {
   // Current market values
   float fiatValue = 0.0f;   // Current BTC price in selected fiat
   float fiatBalance = 0.0f; // Current balance in selected fiat
-  long balanceSats = 0;     // Current balance in satoshis
+  long balanceSats = 0;     // Current balance in satoshis (USD cents when the
+                            // funding wallet is Flash's USD Cash wallet)
+  float btcUsdValue = 0.0f; // BTC price in USD (cross rate for USD wallets)
 
   // UI state machine
   UiState currentUiState = UI_IDLE;

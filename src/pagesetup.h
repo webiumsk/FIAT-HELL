@@ -23,8 +23,9 @@ input[name=funding]{position:absolute;opacity:0;width:0;height:0}
 .ftabs{display:flex;gap:8px;margin:10px 0 14px}
 .ftab{flex:1;text-align:center;padding:10px;border:2px solid #444;border-radius:8px;cursor:pointer;font-size:1em;color:#999}
 #fund_blink:checked~.ftabs label[for=fund_blink],
+#fund_flash:checked~.ftabs label[for=fund_flash],
 #fund_lnbits:checked~.ftabs label[for=fund_lnbits]{border-color:#f90;color:#f90;background:#1a0d00}
-#fund_blink:not(:checked)~.blink-fields{display:none}
+#fund_lnbits:checked~.blink-fields{display:none}
 #fund_lnbits:not(:checked)~.lnbits-fields{display:none}
 .card{background:#181818;border-radius:10px;padding:14px;margin-top:12px}
 .hint{font-size:.78em;color:#555;margin:4px 0 0}
@@ -71,14 +72,17 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
 <div class="card">
 <h2>Financovanie</h2>
 <input type="radio" name="funding" id="fund_blink" value="Blink" %%CHECKED_BLINK%%>
+<input type="radio" name="funding" id="fund_flash" value="Flash" %%CHECKED_FLASH%%>
 <input type="radio" name="funding" id="fund_lnbits" value="LNbits" %%CHECKED_LNBITS%%>
 <div class="ftabs">
   <label class="ftab" for="fund_blink">Blink</label>
+  <label class="ftab" for="fund_flash">Flash</label>
   <label class="ftab" for="fund_lnbits">LNbits</label>
 </div>
 <div class="blink-fields">
-  <label>Blink API kľúč<input type="text" name="blink_apikey" value="%%BLINK_APIKEY%%"></label>
-  <label>Blink Wallet ID<input type="text" name="blink_wallet" value="%%BLINK_WALLET%%"></label>
+  <label>API kľúč (Blink / Flash)<input type="text" name="blink_apikey" value="%%BLINK_APIKEY%%"></label>
+  <div class="hint"><a href="/flashkey" style="color:#f90">⚡ Nemáš Flash API kľúč? Získaj ho tu</a></div>
+  <label>Wallet ID (Blink / Flash)<input type="text" name="blink_wallet" value="%%BLINK_WALLET%%"></label>
 </div>
 <div class="lnbits-fields">
   <label>Admin kľúč<input type="text" name="adminkey" value="%%ADMINKEY%%"></label>

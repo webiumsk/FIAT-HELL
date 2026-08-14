@@ -64,6 +64,15 @@ public:
                      std::initializer_list<const char *> keys, String &echoOut);
 
   bool loadFirst(fs::FS &fs, const char *path, FirstConfig &out);
+
+  /**
+   * Overwrite only the Blink/Flash API key (positional entry 0) in
+   * /first.json, preserving everything else. Creates a minimal file with
+   * the expected 9-entry layout when none exists yet. Used by the
+   * on-device Flash key wizard.
+   */
+  bool updateFirstBlinkApiKey(fs::FS &fs, const char *path,
+                              const char *apiKey);
   bool loadSecond(fs::FS &fs, const char *path, SecondConfig &out);
   bool loadThird(fs::FS &fs, const char *path, ThirdConfig &out);
 };

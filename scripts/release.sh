@@ -3,10 +3,10 @@
 #   git push origin <branch> && git push origin v<version>
 #
 # Once the tag is on GitHub, .github/workflows/web-flasher.yml will:
-#   - build firmware (esp32-8048s050)
+#   - build firmware for both boards (esp32-8048s050 + esp32dev/WT32)
 #   - deploy web-flasher to gh-pages (https://webiumsk.github.io/FIAT-HELL/)
 #   - create a GitHub Release v<version> with the four .bin assets
-#     (bootloader, partitions, boot_app0, firmware) — the version dropdown
+#     (board-suffixed: *-s3.bin, *-wt32.bin + shared boot_app0.bin) — the version dropdown
 #     on the gh-pages site reads these via the GitHub releases API.
 
 set -euo pipefail
@@ -24,8 +24,8 @@ fi
 TAG="v$VER"
 
 ROOT="$(git rev-parse --show-toplevel)"
-SRC="$ROOT/src/main.cpp"
-[ -f "$SRC" ] || { echo "src/main.cpp not found at $SRC" >&2; exit 1; }
+SRC="$ROOT/src/version.h"
+[ -f "$SRC" ] || { echo "src/version.h not found at $SRC" >&2; exit 1; }
 
 if ! git diff --quiet || ! git diff --cached --quiet; then
   echo "working tree has uncommitted changes — commit or stash first" >&2
@@ -52,7 +52,7 @@ if [ "$NEW" != "$VER" ]; then
   exit 1
 fi
 
-git -C "$ROOT" add src/main.cpp
+git -C "$ROOT" add src/version.h
 git -C "$ROOT" commit -m "chore: bump to $TAG"
 git -C "$ROOT" tag -a "$TAG" -m "Release $TAG"
 

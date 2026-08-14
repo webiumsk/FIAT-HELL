@@ -8,13 +8,18 @@ static const char PAGE_FIRST[] PROGMEM = R"(
     {
       "name": "textonlineblink",
       "type": "ACText",
-      "value": "Blink settings",
+      "value": "Blink / Flash settings",
       "style": "font-family:Arial;font-size:16px;font-weight:400;color:#191970;margin-botom:15px;padding-bottom:8px;"
     },
     {
       "name": "newline",
       "type": "ACElement",
       "value": "<hr>"
+    },
+    {
+      "name": "flashkeylink",
+      "type": "ACElement",
+      "value": "<p style='margin:4px 0'><a href='/flashkey'>&#9889; Nem&aacute;&scaron; Flash API k&#318;&uacute;&#269;? Z&iacute;skaj ho tu</a></p>"
     },
     {
       "name": "blinkapikey",

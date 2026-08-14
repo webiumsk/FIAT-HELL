@@ -2,8 +2,7 @@
 //== == = //
 //============EDIT IF USING DIFFERENT HARDWARE============//
 //========================================================//
-// v1.2.1
-#define FW_VERSION "1.2.7"
+#include "version.h"
 
 bool format = false; // true for formatting FOSSA memory, use once, then make
                      // false and reflash
@@ -41,7 +40,7 @@ static SuntonDisplay lcd;
 #include "lv_font_the_bold_48.c"
 #include <lvgl.h>
 
-lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_ORANGE,
+static const lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_ORANGE,
                        LV_COLOR_YELLOW, LV_COLOR_GREEN, LV_COLOR_BLUE};
 
 #include <FS.h>
@@ -123,8 +122,12 @@ LV_IMG_DECLARE(lnbits);
 #include "DeviceState.h"
 #include "SessionState.h"
 #include "services/ConfigService.h"
+#include "services/FundingService.h"
 #include "services/PaymentService.h"
+#include "services/SerialConfigService.h"
 #include "services/UiController.h"
+// pageflashkey.h must come before the http/field alias macros below
+#include "pageflashkey.h"
 #include "pageota.h"
 
 // Runtime-allocated to avoid pre-setup global constructors on ESP32.
@@ -246,9 +249,7 @@ const long interval = 300000; // 5 minutes in milliseconds
 #define originalSizeTwo deviceState.originalSizeTwo
 #define originalSizeThree deviceState.originalSizeThree
 
-const char *graphqlEndpoint = "https://api.blink.sv/graphql";
-const char *primaryApiEndpoint = "https://api.lnbc.sk/v1/lnurl";
-const char *secondaryApiEndpoint = "https://api.lnurlproxy.me/v1/lnurl";
+// Galoy (Blink/Flash) and LNURL-proxy endpoints live in FundingService.
 const char *coinyepConversionAPI =
     "https://coinyep.com/api/v1/?from=BTC&to=";
 const char *coingeckoAPI =
@@ -495,6 +496,7 @@ void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data);
 void createLogoScreen();
 void createPortalScreen();
 void createAPIScreen();
+void createPaymentErrorScreen();
 void createMainScreen();
 void createInsertMoneyScreen();
 void createSwitch(lv_obj_t *parent);
@@ -504,7 +506,6 @@ void updateMainScreenLabel();
 void checkPrice();
 void checkPriceCoinGecko();
 void checkPriceExchangeApi();
-void checkBalance();
 bool isLNbits();
 bool wifiStatus();
 void showQRCodeLVGL(const char *data);
@@ -953,39 +954,9 @@ void setup() {
     SPIFFS.format();
   }
 
-  // Serial config upload window: web installer sends WRITE_CONFIG:/file.json:{json}
-  // then CONFIG_DONE. Device writes files to SPIFFS and continues normal boot.
-  // Only blocks if data arrives within 300 ms — normal boots are not delayed.
-  Serial.println("FIAT-HELL:CONFIG_READY");
-  {
-    const unsigned long detectEnd = millis() + 2000UL;
-    while (millis() < detectEnd && !Serial.available()) yield();
-    if (Serial.available()) {
-      const unsigned long cfgDeadline = millis() + 10000UL;
-      while (millis() < cfgDeadline) {
-        if (Serial.available()) {
-          String line = Serial.readStringUntil('\n');
-          line.trim();
-          if (line.startsWith("WRITE_CONFIG:")) {
-            // format: WRITE_CONFIG:/filename.json:{json_content}
-            const int colon2 = line.indexOf(':', 13);
-            if (colon2 > 13) {
-              String filePath    = line.substring(13, colon2);
-              String fileContent = line.substring(colon2 + 1);
-              File f = SPIFFS.open(filePath, "w");
-              if (f) { f.print(fileContent); f.close(); }
-              Serial.print("FIAT-HELL:WROTE:");
-              Serial.println(filePath);
-            }
-          } else if (line == "CONFIG_DONE") {
-            Serial.println("FIAT-HELL:CONFIG_SAVED");
-            break;
-          }
-        }
-        yield();
-      }
-    }
-  }
+  // Serial provisioning window for the web flasher (config upload + WiFi
+  // scan) - see services/SerialConfigService.h for the protocol.
+  SerialConfigService::runSerialConfigWindow(SPIFFS);
 
   // get the saved details and store in global variables
   File paramFile = FlashFS.open(PARAM_FILE, "r");
@@ -1112,6 +1083,27 @@ void setup() {
   server.on("/fwlink", redirectToConfigPortal);
   server.on("/favicon.ico", []() { server.send(204, "text/plain", ""); });
 
+  // On-device Flash API key wizard (see pageflashkey.h). AP-only: it creates
+  // and reveals a spending API key, so restrict it to the local AP just like
+  // the other config routes.
+  server.on("/flashkey", HTTP_GET, [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "text/plain", "Wizard only via AP — hold BOOT 3 s to enable");
+      return;
+    }
+    server.send(200, "text/html", flashKeyPageHtml(wifiStatus()));
+  });
+  server.on("/flashkey/run", HTTP_POST, [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "text/plain", "Wizard only via AP — hold BOOT 3 s to enable");
+      return;
+    }
+    server.send(200, "text/html",
+                flashKeyRunAndRender(http, deviceState, configService, FlashFS,
+                                     FIRST_FILE, server.arg("phone"),
+                                     server.arg("code")));
+  });
+
   // Lightweight mobile config portal — served only to AP clients (192.168.4.x).
   server.on("/setup", HTTP_GET, [isApClient]() {
     if (!isApClient()) {
@@ -1148,8 +1140,14 @@ void setup() {
     }
 
     html.replace(F("%%WIFI_SSID%%"),      WiFi.isConnected() ? WiFi.SSID() : "");
-    html.replace(F("%%CHECKED_BLINK%%"),  isLNbitsMode ? "" : "checked");
-    html.replace(F("%%CHECKED_LNBITS%%"), isLNbitsMode ? "checked" : "");
+    {
+      const bool isFlashMode =
+          (strcmp(deviceStatePtr->fundingSourceBuffer, "Flash") == 0);
+      html.replace(F("%%CHECKED_BLINK%%"),
+                   (!isLNbitsMode && !isFlashMode) ? "checked" : "");
+      html.replace(F("%%CHECKED_LNBITS%%"), isLNbitsMode ? "checked" : "");
+      html.replace(F("%%CHECKED_FLASH%%"), isFlashMode ? "checked" : "");
+    }
     html.replace(F("%%BLINK_APIKEY%%"),   esc(blinkapikey));
     html.replace(F("%%BLINK_WALLET%%"),   esc(blinkwalletid));
     html.replace(F("%%ADMINKEY%%"),       esc(adminkey));
@@ -1307,7 +1305,9 @@ void setup() {
       }
       const String funding = server.arg("funding");
       strlcpy(gui.fundingSource,
-              (funding == "LNbits") ? "LNbits" : "Blink",
+              (funding == "LNbits")  ? "LNbits"
+              : (funding == "Flash") ? "Flash"
+                                     : "Blink",
               sizeof(gui.fundingSource));
       const String rs = server.arg("ratesource");
       if (rs == "CoinYEP" || rs == "Kraken" || rs == "ExchangeApi") {
@@ -2018,17 +2018,20 @@ void setup() {
   /***  Starting AutoConnect - connection attempt or AP (portal)         ***/
   /**************************************************************************/
 
-  const bool isBlinkMode =
-      (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0);
-  const bool wifiRequired = isBlinkMode;
+  const bool isGaloyMode =
+      FundingService::isGaloy(deviceState.fundingSourceBuffer);
+  const bool wifiRequired = isGaloyMode;
   const bool userWantsPortal = triggerAp; // tap during logo window
 
   const bool apiDataMissing =
       ((strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 &&
         (deviceState.currencyATM[0] == '\0' || adminkey[0] == '\0' ||
          readkey[0] == '\0')) ||
-       (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0 &&
-        (blinkapikey[0] == '\0' || blinkwalletid[0] == '\0')) ||
+       // Both Galoy sources need the API key; only Blink needs a wallet id
+       // up front - Flash resolves its wallet via fetchGaloyBalance().
+       (isGaloyMode && blinkapikey[0] == '\0') ||
+       (paymentService.isBlink(deviceState.fundingSourceBuffer) &&
+        blinkwalletid[0] == '\0') ||
        (currencyOne[0] == '\0'));
 
   const bool shouldOpenPortalNow =
@@ -2057,10 +2060,15 @@ void setup() {
     WiFi.disconnect(false, false);
   }
 
-  if (isBlinkMode) {
-    Serial.println("Blink mode => Internet needed");
-  } else {
+  if (isGaloyMode) {
+    Serial.print(deviceState.fundingSourceBuffer);
+    Serial.println(" mode => Internet needed");
+  } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
     Serial.println("LNbits mode => offline possible");
+  } else {
+    Serial.print("Unrecognized funding source: '");
+    Serial.print(deviceState.fundingSourceBuffer);
+    Serial.println("'");
   }
 
   if (userWantsPortal) {
@@ -2395,7 +2403,7 @@ void createAPIScreen() {
  * message.
  */
 void checkNetworkAndDeviceStatus() {
-  if (paymentService.isBlink(deviceState.fundingSourceBuffer)) {
+  if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
     if (!wifiStatus()) {
       Serial.println("No network connection available. Checking again soon...");
       // Optionally, trigger a screen update or indicator that network is
@@ -2459,6 +2467,33 @@ void createThankYouScreen() {
   lv_obj_set_style_text_color(thxDesc, LV_COLOR_GREEN, 0);
 
   lv_scr_load(screen_thx);
+  attachBatteryToCurrentScreen();
+}
+
+/**
+ * @brief Creates a payment error screen.
+ *
+ * Shown when the funding source rejected the payout after cash was already
+ * inserted, so the customer must not walk away thinking they were paid.
+ */
+void createPaymentErrorScreen() {
+  lv_obj_t *screen_err = lv_obj_create(NULL); // Create a new screen
+
+  lv_obj_t *errTitle = lv_label_create(screen_err);
+  lv_label_set_text(errTitle, "PAYMENT FAILED!");
+  lv_obj_align(errTitle, LV_ALIGN_CENTER, 0, -20);
+  lv_obj_set_style_text_font(errTitle, &lv_font_montserrat_48, 0);
+  lv_obj_set_style_text_color(errTitle, LV_COLOR_RED, 0);
+
+  lv_obj_t *errDesc = lv_label_create(screen_err);
+  lv_label_set_text(errDesc,
+                    "YOUR SATS WERE NOT SENT\nMAKE A PHOTO AND CONTACT SUPPORT");
+  lv_obj_set_style_text_align(errDesc, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(errDesc, LV_ALIGN_CENTER, 0, 60);
+  lv_obj_set_style_text_font(errDesc, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(errDesc, LV_COLOR_RED, 0);
+
+  lv_scr_load(screen_err);
   attachBatteryToCurrentScreen();
 }
 
@@ -2736,155 +2771,6 @@ void checkPriceKraken() {
     }
   }
   http.end();
-}
-
-/**
- * Checks the balance of the selected currency from the specified funding
- * source. If the funding source is "LNbits", it sends an HTTP GET request to
- * the LNbits API to retrieve the wallet balance. If the funding source is
- * "Blink", it sends a GraphQL query to the Blink API to fetch the wallet
- * information. The balance is then parsed from the response and converted to
- * the corresponding fiat currency value.
- */
-void checkBalance() {
-  if (strcmp(currencySelected, deviceState.currencyATM) == 0 ||
-      strcmp(currencySelected, currencyOne) == 0) {
-    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-      strlcpy(baseURLATM, baseURLATM1, sizeof(baseURLATM));
-      strlcpy(secretATM, secretATM1, sizeof(secretATM));
-    }
-    chargeSelected = charge1;
-    maxamountSelected = maxamount;
-  } else if (strcmp(currencySelected, deviceState.currencyATM2) == 0 ||
-             strcmp(currencySelected, currencyTwo) == 0) {
-    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-      strlcpy(baseURLATM, baseURLATM2, sizeof(baseURLATM));
-      strlcpy(secretATM, secretATM2, sizeof(secretATM));
-    }
-    chargeSelected = charge2;
-    maxamountSelected = maxamount2;
-  } else if (strcmp(currencySelected, deviceState.currencyATM3) == 0 ||
-             strcmp(currencySelected, currencyThree) == 0) {
-    if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-      strlcpy(baseURLATM, baseURLATM3, sizeof(baseURLATM));
-      strlcpy(secretATM, secretATM3, sizeof(secretATM));
-    }
-    chargeSelected = charge3;
-    maxamountSelected = maxamount3;
-  }
-  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-    http.begin(String(lnbitsURL) +
-               "/api/v1/wallet");         // Specify request destination
-    http.addHeader("X-Api-Key", readkey); // Specify API key header
-
-    int httpCode = http.GET(); // Send the request
-
-    if (httpCode == 200 || httpCode == 201) { // Check the returning code
-      String responsePayload =
-          http.getString(); // Get the request response payload
-      Serial.println(responsePayload);
-
-      // Parse JSON
-      DynamicJsonDocument doc(1024);
-      deserializeJson(doc, responsePayload);
-
-      // Get balance from parsed JSON
-      balanceSats = doc["balance"];
-
-      fiatBalance = ((double)balanceSats * fiatValue) / 100000000000.0;
-
-      ///*** Debug ***////
-      /*Serial.print(F("Balance: "));
-      Serial.println(fiatBalance);
-
-      Serial.print(F("Currency: "));
-      Serial.println(currencySelected);
-
-      Serial.print(F("Conversion: "));
-      Serial.println(fiatValue);
-      Serial.print("Buffer: ");
-      Serial.println(buffer);
-
-      Serial.print(F("baseURLATM: "));
-      Serial.println(baseURLATM);
-      Serial.print(F("MAX selected: "));
-      Serial.println(maxamountSelected);
-
-      Serial.print(F("Balance Sats: "));
-      Serial.println(balanceSats);
-      Serial.print(F("HTTP (checkBalance): "));
-      Serial.println(httpCode);
-      Serial.print("Free heap (checkBalance): ");
-      Serial.println(ESP.getFreeHeap());*/
-    } else {
-      Serial.print(F("Error (checkBalance): "));
-      Serial.println(httpCode);
-    }
-  } else if (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0) {
-    http.begin(graphqlEndpoint); // API endpoint
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("X-API-KEY", String(blinkapikey)); // Correct API key header
-
-    // GraphQL query
-    String query = R"(
-    query Me {
-      me {
-        defaultAccount {
-          wallets {
-            id
-            walletCurrency
-            balance
-          }
-        }
-      }
-    }
-    )";
-
-    // Prepare the JSON payload
-    DynamicJsonDocument jsonDoc(1024);
-    jsonDoc["query"] = query;
-
-    String requestBody;
-    serializeJson(jsonDoc,
-                  requestBody); // Serialize the JSON object to a string
-
-    // Send the POST request
-    int httpCode = http.POST(requestBody);
-    String responsePayload = http.getString(); // Get the response payload
-
-    Serial.print("HTTP Status Code: ");
-    Serial.println(httpCode);
-    Serial.print("Response Payload: ");
-    Serial.println(responsePayload);
-
-    // Deserialize JSON response and extract wallet information
-    DynamicJsonDocument respDoc(4096); // Adjust size based on expected response
-    deserializeJson(respDoc, responsePayload);
-    if (httpCode == 200) {
-      JsonObject me = respDoc["data"]["me"]["defaultAccount"]["wallets"]
-                             [0]; // Assuming you want the first wallet
-      String walletIdStr = me["id"].as<String>();
-      strlcpy(blinkwalletid, walletIdStr.c_str(), sizeof(blinkwalletid));
-      String walletCurrency = me["walletCurrency"].as<String>();
-      balanceSats = me["balance"];
-
-      fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
-
-      ///*** Debug ***////
-      /*Serial.print("Wallet ID: ");
-      Serial.println(blinkwalletid);
-      Serial.print("Wallet Currency: ");
-      Serial.println(walletCurrency);
-      Serial.print("Wallet Balance: ");
-      Serial.println(balanceSats);
-      Serial.print("Fiat balance: ");
-      Serial.println(fiatBalance);*/
-    } else {
-      Serial.println("Failed to fetch wallet information");
-    }
-  }
-
-  http.end(); // Close connection
 }
 
 void createLoadingIndicator() {
@@ -3236,6 +3122,14 @@ void createMainScreen() {
   } else if (strcmp(deviceState.fundingSourceBuffer, "Blink") == 0) {
     lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
+  } else if (strcmp(deviceState.fundingSourceBuffer, "Flash") == 0) {
+    lv_obj_add_flag(img_blink, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(img_lnbits, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *flashLabel = lv_label_create(screen_main);
+    lv_label_set_text(flashLabel, "FLASH");
+    lv_obj_set_style_text_font(flashLabel, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(flashLabel, lv_color_hex(0xFF9900), 0);
+    lv_obj_align(flashLabel, LV_ALIGN_TOP_RIGHT, -10, 35);
   }
 
   lv_scr_load(screen_main);
@@ -3251,9 +3145,10 @@ void createMainScreen() {
 }
 
 void enableAcceptor() {
-  if (paymentService.isBlink(deviceState.fundingSourceBuffer) &&
+  if (paymentService.isGaloy(deviceState.fundingSourceBuffer) &&
       (!wifiStatus())) {
-    Serial.println("Error: Blink API is selected but the device is offline");
+    Serial.println(
+        "Error: online funding source selected but the device is offline");
     return;
   }
   billAcceptorWrite(184);  // Enable acceptor (channels already set by setCurrency)
@@ -3526,47 +3421,7 @@ void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
  * @return true if invoice was successfully retrieved, false otherwise
  */
 bool checkBoltInvoice() {
-  if (callback[0] == '\0') {
-    Serial.println("Error: callback URL is empty");
-    return false;
-  }
-
-  http.begin(callback); // Initialize the connection to the URL
-  http.addHeader("Content-Type", "application/json"); // Set header for JSON
-  http.setTimeout(5000); // Set timeout to 5 seconds
-
-  int httpCode = http.GET(); // Perform the GET request
-
-  if (httpCode == 200) { // Check if the request was successful
-    String responseCallback = http.getString(); // Get the response as a string
-
-    DynamicJsonDocument doc(1024);
-    DeserializationError error = deserializeJson(doc, responseCallback);
-
-    if (error) {
-      Serial.print("JSON parse error: ");
-      Serial.println(error.c_str());
-      http.end();
-      return false;
-    }
-
-    const char *inv = doc["invoice"];
-    if (inv && strlen(inv) > 0) {
-      strlcpy(sessionState.boltInvoice, inv, sizeof(sessionState.boltInvoice));
-      Serial.print("Bolt Invoice received: ");
-      Serial.println(sessionState.boltInvoice);
-      http.end();
-      return true;
-    } else {
-      Serial.println("Invoice not found in the JSON response.");
-      http.end();
-      return false;
-    }
-  } else {
-    // Not ready yet, this is normal - invoice hasn't been generated
-    http.end();
-    return false;
-  }
+  return FundingService::pollBoltInvoice(http, sessionState);
 }
 
 /**
@@ -3577,47 +3432,23 @@ bool checkBoltInvoice() {
  * @param boltInvoice The Bolt invoice to be sent as part of the request
  * payload.
  */
-void getBlinkLnURL(const char *invoice) {
-  http.begin(graphqlEndpoint); // Initialize with the API endpoint
-  http.addHeader("Content-Type", "application/json"); // Set content type
-  http.addHeader("X-API-KEY",
-                 blinkapikey); // Add the API key in the Authorization header
-
-  // Prepare the GraphQL mutation as a string
-  String graphqlQuery = R"(
-    mutation LnInvoicePaymentSend($input: LnInvoicePaymentInput!) {
-        lnInvoicePaymentSend(input: $input) {
-            status
-            errors {
-                message
-                path
-                code
-            }
-        }
-    })";
-
-  // Prepare the JSON payload
-  DynamicJsonDocument doc(1024);
-  doc["query"] = graphqlQuery;
-  doc["variables"]["input"]["walletId"] = blinkwalletid;
-  doc["variables"]["input"]["paymentRequest"] = invoice;
-  doc["variables"]["input"]["memo"] = "LightningATM payout";
-
-  String requestBody;
-  serializeJson(doc, requestBody); // Serialize JSON document to a string
-
-  // Make the POST request
-  int httpCode = http.POST(requestBody);     // Send the request
-  String responsePayload = http.getString(); // Get the response payload
-
-  Serial.print("Modified LNURL: ");
-  Serial.println(sessionState.modifiedLnURLgen);
-  Serial.print("HTTP Status Code: ");
-  Serial.println(httpCode);
-  Serial.print("Response Payload: ");
-  Serial.println(responsePayload);
-
-  http.end(); // Close connection
+bool getBlinkLnURL(const char *invoice) {
+  // Snapshot the wallet id under the background task's mutex — the task
+  // rewrites deviceState.blinkwalletid during periodic balance fetches and
+  // holds the mutex across its HTTP calls, so allow a generous wait.
+  char walletId[128];
+  const PriceBalanceWalletIdResult idResult =
+      priceBalanceCopyWalletId(walletId, sizeof(walletId), 30000);
+  if (idResult == PB_WALLETID_TASK_NOT_RUNNING) {
+    // No concurrent writer exists; reading deviceState directly is safe.
+    strlcpy(walletId, blinkwalletid, sizeof(walletId));
+  } else if (idResult == PB_WALLETID_TIMEOUT) {
+    // Writer may be mid-update — paying with a possibly torn id risks a
+    // payout from the wrong wallet. Fail; the UI shows the error screen.
+    Serial.println("Payout aborted: wallet id snapshot timed out");
+    return false;
+  }
+  return FundingService::payInvoice(http, deviceState, invoice, walletId);
 }
 
 /**
@@ -3634,10 +3465,10 @@ void getBlinkLnURL(const char *invoice) {
  * @note This function requires the `http` library and the `primaryApiEndpoint`
  * and `secondaryApiEndpoint` variables to be defined.
  *
- * @param None
- * @return None
+ * @return true when the proxy returned both the LNURL and the callback URL;
+ *         false when no QR should be shown (caller must handle the failure).
  */
-void createLNURLWithdraw() {
+bool createLNURLWithdraw() {
   const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 | sessionState.totalCurrency3) != 0;
   if (mixed) {
     result = computeMixedTotalSats();
@@ -3652,121 +3483,7 @@ void createLNURLWithdraw() {
   Serial.print("Result (after fee, satoshis): ");
   Serial.println(result);
 
-  String resultStr = String(result);
-
-  http.begin(primaryApiEndpoint);
-  http.addHeader("Content-Type", "application/json");
-
-  DynamicJsonDocument doc(1024);
-  doc["amount"] = result;        // Set the amount to withdraw in satoshis
-  doc["memo"] = "Fiat Hell ATM"; // Set the memo for the withdrawal
-
-  String requestBody;
-  serializeJson(doc, requestBody);
-
-  Serial.print("requestBody: ");
-  Serial.println(requestBody);
-
-  int httpCode = http.POST(requestBody);
-  if (httpCode != 200 && httpCode != 201) {
-    // Primary service failed, try secondary service
-    Serial.println("Primary service failed with code: " + String(httpCode));
-    Serial.println("Attempting to connect to secondary service...");
-
-    http.end(); // End connection to primary service
-    http.begin(secondaryApiEndpoint);
-    http.addHeader("Content-Type", "application/json");
-    httpCode = http.POST(requestBody);
-  }
-
-  if (httpCode == 200 || httpCode == 201) {
-    String responsePayload = http.getString();
-    Serial.print("Blink payload: ");
-    Serial.println(responsePayload);
-    // Parse JSON
-    DynamicJsonDocument doc(1024);
-    deserializeJson(doc, responsePayload);
-
-    // Get balance from parsed JSON
-    strlcpy(lnURLgen, doc["lnurl"] | "", sizeof(lnURLgen));
-    if (strlen(lnURLgen) > 10) {
-      strlcpy(sessionState.modifiedLnURLgen, lnURLgen + 10,
-              sizeof(sessionState.modifiedLnURLgen));
-    } else {
-      sessionState.modifiedLnURLgen[0] = '\0';
-    }
-    strlcpy(callback, doc["callback"] | "", sizeof(callback));
-  } else {
-    Serial.println("Failed to generate LNURL: " + String(httpCode));
-  }
-
-  http.end();
-}
-
-/**
- * @brief Retrieves the Blink LNURL and executes an operation using the LNURL.
- *
- * This function retrieves the Blink LNURL and performs an operation using the
- * LNURL. It calculates the total amount in cents, the EUR value (price of 1
- * Bitcoin in euros), and the charge. It then converts the total amount to
- * satoshis and subtracts the charge if applicable. Finally, it sends a POST
- * request to the API endpoint with the LNURL and retrieves the response from
- * Blink.
- *
- * @note Make sure to set the appropriate values for `total`, `fiatValue`,
- * `chargeSelected`, `graphqlEndpoint`, `blinkapikey`, and `lnurl` before
- * calling this function.
- */
-void getBlinkLNURL() {
-  Serial.print("Total (cents): ");
-  Serial.println(total);
-  Serial.print("EUR Value (price of 1 Bitcoin in euros): ");
-  Serial.println(fiatValue);
-  Serial.print("Charge: ");
-  Serial.println(chargeSelected);
-
-  float temp = ((total / 100.0) / fiatValue * 1e8);
-  result = (long)round(temp * (100.0f - chargeSelected) / 100.0f);
-  tempCharge = temp - (float)result;
-
-  Serial.print("Temp (satoshis): ");
-  Serial.println(temp);
-  Serial.print("Charge %: ");
-  Serial.println(chargeSelected);
-  Serial.print("Result (after fee, satoshis): ");
-  Serial.println(result);
-
-  String resultStr = String(result);
-
-  http.begin(graphqlEndpoint); // API endpoint
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-API-KEY", blinkapikey); // Correct API key header
-
-  String graphqlQuery = R"(
-    mutation UseLNURL($input: LNURLInput!) {
-        executeLNURLOperation(input: $input) {
-            result
-            status
-            message
-        }
-    })";
-
-  DynamicJsonDocument doc(1024);
-  doc["query"] = graphqlQuery;
-  doc["variables"]["input"]["lnurl"] = lnurl;
-
-  String requestBody;
-  serializeJson(doc, requestBody);
-  int httpCode = http.POST(requestBody);
-  if (httpCode == 201) {
-    String response = http.getString();
-    Serial.println("Response from Blink: " + response);
-  } else {
-    Serial.println("Failed to execute operation via Blink: " +
-                   String(httpCode));
-  }
-
-  http.end();
+  return FundingService::requestLnurlWithdraw(http, sessionState, result);
 }
 
 /** Max insert limit for mixed mode, in EUR equivalent. */
@@ -4306,13 +4023,18 @@ void handleUiStateMachine() {
       Serial.println("Polling for Blink invoice...");
 
       if (checkBoltInvoice()) {
-        // Invoice received! Process it and show thank you screen
-        Serial.println("Blink invoice received => processing payment");
-        getBlinkLnURL(sessionState.boltInvoice);
+        // Invoice received! Pay it and show the matching result screen
+        Serial.println("Invoice received => processing payment");
+        bool paymentOk = getBlinkLnURL(sessionState.boltInvoice);
         uiController.deleteQRCodeScreen();
-        createThankYouScreen();
+        if (paymentOk) {
+          createThankYouScreen();
+          currentUiState = UI_THANK_YOU;
+        } else {
+          createPaymentErrorScreen();
+          currentUiState = UI_PAYMENT_ERROR;
+        }
         lv_task_handler();
-        currentUiState = UI_THANK_YOU;
         stateEnterTime = millis();
         isBlinkFlow = false;
       }
@@ -4351,6 +4073,14 @@ void handleUiStateMachine() {
     }
     break;
   }
+
+  case UI_PAYMENT_ERROR:
+    // Keep the error visible long enough to be read/photographed, then restart
+    if (currentTime - stateEnterTime >= 30000) {
+      Serial.println("Payment error timeout => restarting");
+      ESP.restart();
+    }
+    break;
 
   case UI_IDLE:
   default:
@@ -4653,25 +4383,35 @@ void loop() {
         stateEnterTime = millis();
         qrDebounceDone = false;
       } else {
-        if (paymentService.isBlink(deviceState.fundingSourceBuffer)) {
+        if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
           uiController.deleteInsertMoneyScreen();
           Serial.println("deleteInsertMoneyScreen() - Blink online");
-          createLNURLWithdraw();
+          const bool withdrawOk = createLNURLWithdraw();
           Serial.println("createLNURLWithdraw() - Blink online");
-          // Display the QR code for online
-          showQRCodeLVGL(lnURLgen);
-          Serial.println("showQRCodeLVGL() - Blink online");
-          lv_task_handler();
-          Serial.println("lv_task_handler() - Blink online");
-          // Turn off machines
+          // Turn off machines in both outcomes - cash is already inside
           billAcceptorWrite(185);
           if (INHIBITMECH >= 0) {
             digitalWrite(INHIBITMECH, LOW);
           }
-          currentUiState = UI_SHOWING_QR;
-          stateEnterTime = millis();
-          qrDebounceDone = false;
-          isBlinkFlow = true; // Mark that we're in Blink flow
+          if (withdrawOk) {
+            // Display the QR code for online
+            showQRCodeLVGL(lnURLgen);
+            Serial.println("showQRCodeLVGL() - Blink online");
+            lv_task_handler();
+            Serial.println("lv_task_handler() - Blink online");
+            currentUiState = UI_SHOWING_QR;
+            stateEnterTime = millis();
+            qrDebounceDone = false;
+            isBlinkFlow = true; // Mark that we're in Blink flow
+          } else {
+            // No LNURL/callback - showing a QR would trap the customer in a
+            // polling loop that can never succeed.
+            Serial.println("LNURL withdraw failed => payment error screen");
+            createPaymentErrorScreen();
+            lv_task_handler();
+            currentUiState = UI_PAYMENT_ERROR;
+            stateEnterTime = millis();
+          }
         }
         if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
           if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {

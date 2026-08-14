@@ -29,28 +29,45 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Build firmware
-        run: pio run -e esp32-8048s050
+      - name: Build firmware (S3 + WT32)
+        run: |
+          pio run -e esp32-8048s050
+          pio run -e esp32dev
 
       - name: Extract firmware version
         id: fwver
         run: |
-          VER=$(grep 'define FW_VERSION' src/main.cpp | sed 's/.*"\(.*\)".*/\1/')
+          VER=$(grep 'define FW_VERSION' src/version.h | sed 's/.*"\(.*\)".*/\1/')
           echo "version=$VER" >> $GITHUB_OUTPUT
           echo "Firmware version: $VER"
 
       - name: Copy binaries to web-flasher/public/bin/
         run: |
-          mkdir -p web-flasher/public/bin
-          cp .pio/build/esp32-8048s050/bootloader.bin web-flasher/public/bin/bootloader.bin
-          cp .pio/build/esp32-8048s050/partitions.bin  web-flasher/public/bin/partitions.bin
-          cp .pio/build/esp32-8048s050/firmware.bin    web-flasher/public/bin/firmware.bin
+          mkdir -p web-flasher/public/bin/s3 web-flasher/public/bin/wt32
+          cp .pio/build/esp32-8048s050/bootloader.bin web-flasher/public/bin/s3/bootloader.bin
+          cp .pio/build/esp32-8048s050/partitions.bin web-flasher/public/bin/s3/partitions.bin
+          cp .pio/build/esp32-8048s050/firmware.bin   web-flasher/public/bin/s3/firmware.bin
+          cp .pio/build/esp32dev/bootloader.bin       web-flasher/public/bin/wt32/bootloader.bin
+          cp .pio/build/esp32dev/partitions.bin       web-flasher/public/bin/wt32/partitions.bin
+          cp .pio/build/esp32dev/firmware.bin         web-flasher/public/bin/wt32/firmware.bin
           BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" | head -1)
           if [ -n "$BOOT_APP0" ]; then
-            cp "$BOOT_APP0" web-flasher/public/bin/boot_app0.bin
+            cp "$BOOT_APP0" web-flasher/public/bin/s3/boot_app0.bin
+            cp "$BOOT_APP0" web-flasher/public/bin/wt32/boot_app0.bin
           else
             echo "WARN: boot_app0.bin nenájdený"
           fi
+
+      - name: Prepare release assets (board-suffixed names)
+        run: |
+          mkdir -p release-assets
+          cp web-flasher/public/bin/s3/bootloader.bin   release-assets/bootloader-s3.bin
+          cp web-flasher/public/bin/s3/partitions.bin   release-assets/partitions-s3.bin
+          cp web-flasher/public/bin/s3/firmware.bin     release-assets/firmware-s3.bin
+          cp web-flasher/public/bin/wt32/bootloader.bin release-assets/bootloader-wt32.bin
+          cp web-flasher/public/bin/wt32/partitions.bin release-assets/partitions-wt32.bin
+          cp web-flasher/public/bin/wt32/firmware.bin   release-assets/firmware-wt32.bin
+          cp web-flasher/public/bin/s3/boot_app0.bin    release-assets/boot_app0.bin
 
       - name: Inject firmware version into web-flasher
         run: |
@@ -70,6 +87,16 @@ jobs:
           npm ci
           npm run build
 
+      - name: Package offline flasher
+        run: |
+          mkdir -p offline-pkg
+          cp -r web-flasher/dist/* offline-pkg/
+          cp web-flasher/offline/start-windows.bat offline-pkg/
+          cp web-flasher/offline/start-linux-mac.sh offline-pkg/
+          cp web-flasher/offline/README.txt offline-pkg/
+          chmod +x offline-pkg/start-linux-mac.sh
+          (cd offline-pkg && zip -qr ../release-assets/fiat-hell-flasher-offline.zip .)
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@e9c66a37f080288a11235e32cbe2dc5fb3a679cc  # peaceiris/actions-gh-pages@v4
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
@@ -84,10 +111,14 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # softprops/action-gh-release@v2
         with:
           files: |
-            web-flasher/public/bin/bootloader.bin
-            web-flasher/public/bin/partitions.bin
-            web-flasher/public/bin/boot_app0.bin
-            web-flasher/public/bin/firmware.bin
+            release-assets/bootloader-s3.bin
+            release-assets/partitions-s3.bin
+            release-assets/firmware-s3.bin
+            release-assets/bootloader-wt32.bin
+            release-assets/partitions-wt32.bin
+            release-assets/firmware-wt32.bin
+            release-assets/boot_app0.bin
+            release-assets/fiat-hell-flasher-offline.zip
           generate_release_notes: true
           name: "v${{ steps.fwver.outputs.version }}"
           fail_on_unmatched_files: true

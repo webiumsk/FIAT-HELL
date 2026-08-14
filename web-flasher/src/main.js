@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
-import { checkBrowserSupport, connectAndFlash, uploadConfigOnly } from './flash.js';
-import { FW_VERSION, FLASH_PARTS, FLASH_OFFSETS, GITHUB_REPO } from './config.js';
+import { checkBrowserSupport, connectAndFlash, uploadConfigOnly, scanWifiViaSerial, readConfigViaSerial } from './flash.js';
+import { FW_VERSION, BOARDS, DEFAULT_BOARD, GITHUB_REPO } from './config.js';
 
 /* ══════════════════════════════════════════════════════════════
    Panel & accordion helpers
@@ -29,9 +29,82 @@ function toggleSection(id) {
 }
 
 function onFundingChange() {
+  // Blink and Flash share the same credential fields (Galoy API).
   const isLNbits = document.getElementById('fund_lnbits').checked;
   document.querySelectorAll('.lnbits-fields').forEach(el => el.style.display = isLNbits ? '' : 'none');
   document.querySelectorAll('.blink-fields').forEach(el => el.style.display  = isLNbits ? 'none' : '');
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Board selection (S3 vs WT32 — different binaries and offsets)
+══════════════════════════════════════════════════════════════ */
+function selectedBoard() {
+  const checked = document.querySelector('input[name="board"]:checked');
+  return (checked && BOARDS[checked.value]) ? checked.value : DEFAULT_BOARD;
+}
+
+function onBoardChange() {
+  const board = BOARDS[selectedBoard()];
+  const bootHint = document.getElementById('boot-hint');
+  if (bootHint) {
+    bootHint.textContent = board.manualBoot
+      ? 'Manuálny boot: drž BOOT, stlač RESET, pusť a klikni Flash.'
+      : 'Doska sa resetne automaticky; ak flash nenabehne, drž BOOT pri pripájaní.';
+  }
+  populateVersionDropdown().catch(e => console.error('Releases load failed:', e));
+}
+
+/* ══════════════════════════════════════════════════════════════
+   WiFi scan via device serial (SCAN_WIFI protocol command)
+══════════════════════════════════════════════════════════════ */
+async function scanWifiAction() {
+  const btn  = document.getElementById('btn-scan-wifi');
+  const hint = document.getElementById('wifi-scan-hint');
+  const setHint = (msg, tone) => {
+    hint.textContent = msg;
+    hint.style.color = tone === 'err' ? 'var(--red, #f66)'
+                     : tone === 'ok'  ? 'var(--green, #6f6)'
+                     : '';
+    hint.style.fontWeight = tone ? '600' : '';
+  };
+  btn.disabled = true;
+  try {
+    setHint('Skenujem… (zariadenie sa reštartuje, trvá to ~10 s)');
+    const networks = await scanWifiViaSerial({ log: m => setHint(m) });
+    const dl = document.getElementById('wifi_networks');
+    dl.innerHTML = '';
+    for (const n of networks) {
+      const opt = document.createElement('option');
+      opt.value = n.ssid;
+      opt.label = `${n.ssid} (${n.rssi} dBm${n.secure ? '' : ', otvorená'})`;
+      dl.appendChild(opt);
+    }
+    if (networks.length) {
+      setHint(`✓ Nájdených ${networks.length} sietí — vyber zo zoznamu v poli SSID.`, 'ok');
+      const ssidEl = document.getElementById('wifi_ssid');
+      // A datalist only offers entries matching the current text, so a
+      // pre-filled SSID would hide the rest of the scan results — clear it
+      // to drop down the full list. But if the operator dismisses the list
+      // without picking anything, restore what they had so /wifi.json isn't
+      // silently dropped.
+      const prevSsid = ssidEl.value;
+      ssidEl.value = '';
+      const restore = () => {
+        if (ssidEl.value === '') { ssidEl.value = prevSsid; saveToStorage(); }
+        ssidEl.removeEventListener('blur', restore);
+      };
+      ssidEl.addEventListener('blur', restore);
+      ssidEl.focus();
+    } else {
+      setHint('Žiadne siete sa nenašli — skús znova bližšie k routeru.', 'err');
+    }
+  } catch (e) {
+    // Persistent, prominent error — no auto-hide, the operator must see why.
+    setHint('✗ ' + e.message, 'err');
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -41,20 +114,172 @@ function v(id)   { return document.getElementById(id).value.trim(); }
 function num(id) { const val = v(id); return val === '' ? '' : val; }
 
 /* ══════════════════════════════════════════════════════════════
+   Kept secrets — values that stay on the device.
+   A device dump redacts secrets to "__SET__"; those fields show a
+   placeholder and, when left empty, upload "__KEEP__" so the device
+   keeps its stored value. Typing anything replaces the secret.
+══════════════════════════════════════════════════════════════ */
+const KEEP = '__KEEP__';
+const keptSecrets = new Set();
+
+function markKeptSecret(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  keptSecrets.add(id);
+  el.value = '';
+  el.dataset.origPlaceholder ??= el.placeholder;
+  el.placeholder = '•••• uložené v zariadení — ponechá sa';
+}
+
+function clearKeptSecret(id) {
+  if (!keptSecrets.delete(id)) return;
+  const el = document.getElementById(id);
+  if (el && el.dataset.origPlaceholder !== undefined) {
+    el.placeholder = el.dataset.origPlaceholder;
+  }
+}
+
+// Empty field + kept flag -> tell the device to keep its stored secret.
+function secretVal(id) {
+  const val = v(id);
+  if (val) return val;
+  return keptSecrets.has(id) ? KEEP : '';
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Load current configuration from the device (redacted dump)
+══════════════════════════════════════════════════════════════ */
+const SECRET_SET = '__SET__';
+
+function applyDumpField(fieldId, value, isSecret) {
+  const el = document.getElementById(fieldId);
+  if (!el) return;
+  if (isSecret) {
+    if (value === SECRET_SET) markKeptSecret(fieldId);
+    else { clearKeptSecret(fieldId); el.value = value || ''; }
+  } else {
+    el.value = value ?? '';
+  }
+}
+
+function applyDumpToForm(files) {
+  const byName = (arr, name, idx) => {
+    if (!Array.isArray(arr)) return '';
+    const hit = arr.find(e => e && e.name === name);
+    if (hit) return hit.value ?? '';
+    return arr[idx]?.value ?? '';
+  };
+  const csv = (val) => String(val ?? '').split(',');
+
+  const el = files['/elements.json'];
+  if (el) {
+    applyDumpField('ap_password',  byName(el, 'password', 0), true);
+    applyDumpField('atm_desc',     byName(el, 'atmdesc', 1));
+    applyDumpField('atm_subtitle', byName(el, 'atmsubtitle', 2));
+    applyDumpField('atm_title',    byName(el, 'atmtitle', 3));
+  }
+
+  const gui = files['/gui.json'];
+  if (Array.isArray(gui)) {
+    const radioFor = { fundingsource: 'funding', ratesource: 'ratesource', animated: 'animated' };
+    for (const entry of gui) {
+      const radioName = radioFor[entry?.name];
+      if (!radioName || !Array.isArray(entry.value)) continue;
+      const chosen = entry.value[(entry.checked ?? 1) - 1];
+      const radio = document.querySelector(`input[name="${radioName}"][value="${chosen}"]`);
+      if (radio) radio.checked = true;
+    }
+  }
+
+  const first = files['/first.json'];
+  if (first) {
+    applyDumpField('cur1_blink_apikey', byName(first, 'blinkapikey', 0), true);
+    applyDumpField('cur1_blink_wallet', byName(first, 'blinkwalletid', 1));
+    const [base = '', secret = '', atmCur = ''] = csv(byName(first, 'lnurl', 2));
+    applyDumpField('cur1_lnurl_base', base);
+    applyDumpField('cur1_lnurl_secret', secret, true);
+    applyDumpField('cur1_lnurl_atm', atmCur);
+    applyDumpField('cur1_adminkey', byName(first, 'adminkey', 3), true);
+    applyDumpField('cur1_readkey',  byName(first, 'readkey', 4), true);
+    applyDumpField('cur1_code',     byName(first, 'currencyOne', 5));
+    applyDumpField('cur1_bills',    byName(first, 'billmech', 6));
+    applyDumpField('cur1_max',      byName(first, 'maxamount', 7));
+    applyDumpField('cur1_charge',   byName(first, 'charge1', 8));
+  }
+
+  for (const [file, prefix, curName, lnurlName] of [
+    ['/second.json', 'cur2', 'currencyTwo', 'lnurl2'],
+    ['/third.json',  'cur3', 'currencyThree', 'lnurl3'],
+  ]) {
+    const doc = files[file];
+    if (!doc) continue;
+    applyDumpField(`${prefix}_code`, byName(doc, curName, 0));
+    const [base = '', secret = '', atmCur = ''] = csv(byName(doc, lnurlName, 1));
+    applyDumpField(`${prefix}_lnurl_base`, base);
+    applyDumpField(`${prefix}_lnurl_secret`, secret, true);
+    applyDumpField(`${prefix}_lnurl_atm`, atmCur);
+    applyDumpField(`${prefix}_bills`,  byName(doc, `billmech${prefix[3] === '2' ? 2 : 3}`, 2));
+    applyDumpField(`${prefix}_max`,    byName(doc, `maxamount${prefix[3] === '2' ? 2 : 3}`, 3));
+    applyDumpField(`${prefix}_charge`, byName(doc, `charge${prefix[3] === '2' ? 2 : 3}`, 4));
+  }
+
+  const wifi = files['/wifi.json'];
+  if (wifi && typeof wifi === 'object') {
+    applyDumpField('wifi_ssid', wifi.ssid ?? '');
+    applyDumpField('wifi_password', wifi.password ?? '', true);
+  }
+
+  onFundingChange();
+  saveToStorage();
+  updateSecretFingerprints();
+}
+
+async function loadFromDeviceAction() {
+  const status = document.getElementById('device-load-status');
+  const setStatus = (msg, tone) => {
+    if (!status) return;
+    status.textContent = msg;
+    status.style.color = tone === 'err' ? 'var(--red, #f66)'
+                       : tone === 'ok'  ? 'var(--green, #6f6)' : '';
+    status.style.fontWeight = tone ? '600' : '';
+  };
+  try {
+    setStatus('Načítavam… (zariadenie sa reštartuje, trvá to ~10 s)');
+    const files = await readConfigViaSerial({ log: m => setStatus(m) });
+    if (Object.keys(files).length === 0) {
+      setStatus('Zariadenie neposlalo žiadnu konfiguráciu — je vôbec nakonfigurované?', 'err');
+      return;
+    }
+    applyDumpToForm(files);
+    setStatus('✓ Konfigurácia načítaná. Tajné hodnoty (kľúče, heslá) ostávajú v zariadení — '
+            + 'polia s „uložené v zariadení" sa pri nahratí nezmenia, pokiaľ ich neprepíšeš.', 'ok');
+  } catch (e) {
+    setStatus('✗ ' + e.message, 'err');
+    console.error(e);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
    JSON generators (order MUST match ConfigService load order)
 ══════════════════════════════════════════════════════════════ */
+// The firmware's ConfigService reads these files positionally, but the
+// AutoConnect portal re-loads them via loadElement(), which silently ignores
+// entries without a matching "type" — omit it and the portal shows empty
+// fields even though the device is configured.
 function makeElementsJson() {
   return [
-    { name: 'password',    value: v('ap_password') },
-    { name: 'atmdesc',     value: v('atm_desc') },
-    { name: 'atmsubtitle', value: v('atm_subtitle') },
-    { name: 'atmtitle',    value: v('atm_title') || 'FIAT HELL' },
+    { name: 'password',    type: 'ACInput', value: secretVal('ap_password') },
+    { name: 'atmdesc',     type: 'ACInput', value: v('atm_desc') },
+    { name: 'atmsubtitle', type: 'ACInput', value: v('atm_subtitle') },
+    { name: 'atmtitle',    type: 'ACInput', value: v('atm_title') || 'FIAT HELL' },
   ];
 }
 
 function validateConfig() {
   const pwd = v('ap_password');
-  if (!pwd || pwd.length < 8 || pwd === 'changeme') {
+  if (!pwd && keptSecrets.has('ap_password')) {
+    // password stays on the device — nothing to validate here
+  } else if (!pwd || pwd.length < 8 || pwd === 'changeme') {
     alert('Heslo pre AP portál musí mať aspoň 8 znakov a nesmie byť "changeme".');
     showPanel('config');
     if (!document.getElementById('body-general').classList.contains('open')) toggleSection('general');
@@ -76,57 +301,59 @@ function makeGuiJson() {
   // Firmware's ConfigService still parses the legacy 4-entry array; keep that
   // shape so older firmwares stay compatible. UI only exposes 3 options.
   const rateIndex = { CoinGecko: 1, ExchangeApi: 2, CoinYEP: 3, Kraken: 4 }[rate] ?? 3;
+  // Funding value array order must match pagegui.h: Blink, LNbits, Flash.
+  const fundingIndex = { Blink: 1, LNbits: 2, Flash: 3 }[funding] ?? 1;
   return [
-    { name: 'fundingsource', value: ['Blink', 'LNbits'], checked: funding === 'Blink' ? 1 : 2 },
-    { name: 'ratesource',    value: ['CoinGecko', 'ExchangeApi', 'CoinYEP', 'Kraken'], checked: rateIndex },
-    { name: 'animated',      value: ['No', 'Yes'], checked: animated === 'Yes' ? 2 : 1 },
+    { name: 'fundingsource', type: 'ACRadio', value: ['Blink', 'LNbits', 'Flash'], checked: fundingIndex },
+    { name: 'ratesource',    type: 'ACRadio', value: ['CoinGecko', 'ExchangeApi', 'CoinYEP', 'Kraken'], checked: rateIndex },
+    { name: 'animated',      type: 'ACRadio', value: ['No', 'Yes'], checked: animated === 'Yes' ? 2 : 1 },
   ];
 }
 
 function makeFirstJson() {
   const isLNbits = document.getElementById('fund_lnbits').checked;
-  const lnurlValue = [v('cur1_lnurl_base'), v('cur1_lnurl_secret'), v('cur1_lnurl_atm') || v('cur1_code')].join(',');
+  const lnurlValue = [v('cur1_lnurl_base'), secretVal('cur1_lnurl_secret'), v('cur1_lnurl_atm') || v('cur1_code')].join(',');
   return [
-    { name: 'blinkapikey',   value: isLNbits ? '' : v('cur1_blink_apikey') },
-    { name: 'blinkwalletid', value: isLNbits ? '' : v('cur1_blink_wallet') },
-    { name: 'lnurl',         value: isLNbits ? lnurlValue : '' },
-    { name: 'adminkey',      value: isLNbits ? v('cur1_adminkey') : '' },
-    { name: 'readkey',       value: isLNbits ? v('cur1_readkey')  : '' },
-    { name: 'currencyOne',   value: v('cur1_code') },
-    { name: 'billmech',      value: v('cur1_bills') },
-    { name: 'maxamount',     value: num('cur1_max') },
-    { name: 'charge1',       value: num('cur1_charge') },
+    { name: 'blinkapikey',   type: 'ACInput', value: isLNbits ? '' : secretVal('cur1_blink_apikey') },
+    { name: 'blinkwalletid', type: 'ACInput', value: isLNbits ? '' : v('cur1_blink_wallet') },
+    { name: 'lnurl',         type: 'ACInput', value: isLNbits ? lnurlValue : '' },
+    { name: 'adminkey',      type: 'ACInput', value: isLNbits ? secretVal('cur1_adminkey') : '' },
+    { name: 'readkey',       type: 'ACInput', value: isLNbits ? secretVal('cur1_readkey')  : '' },
+    { name: 'currencyOne',   type: 'ACInput', value: v('cur1_code') },
+    { name: 'billmech',      type: 'ACInput', value: v('cur1_bills') },
+    { name: 'maxamount',     type: 'ACInput', value: num('cur1_max') },
+    { name: 'charge1',       type: 'ACInput', value: num('cur1_charge') },
   ];
 }
 
 function makeSecondJson() {
   if (!v('cur2_code')) return null;
-  const lnurlValue = [v('cur2_lnurl_base'), v('cur2_lnurl_secret'), v('cur2_lnurl_atm') || v('cur2_code')].join(',');
+  const lnurlValue = [v('cur2_lnurl_base'), secretVal('cur2_lnurl_secret'), v('cur2_lnurl_atm') || v('cur2_code')].join(',');
   return [
-    { name: 'currencyTwo', value: v('cur2_code') },
-    { name: 'lnurl2',      value: lnurlValue },
-    { name: 'billmech2',   value: v('cur2_bills') },
-    { name: 'maxamount2',  value: num('cur2_max') },
-    { name: 'charge2',     value: num('cur2_charge') },
+    { name: 'currencyTwo', type: 'ACInput', value: v('cur2_code') },
+    { name: 'lnurl2',      type: 'ACInput', value: lnurlValue },
+    { name: 'billmech2',   type: 'ACInput', value: v('cur2_bills') },
+    { name: 'maxamount2',  type: 'ACInput', value: num('cur2_max') },
+    { name: 'charge2',     type: 'ACInput', value: num('cur2_charge') },
   ];
 }
 
 function makeThirdJson() {
   if (!v('cur3_code')) return null;
-  const lnurlValue = [v('cur3_lnurl_base'), v('cur3_lnurl_secret'), v('cur3_lnurl_atm') || v('cur3_code')].join(',');
+  const lnurlValue = [v('cur3_lnurl_base'), secretVal('cur3_lnurl_secret'), v('cur3_lnurl_atm') || v('cur3_code')].join(',');
   return [
-    { name: 'currencyThree', value: v('cur3_code') },
-    { name: 'lnurl3',        value: lnurlValue },
-    { name: 'billmech3',     value: v('cur3_bills') },
-    { name: 'maxamount3',    value: num('cur3_max') },
-    { name: 'charge3',       value: num('cur3_charge') },
+    { name: 'currencyThree', type: 'ACInput', value: v('cur3_code') },
+    { name: 'lnurl3',        type: 'ACInput', value: lnurlValue },
+    { name: 'billmech3',     type: 'ACInput', value: v('cur3_bills') },
+    { name: 'maxamount3',    type: 'ACInput', value: num('cur3_max') },
+    { name: 'charge3',       type: 'ACInput', value: num('cur3_charge') },
   ];
 }
 
 function makeWifiJson() {
   const ssid = v('wifi_ssid');
   if (!ssid) return null;
-  return { ssid, password: document.getElementById('wifi_password').value };
+  return { ssid, password: document.getElementById('wifi_password').value || secretVal('wifi_password') };
 }
 
 function makeConfigFiles() {
@@ -147,19 +374,48 @@ function makeConfigFiles() {
 /* ══════════════════════════════════════════════════════════════
    Download config ZIP
 ══════════════════════════════════════════════════════════════ */
+// The ZIP is a plaintext export for manual portal entry, so it can't carry a
+// device-kept secret. Replace any __KEEP__ marker with an empty string and
+// tell the operator which fields were left blank.
+function stripKeepMarkers(obj) {
+  let stripped = false;
+  const walk = (node) => {
+    if (Array.isArray(node)) node.forEach(walk);
+    else if (node && typeof node === 'object') {
+      for (const k of Object.keys(node)) {
+        if (typeof node[k] === 'string' && node[k].includes(KEEP)) {
+          node[k] = node[k] === KEEP ? '' : node[k].split(KEEP).join('');
+          stripped = true;
+        } else walk(node[k]);
+      }
+    }
+  };
+  walk(obj);
+  return stripped;
+}
+
 async function downloadConfigZip() {
   if (!validateConfig()) return;
 
+  let anyStripped = false;
+  const j = (obj) => { if (obj && stripKeepMarkers(obj)) anyStripped = true; return obj; };
+
   const zip = new JSZip();
-  zip.file('elements.json', JSON.stringify(makeElementsJson(), null, 2));
-  zip.file('gui.json',      JSON.stringify(makeGuiJson(),      null, 2));
-  zip.file('first.json',    JSON.stringify(makeFirstJson(),    null, 2));
-  const second = makeSecondJson();
+  zip.file('elements.json', JSON.stringify(j(makeElementsJson()), null, 2));
+  zip.file('gui.json',      JSON.stringify(makeGuiJson(),         null, 2));
+  zip.file('first.json',    JSON.stringify(j(makeFirstJson()),    null, 2));
+  const second = j(makeSecondJson());
   if (second) zip.file('second.json', JSON.stringify(second, null, 2));
-  const third = makeThirdJson();
+  const third = j(makeThirdJson());
   if (third)  zip.file('third.json',  JSON.stringify(third,  null, 2));
-  const wifi = makeWifiJson();
+  const wifi = j(makeWifiJson());
   if (wifi)   zip.file('wifi.json',   JSON.stringify(wifi,   null, 2));
+
+  if (anyStripped) {
+    alert('Pozn.: niektoré tajné hodnoty (kľúč/heslá) sú uložené v zariadení a '
+        + 'nie sú v ZIP-e — v exportovaných súboroch ostali prázdne. '
+        + 'Ak ich potrebuješ, prepíš príslušné polia pred exportom.');
+  }
 
   const blob = await zip.generateAsync({ type: 'blob' });
   const url  = URL.createObjectURL(blob);
@@ -182,6 +438,7 @@ function clearForm() {
   document.querySelectorAll('input[type="text"], input[type="password"], input[type="number"]')
     .forEach(el => { el.value = el.defaultValue || ''; });
   document.querySelectorAll('input[type="radio"]').forEach(r => { r.checked = r.defaultChecked; });
+  [...keptSecrets].forEach(clearKeptSecret);
   onFundingChange();
   saveToStorage();
 }
@@ -191,10 +448,23 @@ function clearForm() {
 ══════════════════════════════════════════════════════════════ */
 const STORAGE_KEY = 'fiat-hell-flasher-v1';
 
-// Fields explicitly persisted to localStorage even though they're password-type.
-// These secrets are masked in the UI only to deter shoulder-surfing — the
-// operator still wants them remembered between sessions on their own machine.
-const PERSISTED_SECRETS = new Set(['cur1_blink_apikey']);
+// Secrets are never auto-persisted; they land in localStorage only when the
+// operator ticks "remember passwords + API key". Keeps the stored behavior
+// consistent with what the checkbox promises.
+const PERSISTED_SECRETS = new Set();
+
+// Persisted only when the operator opts in via the "remember" box.
+const OPT_IN_SECRETS = ['wifi_password', 'ap_password', 'cur1_blink_apikey'];
+
+function rememberSecretsEnabled() {
+  const cb = document.getElementById('remember_secrets');
+  return !!(cb && cb.checked);
+}
+
+function onRememberSecretsChange() {
+  saveToStorage();
+  updateSecretFingerprints();
+}
 
 function saveToStorage() {
   const data = {};
@@ -206,6 +476,13 @@ function saveToStorage() {
     const el = document.getElementById(id);
     if (el) data[id] = el.value;
   });
+  data['remember_secrets'] = rememberSecretsEnabled();
+  if (rememberSecretsEnabled()) {
+    OPT_IN_SECRETS.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) data[id] = el.value;
+    });
+  }
   document.querySelectorAll('input[type="radio"]:checked')
     .forEach(r => { data['radio_' + r.name] = r.value; });
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -237,6 +514,9 @@ function loadFromStorage() {
       if (key.startsWith('radio_')) {
         const radio = document.querySelector(`input[name="${key.slice(6)}"][value="${val}"]`);
         if (radio) radio.checked = true;
+      } else if (key === 'remember_secrets') {
+        const cb = document.getElementById('remember_secrets');
+        if (cb) cb.checked = !!val;
       } else {
         const el = document.getElementById(key);
         if (el) el.value = val;
@@ -247,17 +527,119 @@ function loadFromStorage() {
 }
 
 /* ══════════════════════════════════════════════════════════════
+   Profile file export/import (whole form incl. passwords)
+══════════════════════════════════════════════════════════════ */
+function collectProfile() {
+  const data = {};
+  document.querySelectorAll('input[type="text"], input[type="number"], input[type="password"]')
+    .forEach(el => { if (el.id) data[el.id] = el.value; });
+  document.querySelectorAll('input[type="radio"]:checked')
+    .forEach(r => { data['radio_' + r.name] = r.value; });
+  return data;
+}
+
+function saveProfile() {
+  if (!confirm('Profil bude obsahovať aj heslá a API kľúč v čitateľnej podobe.\n'
+             + 'Ulož ho na bezpečné miesto (napr. šifrovaný disk / správca hesiel).\n\nPokračovať?')) return;
+  const blob = new Blob(
+    [JSON.stringify({ _format: 'fiat-hell-profile-v1', ...collectProfile() }, null, 2)],
+    { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'fiat-hell-profil.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function applyProfile(data) {
+  Object.entries(data).forEach(([key, val]) => {
+    if (key === '_format') return;
+    if (key.startsWith('radio_')) {
+      const radio = document.querySelector(`input[name="${key.slice(6)}"][value="${val}"]`);
+      if (radio) radio.checked = true;
+    } else {
+      const el = document.getElementById(key);
+      if (el && (el.type === 'text' || el.type === 'number' || el.type === 'password')) {
+        // A profile carries real values (incl. empty secrets), so drop any
+        // device-kept placeholder state — otherwise secretVal would export
+        // __KEEP__ for a field the profile just set to empty.
+        clearKeptSecret(key);
+        el.value = String(val);
+      }
+    }
+  });
+  onFundingChange();
+  onBoardChange();
+  saveToStorage();
+  updateSecretFingerprints();
+}
+
+function loadProfileFromFile(input) {
+  const file = input.files && input.files[0];
+  input.value = ''; // allow re-selecting the same file later
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (data._format !== 'fiat-hell-profile-v1') {
+        alert('Toto nevyzerá ako FIAT-HELL profil.');
+        return;
+      }
+      applyProfile(data);
+      alert('Profil načítaný.');
+    } catch (e) {
+      alert('Súbor sa nedá prečítať: ' + e.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+/* ══════════════════════════════════════════════════════════════
    GitHub releases — fetch, cache, dropdown
 ══════════════════════════════════════════════════════════════ */
-const RELEASES_CACHE_KEY = 'gh-releases-v1';
+const RELEASES_CACHE_KEY = 'gh-releases-v2';
 const RELEASES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const REQUIRED_ASSETS = ['bootloader.bin', 'partitions.bin', 'boot_app0.bin', 'firmware.bin'];
 
-// Cache of release id → flashParts mapping. Populated when dropdown is built.
+// Cache of release id → flashParts mapping for the currently selected board.
 const releaseFlashParts = new Map();
 
+/**
+ * Resolve a release's assets into flash parts for one board.
+ * New releases carry board-suffixed assets (firmware-s3.bin, firmware-wt32.bin,
+ * per-board bootloader/partitions) plus a shared boot_app0.bin. Releases from
+ * before the dual-board split carry unsuffixed assets and are S3-only.
+ * Returns { parts, legacy } or null when the release can't flash this board.
+ */
+function resolveBoardParts(assetsByName, boardKey) {
+  const board = BOARDS[boardKey];
+  const get = n => assetsByName.get(n.toLowerCase());
+
+  const trySuffix = suffix => {
+    const parts = [];
+    for (const name of ['bootloader.bin', 'partitions.bin', 'firmware.bin']) {
+      const a = get(name.replace('.bin', suffix + '.bin'));
+      if (!a) return null;
+      parts.push({ path: a.browser_download_url, offset: board.offsets[name] });
+    }
+    const boot = get('boot_app0.bin') || get('boot_app0' + suffix + '.bin');
+    if (!boot) return null;
+    parts.push({ path: boot.browser_download_url, offset: board.offsets['boot_app0.bin'] });
+    return parts;
+  };
+
+  let parts = trySuffix(board.assetSuffix);
+  if (parts) return { parts, legacy: false };
+  if (boardKey === 's3') {
+    parts = trySuffix('');
+    if (parts) return { parts, legacy: true };
+  }
+  return null;
+}
+
 async function fetchReleases() {
-  // Try sessionStorage cache first
+  // Try sessionStorage cache first (raw asset lists, board-independent)
   try {
     const cached = sessionStorage.getItem(RELEASES_CACHE_KEY);
     if (cached) {
@@ -271,36 +653,35 @@ async function fetchReleases() {
   if (!resp.ok) throw new Error(`GitHub API HTTP ${resp.status}`);
   const all = await resp.json();
 
-  const flashable = all
+  const releases = all
     .filter(r => !r.draft)
-    .map(r => {
-      const assets = new Map((r.assets || []).map(a => [a.name.toLowerCase(), a]));
-      const parts = REQUIRED_ASSETS.map(name => {
-        const a = assets.get(name);
-        return a ? { name, url: a.browser_download_url, offset: FLASH_OFFSETS[name] } : null;
-      });
-      if (parts.some(p => p === null)) return null;
-      return {
-        id: r.id,
-        tag: r.tag_name,
-        name: r.name || r.tag_name,
-        date: r.published_at ? r.published_at.slice(0, 10) : '',
-        prerelease: !!r.prerelease,
-        parts,
-      };
-    })
-    .filter(r => r !== null);
+    .map(r => ({
+      id: r.id,
+      tag: r.tag_name,
+      name: r.name || r.tag_name,
+      date: r.published_at ? r.published_at.slice(0, 10) : '',
+      prerelease: !!r.prerelease,
+      assets: (r.assets || []).map(a => ({
+        name: a.name.toLowerCase(),
+        url: a.browser_download_url,
+      })),
+    }));
 
   try {
-    sessionStorage.setItem(RELEASES_CACHE_KEY, JSON.stringify({ at: Date.now(), data: flashable }));
+    sessionStorage.setItem(RELEASES_CACHE_KEY, JSON.stringify({ at: Date.now(), data: releases }));
   } catch (_) {}
-  return flashable;
+  return releases;
 }
+
+// Guards against interleaved invocations (rapid board toggling): only the
+// most recent call may touch the dropdown and releaseFlashParts.
+let versionDropdownRequestId = 0;
 
 async function populateVersionDropdown() {
   const sel = document.getElementById('fw-version-select');
   if (!sel) return;
-  releaseFlashParts.clear();
+  const requestId = ++versionDropdownRequestId;
+  const boardKey = selectedBoard();
 
   let releases = [];
   let error = null;
@@ -309,9 +690,13 @@ async function populateVersionDropdown() {
   } catch (e) {
     error = e.message;
   }
+  if (requestId !== versionDropdownRequestId) return; // superseded
+
+  releaseFlashParts.clear();
 
   // Clear all options except the "local" first option
   while (sel.options.length > 1) sel.remove(1);
+  sel.value = '__local__';
 
   if (error) {
     const opt = document.createElement('option');
@@ -320,35 +705,45 @@ async function populateVersionDropdown() {
     sel.add(opt);
     return;
   }
-  if (releases.length === 0) {
+
+  const flashable = [];
+  for (const r of releases) {
+    const assetsByName = new Map(r.assets.map(a => [a.name, { browser_download_url: a.url }]));
+    const resolved = resolveBoardParts(assetsByName, boardKey);
+    if (resolved) flashable.push({ ...r, ...resolved });
+  }
+
+  if (flashable.length === 0) {
     const opt = document.createElement('option');
     opt.disabled = true;
-    opt.textContent = 'Žiadne release-y s firmware assets';
+    opt.textContent = `Žiadne release-y pre ${BOARDS[boardKey].label}`;
     sel.add(opt);
     return;
   }
 
-  for (const r of releases) {
+  for (const r of flashable) {
     const key = 'release:' + r.id;
-    releaseFlashParts.set(key, r.parts.map(p => ({ path: p.url, offset: p.offset })));
+    releaseFlashParts.set(key, r.parts);
     const opt = document.createElement('option');
     opt.value = key;
     const tag = r.tag.startsWith('v') ? r.tag : 'v' + r.tag;
     const pre = r.prerelease ? ' [pre-release]' : '';
-    opt.textContent = `${tag}${pre}  —  ${r.date}`;
+    const legacy = r.legacy ? ' [legacy S3]' : '';
+    opt.textContent = `${tag}${pre}${legacy}  —  ${r.date}`;
     sel.add(opt);
   }
 
   // Default selection: newest non-prerelease, else newest overall.
-  const defaultRelease = releases.find(r => !r.prerelease) || releases[0];
+  const defaultRelease = flashable.find(r => !r.prerelease) || flashable[0];
   if (defaultRelease) sel.value = 'release:' + defaultRelease.id;
   onVersionChange();
 }
 
 function selectedFlashParts() {
+  const localParts = BOARDS[selectedBoard()].localParts;
   const sel = document.getElementById('fw-version-select');
-  if (!sel || sel.value === '__local__') return FLASH_PARTS;
-  return releaseFlashParts.get(sel.value) || FLASH_PARTS;
+  if (!sel || sel.value === '__local__') return localParts;
+  return releaseFlashParts.get(sel.value) || localParts;
 }
 
 function onVersionChange() {
@@ -476,6 +871,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   loadFromStorage();
   onFundingChange();
+  onBoardChange();
   updateSecretFingerprints();
 
   document.addEventListener('input',  () => { saveToStorage(); updateSecretFingerprints(); });
@@ -484,14 +880,18 @@ document.addEventListener('DOMContentLoaded', () => {
   toggleSection('general');
   toggleSection('cur1');
 
-  // Fire-and-forget — keeps the page interactive while GH API responds.
-  populateVersionDropdown().catch(e => console.error('Releases load failed:', e));
-
   // Expose functions for inline onclick handlers in HTML
+  // (populateVersionDropdown already ran via onBoardChange above)
   Object.assign(window, {
     showPanel,
     toggleSection,
     onFundingChange,
+    onBoardChange,
+    scanWifiAction,
+    loadFromDeviceAction,
+    onRememberSecretsChange,
+    saveProfile,
+    loadProfileFromFile,
     downloadConfigZip,
     clearForm,
     connectAndFlashWithConfig,

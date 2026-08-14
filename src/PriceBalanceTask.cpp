@@ -5,6 +5,7 @@
  */
 
 #include "PriceBalanceTask.h"
+#include "services/FundingService.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -23,7 +24,6 @@ static const char *krakenTickerAPI =
 static const char *exchangeapiConversionAPI =
     "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/"
     "currencies/btc.json";
-static const char *graphqlEndpoint = "https://api.blink.sv/graphql";
 
 static DeviceState *g_deviceState = nullptr;
 static SessionState *g_sessionState = nullptr;
@@ -191,60 +191,25 @@ static void taskFetchBalance(HTTPClient &http, DeviceState &ds,
                     (long long)ss.balanceSats);
     }
     http.end();
-  } else if (strcmp(fundingSource, "Blink") == 0) {
-    http.begin(graphqlEndpoint);
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("X-API-KEY", String(ds.blinkapikey));
-    const char *query = R"(
-    query Me {
-      me {
-        defaultAccount {
-          wallets {
-            id
-            walletCurrency
-            balance
-          }
-        }
-      }
-    }
-    )";
-    DynamicJsonDocument jsonDoc(1024);
-    jsonDoc["query"] = query;
-    String requestBody;
-    serializeJson(jsonDoc, requestBody);
-    int code = http.POST(requestBody);
-    if (code == 200) {
-      String payload = http.getString();
-      DynamicJsonDocument respDoc(4096);
-      if (deserializeJson(respDoc, payload) == DeserializationError::Ok) {
-        // Blink returns errors in payload even with HTTP 200
-        if (respDoc["errors"].is<JsonArray>() &&
-            respDoc["errors"].size() > 0) {
-          const char *msg = respDoc["errors"][0]["message"] | "(no message)";
-          Serial.printf("balance[Blink]: GraphQL error: %s\n", msg);
+  } else if (FundingService::isGaloy(fundingSource)) {
+    // Blink pays from the BTC wallet; Flash from the custodial USD wallet
+    // (its BTC wallet is external/non-custodial - server can't spend it).
+    const char *walletCur = FundingService::galoyWalletCurrency(fundingSource);
+    if (FundingService::fetchGaloyBalance(http, ds, ss, walletCur)) {
+      if (strcmp(walletCur, "USD") == 0) {
+        // Balance is in USD cents; convert to the operator's fiat via the
+        // BTC/USD cross rate (usd_cents/100 * (fiat_per_btc / usd_per_btc)).
+        if (ss.btcUsdValue > 0.0f) {
+          ss.fiatBalance =
+              ((double)ss.balanceSats / 100.0) * (fiatValue / ss.btcUsdValue);
         } else {
-          JsonArray wallets =
-              respDoc["data"]["me"]["defaultAccount"]["wallets"];
-          if (wallets.size() > 0) {
-            JsonObject w = wallets[0];
-            ss.balanceSats = w["balance"];
-            ss.fiatBalance =
-                ((double)ss.balanceSats / 100000000.0) * fiatValue;
-            Serial.printf("balance[Blink]: %lld sats\n",
-                          (long long)ss.balanceSats);
-          } else {
-            Serial.println("balance[Blink]: no wallets in response");
-          }
+          ss.fiatBalance = (double)ss.balanceSats / 100.0; // raw USD fallback
+          Serial.println("BTC/USD rate missing - balance shown in USD");
         }
       } else {
-        Serial.println("balance[Blink]: JSON parse failed");
+        ss.fiatBalance = ((double)ss.balanceSats / 100000000.0) * fiatValue;
       }
-    } else {
-      Serial.printf("balance[Blink]: HTTP %d (%s) — keeping cached %lld sats\n",
-                    code, HTTPClient::errorToString(code).c_str(),
-                    (long long)ss.balanceSats);
     }
-    http.end();
   }
 }
 
@@ -275,6 +240,17 @@ static void priceBalanceTaskFunc(void *param) {
       taskFetchPrice(g_taskHttp, g_deviceState->currencyThree,
                     g_deviceState->rateSourceBuffer, &fv3);
 
+    // Flash pays from the USD wallet - fetch the BTC/USD cross rate for
+    // converting its cent balance into the operator's fiat.
+    float fvUsd = 0.0f;
+    if (strcmp(FundingService::galoyWalletCurrency(
+                   g_deviceState->fundingSourceBuffer),
+               "USD") == 0 &&
+        FundingService::isGaloy(g_deviceState->fundingSourceBuffer)) {
+      taskFetchPrice(g_taskHttp, "USD", g_deviceState->rateSourceBuffer,
+                     &fvUsd);
+    }
+
     if (xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
       // Only overwrite cached values when the fetch actually succeeded.
       // A failed fetch leaves the local variable at 0; without this guard
@@ -283,6 +259,7 @@ static void priceBalanceTaskFunc(void *param) {
       if (fv1 > 0.0f)       g_sessionState->fiatValue1 = fv1;
       if (fv2 > 0.0f)       g_sessionState->fiatValue2 = fv2;
       if (fv3 > 0.0f)       g_sessionState->fiatValue3 = fv3;
+      if (fvUsd > 0.0f)     g_sessionState->btcUsdValue = fvUsd;
       // Use the freshest available price for balance conversion
       const float priceForBalance =
           (fiatValue > 0.0f) ? fiatValue : g_sessionState->fiatValue;
@@ -313,6 +290,17 @@ void startPriceBalanceTask(DeviceState *ds, SessionState *ss) {
 void triggerPriceBalanceFetch(PriceBalanceRequest req) {
   if (g_requestQueue)
     xQueueSend(g_requestQueue, &req, 0);
+}
+
+PriceBalanceWalletIdResult priceBalanceCopyWalletId(char *dst, size_t dstSize,
+                                                    uint32_t timeoutMs) {
+  if (!g_deviceState || !g_dataMutex)
+    return PB_WALLETID_TASK_NOT_RUNNING;
+  if (xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(timeoutMs)) != pdTRUE)
+    return PB_WALLETID_TIMEOUT;
+  strlcpy(dst, g_deviceState->blinkwalletid, dstSize);
+  xSemaphoreGive(g_dataMutex);
+  return PB_WALLETID_OK;
 }
 
 bool isPriceBalanceDataReady() { return g_dataReadyForUi; }

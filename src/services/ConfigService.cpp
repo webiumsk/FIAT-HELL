@@ -54,7 +54,10 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   JsonArray valuesFundingSource = docGui0.createNestedArray("value");
   valuesFundingSource.add("Blink");
   valuesFundingSource.add("LNbits");
-  docGui0["checked"] = (strcmp(in.fundingSource, "Blink") == 0) ? 1 : 2;
+  valuesFundingSource.add("Flash");
+  docGui0["checked"] = (strcmp(in.fundingSource, "Blink") == 0)   ? 1
+                       : (strcmp(in.fundingSource, "Flash") == 0) ? 3
+                                                                  : 2;
 
   JsonObject docGui1 = docGui.createNestedObject();
   docGui1["name"] = "ratesource";
@@ -215,6 +218,61 @@ bool ConfigService::loadFirst(fs::FS &fs, const char *path, FirstConfig &out) {
 
   out.valid = out.currencyLabel[0] != '\0';
   return out.valid;
+}
+
+bool ConfigService::updateFirstBlinkApiKey(fs::FS &fs, const char *path,
+                                           const char *apiKey) {
+  DynamicJsonDocument doc(2400);
+
+  File f = fs.open(path, "r");
+  bool loaded = false;
+  if (f) {
+    loaded = (deserializeJson(doc, f) == DeserializationError::Ok);
+    f.close();
+  }
+
+  if (!loaded || !doc.is<JsonArray>() || doc.as<JsonArray>().size() == 0) {
+    // No usable file yet - create the minimal positional layout loadFirst
+    // expects (same order as the web flasher's makeFirstJson).
+    doc.clear();
+    JsonArray arr = doc.to<JsonArray>();
+    static const char *const names[] = {
+        "blinkapikey", "blinkwalletid", "lnurl",    "adminkey", "readkey",
+        "currencyOne", "billmech",      "maxamount", "charge1"};
+    for (auto name : names) {
+      JsonObject o = arr.createNestedObject();
+      o["name"] = name;
+      o["type"] = "ACInput";
+      o["value"] = "";
+    }
+  }
+
+  doc[0]["value"] = apiKey;
+
+  // Write to a temp file and only replace the original on a fully verified
+  // write, so a power loss mid-write can't corrupt /first.json and brick the
+  // config (this path stores the spending API key).
+  const size_t expected = measureJson(doc);
+  const String tmpPath = String(path) + ".tmp";
+
+  File out = fs.open(tmpPath.c_str(), "w");
+  if (!out) {
+    return false;
+  }
+  const size_t written = serializeJson(doc, out);
+  out.close();
+
+  if (written != expected) {
+    fs.remove(tmpPath.c_str());
+    return false;
+  }
+
+  fs.remove(path); // SPIFFS rename fails if the destination exists
+  if (!fs.rename(tmpPath.c_str(), path)) {
+    fs.remove(tmpPath.c_str());
+    return false;
+  }
+  return true;
 }
 
 bool ConfigService::loadSecond(fs::FS &fs, const char *path,
