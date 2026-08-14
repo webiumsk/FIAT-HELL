@@ -1392,8 +1392,9 @@ void checkPrice() {
 }
 
 void checkPriceCoinGecko() {
-  http.begin(coingeckoConversionAPI +
-             currencySelected); // Specify request destination
+  // Ask for the USD rate too - the Flash USD wallet needs the cross rate
+  http.begin(coingeckoConversionAPI + currencySelected +
+             ",usd"); // Specify request destination
 
   int httpCode = http.GET(); // Send the request
 
@@ -1411,6 +1412,11 @@ void checkPriceCoinGecko() {
 
     // Get EUR value from parsed JSON
     fiatValue = doc["bitcoin"][tempCurrency.c_str()];
+    // USD cross rate rides along in the same response (Flash USD wallet)
+    float usd = doc["bitcoin"]["usd"] | 0.0f;
+    if (usd > 0.0f) {
+      sessionState.btcUsdValue = usd;
+    }
     Serial.print(F("HTTP (checkPriceCoinGecko): "));
     Serial.println(httpCode);
   } else {
@@ -1440,6 +1446,11 @@ void checkPriceExchangeApi() {
     if (!error) {
       String date = doc["date"];
       fiatValue = doc["btc"][tempCurrency];
+      // USD cross rate for the Flash USD wallet (response carries all rates)
+      float usd = doc["btc"]["usd"] | 0.0f;
+      if (usd > 0.0f) {
+        sessionState.btcUsdValue = usd;
+      }
 
       if (!fiatValue) {
         Serial.print("Error: Rate not found for the specified currency");
@@ -1546,11 +1557,25 @@ void checkBalance() {
       Serial.println(httpCode);
     }
   } else if (isGaloySource()) {
-    // Blink and Flash share the Galoy API; the service also picks the BTC
-    // wallet (accounts may hold a fiat wallet first) and caches its id.
+    // Blink pays from the BTC wallet; Flash from the custodial USD wallet
+    // (its BTC wallet is external/non-custodial - server can't spend it).
+    const char *walletCur =
+        FundingService::galoyWalletCurrency(deviceState.fundingSourceBuffer);
     if (FundingService::fetchGaloyBalance(http, deviceState, sessionState,
-                                          "BTC")) {
-      fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
+                                          walletCur)) {
+      if (strcmp(walletCur, "USD") == 0) {
+        // Balance is in USD cents; convert to the operator's fiat via the
+        // BTC/USD cross rate (usd_cents/100 * (fiat_per_btc / usd_per_btc)).
+        if (sessionState.btcUsdValue > 0.0f) {
+          fiatBalance = ((double)balanceSats / 100.0) *
+                        (fiatValue / sessionState.btcUsdValue);
+        } else {
+          fiatBalance = (double)balanceSats / 100.0; // raw USD as fallback
+          Serial.println("BTC/USD rate missing - balance shown in USD");
+        }
+      } else {
+        fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
+      }
     }
     return; // FundingService closed its connection already
   }

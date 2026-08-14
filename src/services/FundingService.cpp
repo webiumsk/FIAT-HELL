@@ -22,6 +22,10 @@ const char *galoyEndpoint(const char *fundingSource) {
              : blinkGraphqlEndpoint;
 }
 
+const char *galoyWalletCurrency(const char *fundingSource) {
+  return (fundingSource && strcmp(fundingSource, "Flash") == 0) ? "USD" : "BTC";
+}
+
 bool fetchGaloyBalance(HTTPClient &http, DeviceState &ds, SessionState &ss,
                        const char *walletCurrency) {
   http.begin(galoyEndpoint(ds.fundingSourceBuffer));
@@ -76,8 +80,8 @@ bool fetchGaloyBalance(HTTPClient &http, DeviceState &ds, SessionState &ss,
   for (JsonObject wallet : wallets) {
     if (strcmp(wallet["walletCurrency"] | "", walletCurrency) == 0) {
       strlcpy(ds.blinkwalletid, wallet["id"] | "", sizeof(ds.blinkwalletid));
-      ss.balanceSats = wallet["balance"];
-      Serial.printf("balance[Galoy]: %lld sats (%s wallet)\n",
+      ss.balanceSats = wallet["balance"]; // sats for BTC, cents for USD
+      Serial.printf("balance[Galoy]: %lld (%s wallet)\n",
                     (long long)ss.balanceSats, walletCurrency);
       return true;
     }

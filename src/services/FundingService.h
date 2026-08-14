@@ -25,6 +25,15 @@ bool isGaloy(const char *fundingSource);
 const char *galoyEndpoint(const char *fundingSource);
 
 /**
+ * Which wallet currency the payout must run from. Flash's BTC wallet is
+ * external (non-custodial Breez, isExternal=true) — the server has no keys,
+ * returns balance=null and cannot pay from it — so Flash uses the custodial
+ * USD "Cash" wallet (balance in cents, USD→sats conversion happens at payout).
+ * Blink keeps the BTC wallet.
+ */
+const char *galoyWalletCurrency(const char *fundingSource);
+
+/**
  * Fetch wallets via `query me` and pick the one matching walletCurrency
  * ("BTC" unless a hedged fiat wallet is desired). On success stores the
  * wallet id into ds.blinkwalletid and the balance into ss.balanceSats.

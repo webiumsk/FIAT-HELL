@@ -192,10 +192,23 @@ static void taskFetchBalance(HTTPClient &http, DeviceState &ds,
     }
     http.end();
   } else if (FundingService::isGaloy(fundingSource)) {
-    // Blink and Flash share the Galoy API; the service also picks the BTC
-    // wallet (accounts may hold a fiat wallet first) and caches its id.
-    if (FundingService::fetchGaloyBalance(http, ds, ss, "BTC")) {
-      ss.fiatBalance = ((double)ss.balanceSats / 100000000.0) * fiatValue;
+    // Blink pays from the BTC wallet; Flash from the custodial USD wallet
+    // (its BTC wallet is external/non-custodial - server can't spend it).
+    const char *walletCur = FundingService::galoyWalletCurrency(fundingSource);
+    if (FundingService::fetchGaloyBalance(http, ds, ss, walletCur)) {
+      if (strcmp(walletCur, "USD") == 0) {
+        // Balance is in USD cents; convert to the operator's fiat via the
+        // BTC/USD cross rate (usd_cents/100 * (fiat_per_btc / usd_per_btc)).
+        if (ss.btcUsdValue > 0.0f) {
+          ss.fiatBalance =
+              ((double)ss.balanceSats / 100.0) * (fiatValue / ss.btcUsdValue);
+        } else {
+          ss.fiatBalance = (double)ss.balanceSats / 100.0; // raw USD fallback
+          Serial.println("BTC/USD rate missing - balance shown in USD");
+        }
+      } else {
+        ss.fiatBalance = ((double)ss.balanceSats / 100000000.0) * fiatValue;
+      }
     }
   }
 }
@@ -227,6 +240,17 @@ static void priceBalanceTaskFunc(void *param) {
       taskFetchPrice(g_taskHttp, g_deviceState->currencyThree,
                     g_deviceState->rateSourceBuffer, &fv3);
 
+    // Flash pays from the USD wallet - fetch the BTC/USD cross rate for
+    // converting its cent balance into the operator's fiat.
+    float fvUsd = 0.0f;
+    if (strcmp(FundingService::galoyWalletCurrency(
+                   g_deviceState->fundingSourceBuffer),
+               "USD") == 0 &&
+        FundingService::isGaloy(g_deviceState->fundingSourceBuffer)) {
+      taskFetchPrice(g_taskHttp, "USD", g_deviceState->rateSourceBuffer,
+                     &fvUsd);
+    }
+
     if (xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
       // Only overwrite cached values when the fetch actually succeeded.
       // A failed fetch leaves the local variable at 0; without this guard
@@ -235,6 +259,7 @@ static void priceBalanceTaskFunc(void *param) {
       if (fv1 > 0.0f)       g_sessionState->fiatValue1 = fv1;
       if (fv2 > 0.0f)       g_sessionState->fiatValue2 = fv2;
       if (fv3 > 0.0f)       g_sessionState->fiatValue3 = fv3;
+      if (fvUsd > 0.0f)     g_sessionState->btcUsdValue = fvUsd;
       // Use the freshest available price for balance conversion
       const float priceForBalance =
           (fiatValue > 0.0f) ? fiatValue : g_sessionState->fiatValue;
