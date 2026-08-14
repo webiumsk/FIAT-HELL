@@ -438,7 +438,6 @@ static String *contentPtr = nullptr;
 #include "pageone.h"
 #include "pagesecond.h"
 #include "pagethird.h"
-#include "pagesetup.h"
 
 WebServerClass *serverPtr = nullptr;
 AutoConnect *portalPtr = nullptr;
@@ -1125,7 +1124,7 @@ void setup() {
         server.client().stop();
         return;
       }
-      server.sendHeader("Location", "/setup", true);
+      server.sendHeader("Location", "/_ac", true);
       server.send(302, "text/plain", "");
       server.client().stop();
       return;
@@ -1143,7 +1142,7 @@ void setup() {
       server.client().stop();
       return;
     }
-    server.sendHeader("Location", "/setup", true);
+    server.sendHeader("Location", "/_ac", true);
     server.send(302, "text/plain", "");
     server.client().stop();
   };
@@ -1152,7 +1151,7 @@ void setup() {
   // Android: /generate_204 — return 204 when STA (no notification), 302 → /setup when AP.
   server.on("/generate_204", [isApClient]() {
     if (!isApClient()) { server.send(204, "text/plain", ""); return; }
-    server.sendHeader("Location", "/setup", true);
+    server.sendHeader("Location", "/_ac", true);
     server.send(302, "text/plain", "");
     server.client().stop();
   });
@@ -1163,7 +1162,7 @@ void setup() {
         "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
       return;
     }
-    server.sendHeader("Location", "/setup", true);
+    server.sendHeader("Location", "/_ac", true);
     server.send(302, "text/plain", "");
     server.client().stop();
   });
@@ -1193,426 +1192,6 @@ void setup() {
                                      server.arg("code")));
   });
 
-  // Lightweight mobile config portal — served only to AP clients (192.168.4.x).
-  server.on("/setup", HTTP_GET, [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "text/plain", "Setup only via AP — hold BOOT 3 s to enable");
-      return;
-    }
-    // Use deviceStatePtr-> for non-macro fields; bare macros for aliased fields.
-    const bool isLNbitsMode = (strcmp(deviceStatePtr->fundingSourceBuffer, "LNbits") == 0);
-    const char *rs = deviceStatePtr->rateSourceBuffer;
-    String html = FPSTR(SETUP_PAGE_HTML);
-
-    // Rate source dropdown — mark the active one as `selected`.
-    // CoinYEP is the default for unknown/legacy "CoinGecko" values.
-    const bool rsKraken      = (strcmp(rs, "Kraken")      == 0);
-    const bool rsExchangeApi = (strcmp(rs, "ExchangeApi") == 0);
-    html.replace(F("%%RS_KRAKEN%%"),      rsKraken      ? "selected" : "");
-    html.replace(F("%%RS_EXCHANGEAPI%%"), rsExchangeApi ? "selected" : "");
-    html.replace(F("%%RS_COINYEP%%"),     (!rsKraken && !rsExchangeApi) ? "selected" : "");
-
-    auto esc = [](const char* s) -> String {
-      String out(s);
-      out.replace(F("&"), F("&amp;"));
-      out.replace(F("\""), F("&quot;"));
-      out.replace(F("<"), F("&lt;"));
-      out.replace(F(">"), F("&gt;"));
-      return out;
-    };
-
-    // Build billmech CSV from vector (use macro alias directly to avoid double-expansion)
-    String billsCsv;
-    for (size_t i = 0; i < billAmountIntOne.size(); i++) {
-      if (i > 0) billsCsv += ',';
-      billsCsv += billAmountIntOne[i];
-    }
-
-    html.replace(F("%%WIFI_SSID%%"),      WiFi.isConnected() ? WiFi.SSID() : "");
-    {
-      const bool isFlashMode =
-          (strcmp(deviceStatePtr->fundingSourceBuffer, "Flash") == 0);
-      html.replace(F("%%CHECKED_BLINK%%"),
-                   (!isLNbitsMode && !isFlashMode) ? "checked" : "");
-      html.replace(F("%%CHECKED_LNBITS%%"), isLNbitsMode ? "checked" : "");
-      html.replace(F("%%CHECKED_FLASH%%"), isFlashMode ? "checked" : "");
-    }
-    html.replace(F("%%BLINK_APIKEY%%"),   esc(blinkapikey));
-    html.replace(F("%%BLINK_WALLET%%"),   esc(blinkwalletid));
-    html.replace(F("%%ADMINKEY%%"),       esc(adminkey));
-    html.replace(F("%%READKEY%%"),        esc(readkey));
-    html.replace(F("%%LNURL_BASE%%"),     esc(baseURLATM1));
-    html.replace(F("%%LNURL_SECRET%%"),   esc(secretATM1));
-    html.replace(F("%%CUR1_CODE%%"),      esc(currencyOne));
-    html.replace(F("%%CUR1_BILLS%%"),     billsCsv);
-    html.replace(F("%%CUR1_MAX%%"),       String(maxamount, 0));
-    html.replace(F("%%CUR1_CHARGE%%"),    String(charge1, 2));
-    html.replace(F("%%ATM_TITLE%%"),      esc(atmtitle));
-    html.replace(F("%%ATM_SUBTITLE%%"),   esc(atmsubtitle));
-    html.replace(F("%%ATM_DESC%%"),       esc(atmdesc));
-    // ap_password is not pre-filled — user must enter it explicitly to change it
-
-    // Currencies 2 & 3 (LNbits only). Each lnurlN field is stored as CSV
-    // "baseUrl,secret,code"; split on first two commas for the form.
-    auto splitLnurlBase = [](const char* csv) -> String {
-      String l(csv);
-      const int c1 = l.indexOf(',');
-      return (c1 > 0) ? l.substring(0, c1) : String();
-    };
-    auto splitLnurlSecret = [](const char* csv) -> String {
-      String l(csv);
-      const int c1 = l.indexOf(',');
-      const int c2 = c1 >= 0 ? l.indexOf(',', c1 + 1) : -1;
-      if (c1 > 0 && c2 > c1) return l.substring(c1 + 1, c2);
-      return String();
-    };
-    auto billsCsvFromVec = [](const std::vector<int>& v) -> String {
-      String s;
-      for (size_t i = 0; i < v.size(); i++) { if (i) s += ','; s += v[i]; }
-      return s;
-    };
-
-    html.replace(F("%%CUR2_CODE%%"),         esc(currencyTwo));
-    html.replace(F("%%CUR2_LNURL_BASE%%"),   esc(splitLnurlBase(lnurl2).c_str()));
-    html.replace(F("%%CUR2_LNURL_SECRET%%"), esc(splitLnurlSecret(lnurl2).c_str()));
-    html.replace(F("%%CUR2_BILLS%%"),        billsCsvFromVec(billAmountIntTwo));
-    html.replace(F("%%CUR2_MAX%%"),          String(maxamount2, 0));
-    html.replace(F("%%CUR2_CHARGE%%"),       String(charge2, 2));
-
-    html.replace(F("%%CUR3_CODE%%"),         esc(currencyThree));
-    html.replace(F("%%CUR3_LNURL_BASE%%"),   esc(splitLnurlBase(lnurl3).c_str()));
-    html.replace(F("%%CUR3_LNURL_SECRET%%"), esc(splitLnurlSecret(lnurl3).c_str()));
-    html.replace(F("%%CUR3_BILLS%%"),        billsCsvFromVec(billAmountIntThree));
-    html.replace(F("%%CUR3_MAX%%"),          String(maxamount3, 0));
-    html.replace(F("%%CUR3_CHARGE%%"),       String(charge3, 2));
-
-    // Firmware version (OTA upload form doesn't need a catalog fetch)
-    html.replace(F("%%FW_VERSION%%"), F(FW_VERSION));
-
-    server.send(200, "text/html", html);
-  });
-
-  // Scan nearby WiFi networks. Returns JSON: [{ssid,rssi,secure}, ...]
-  // sorted by RSSI desc, deduplicated by SSID, hidden SSIDs (empty) skipped.
-  // Blocks ~3 s during the scan; AP clients tolerate the brief beacon delay.
-  server.on("/setup/wifi-scan", HTTP_GET, [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "application/json", "[]");
-      return;
-    }
-    if (!(WiFi.getMode() & WIFI_MODE_STA)) {
-      WiFi.mode(WIFI_AP_STA);
-    }
-
-    // Async scan: a synchronous scan blocks for seconds and makes the SoftAP
-    // hop channels, dropping the phone mid-request. Instead return immediately
-    // with {"scanning":true} and let the client poll; results are delivered on
-    // a later poll once the scan finished and the AP recovered.
-    const int st = WiFi.scanComplete();
-    if (st == WIFI_SCAN_RUNNING) {
-      server.send(200, "application/json", "{\"scanning\":true}");
-      return;
-    }
-    if (st == WIFI_SCAN_FAILED) { // -2: nothing started yet (or failed)
-      WiFi.scanNetworks(true, false); // start async, no hidden
-      server.send(200, "application/json", "{\"scanning\":true}");
-      return;
-    }
-    int n = st; // >= 0: results are ready
-
-    struct Net { String ssid; int rssi; bool secure; };
-    std::vector<Net> nets;
-    nets.reserve(n);
-    for (int i = 0; i < n; i++) {
-      const String s = WiFi.SSID(i);
-      if (s.length() == 0) continue;
-      bool merged = false;
-      for (auto &e : nets) {
-        if (e.ssid == s) {
-          merged = true;
-          if (WiFi.RSSI(i) > e.rssi) {
-            e.rssi   = WiFi.RSSI(i);
-            e.secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
-          }
-          break;
-        }
-      }
-      if (!merged) {
-        Net nt;
-        nt.ssid   = s;
-        nt.rssi   = WiFi.RSSI(i);
-        nt.secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
-        nets.push_back(nt);
-      }
-    }
-    WiFi.scanDelete();
-
-    std::sort(nets.begin(), nets.end(),
-              [](const Net &a, const Net &b) { return a.rssi > b.rssi; });
-    if (nets.size() > 30) nets.resize(30);
-
-    DynamicJsonDocument doc(4096);
-    JsonArray arr = doc.to<JsonArray>();
-    for (auto &nt : nets) {
-      JsonObject o = arr.createNestedObject();
-      o["ssid"]   = nt.ssid;
-      o["rssi"]   = nt.rssi;
-      o["secure"] = nt.secure;
-    }
-    String out;
-    serializeJson(doc, out);
-    server.send(200, "application/json", out);
-  });
-
-  server.on("/setup/save", HTTP_POST, [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "text/plain", "Setup only via AP");
-      return;
-    }
-
-    // Save WiFi credentials if provided
-    const String newSsid = server.arg("wifi_ssid");
-    if (newSsid.length() > 0) {
-      AutoConnectCredential cred;
-      station_config_t sc;
-      memset(&sc, 0, sizeof(sc));
-      strlcpy((char*)sc.ssid,     newSsid.c_str(),                     sizeof(sc.ssid));
-      strlcpy((char*)sc.password, server.arg("wifi_password").c_str(), sizeof(sc.password));
-      sc.dhcp = STA_DHCP;
-      cred.save(&sc);
-    }
-
-    // elements.json — [{name,value},...] array
-    {
-      DynamicJsonDocument doc(512);
-      JsonArray arr = doc.to<JsonArray>();
-      const String title = server.arg("atm_title");
-      auto add = [&](const char* n, const String& v) {
-        JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
-      };
-      const String newPwd = server.arg("ap_password");
-      add("password",    newPwd.length() > 0 ? newPwd : String(deviceStatePtr->password));
-      add("atmdesc",     server.arg("atm_desc"));
-      add("atmsubtitle", server.arg("atm_subtitle"));
-      add("atmtitle",    title.length() ? title : "FIAT HELL");
-      File f = FlashFS.open(PARAM_FILE, "w");
-      if (f) { serializeJson(doc, f); f.close(); }
-    }
-
-    // gui.json — update fundingSource and rateSource; preserve animated
-    {
-      GuiConfig gui;
-      if (!configService.loadGuiConfig(FlashFS, GUI_FILE, gui)) {
-        strlcpy(gui.rateSource, "CoinYEP", sizeof(gui.rateSource));
-        strlcpy(gui.animated,   "No",      sizeof(gui.animated));
-      }
-      const String funding = server.arg("funding");
-      strlcpy(gui.fundingSource,
-              (funding == "LNbits")  ? "LNbits"
-              : (funding == "Flash") ? "Flash"
-                                     : "Blink",
-              sizeof(gui.fundingSource));
-      const String rs = server.arg("ratesource");
-      if (rs == "CoinYEP" || rs == "Kraken" || rs == "ExchangeApi") {
-        strlcpy(gui.rateSource, rs.c_str(), sizeof(gui.rateSource));
-      }
-      configService.saveGuiConfig(FlashFS, GUI_FILE, gui);
-    }
-
-    // first.json — [{name,value},...] array matching ConfigService::loadFirst() order
-    {
-      DynamicJsonDocument doc(1024);
-      JsonArray arr = doc.to<JsonArray>();
-      const bool isLNbitsMode = (server.arg("funding") == "LNbits");
-      const String lnurlVal =
-          server.arg("lnurl_base") + "," +
-          server.arg("lnurl_secret") + "," +
-          server.arg("cur1_code");
-      auto add = [&](const char* n, const String& v) {
-        JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
-      };
-      add("blinkapikey",   isLNbitsMode ? "" : server.arg("blink_apikey"));
-      add("blinkwalletid", isLNbitsMode ? "" : server.arg("blink_wallet"));
-      add("lnurl",         isLNbitsMode ? lnurlVal : "");
-      add("adminkey",      isLNbitsMode ? server.arg("adminkey") : "");
-      add("readkey",       isLNbitsMode ? server.arg("readkey")  : "");
-      add("currencyOne",   server.arg("cur1_code"));
-      add("billmech",      server.arg("cur1_bills"));
-      add("maxamount",     server.arg("cur1_max"));
-      add("charge1",       server.arg("cur1_charge"));
-      File f = FlashFS.open(FIRST_FILE, "w");
-      if (f) { serializeJson(doc, f); f.close(); }
-    }
-
-    // second.json — write iff cur2_code is filled; otherwise delete the file
-    {
-      const String code = server.arg("cur2_code");
-      if (code.length() > 0) {
-        DynamicJsonDocument doc(1024);
-        JsonArray arr = doc.to<JsonArray>();
-        const String lnurlVal =
-            server.arg("cur2_lnurl_base") + "," +
-            server.arg("cur2_lnurl_secret") + "," + code;
-        auto add = [&](const char* n, const String& v) {
-          JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
-        };
-        add("currencyTwo", code);
-        add("lnurl2",      lnurlVal);
-        add("billmech2",   server.arg("cur2_bills"));
-        add("maxamount2",  server.arg("cur2_max"));
-        add("charge2",     server.arg("cur2_charge"));
-        File f = FlashFS.open(SECOND_FILE, "w");
-        if (f) { serializeJson(doc, f); f.close(); }
-      } else {
-        FlashFS.remove(SECOND_FILE);
-      }
-    }
-
-    // third.json — same pattern
-    {
-      const String code = server.arg("cur3_code");
-      if (code.length() > 0) {
-        DynamicJsonDocument doc(1024);
-        JsonArray arr = doc.to<JsonArray>();
-        const String lnurlVal =
-            server.arg("cur3_lnurl_base") + "," +
-            server.arg("cur3_lnurl_secret") + "," + code;
-        auto add = [&](const char* n, const String& v) {
-          JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
-        };
-        add("currencyThree", code);
-        add("lnurl3",        lnurlVal);
-        add("billmech3",     server.arg("cur3_bills"));
-        add("maxamount3",    server.arg("cur3_max"));
-        add("charge3",       server.arg("cur3_charge"));
-        File f = FlashFS.open(THIRD_FILE, "w");
-        if (f) { serializeJson(doc, f); f.close(); }
-      } else {
-        FlashFS.remove(THIRD_FILE);
-      }
-    }
-
-    server.send(200, "text/html",
-      "<html><body style='background:#111;color:#eee;font-family:sans-serif;"
-      "padding:32px;text-align:center'>"
-      "<h2 style='color:#f90'>&#10003; Ulozene!</h2>"
-      "<p>Zariadenie sa restartuje za 2 sekundy...</p>"
-      "</body></html>");
-
-    pendingRestartAt = millis() + 2000UL;
-  });
-
-  // Multipart firmware upload: phone POSTs .bin via the AP connection.
-  // No internet needed on the device — bytes go straight into Update partition.
-  server.on("/setup/ota", HTTP_POST,
-    // Done handler — called after upload completes (success or failure)
-    [isApClient]() {
-      if (!isApClient()) { server.send(403, "text/plain", "AP only"); return; }
-      const bool ok = !otaUploadAborted && !Update.hasError();
-      String page = F("<html><body style='background:#111;color:#eee;font-family:sans-serif;padding:32px;text-align:center'>");
-      if (ok) {
-        page += F("<h2 style='color:#0c0'>&#10003; Firmware nahrat&yacute;</h2>"
-                  "<p>Zariadenie sa re&scaron;tartuje za 2 sekundy&hellip;</p>");
-      } else {
-        page += F("<h2 style='color:#f33'>&#10007; Chyba</h2><p>");
-        page += Update.errorString();
-        page += F("</p><a href='/setup' style='color:#f90'>&#8592; Sp&auml;&#x165;</a>");
-      }
-      page += F("</body></html>");
-      server.send(200, "text/html", page);
-      if (otaUploadOverlay) {
-        lv_obj_del(otaUploadOverlay);
-        otaUploadOverlay = nullptr;
-        lv_task_handler();
-      }
-      if (ok) pendingRestartAt = millis() + 2000UL;
-    },
-    // Upload handler — called repeatedly with chunks
-    [isApClient]() {
-      HTTPUpload& up = server.upload();
-      if (up.status == UPLOAD_FILE_START) {
-        otaUploadAborted = !isApClient();
-        if (otaUploadAborted) return;
-        Serial.printf("OTA upload begin: %s\n", up.filename.c_str());
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-          otaUploadAborted = true;
-          Update.printError(Serial);
-          return;
-        }
-        otaUploadOverlay = lv_obj_create(lv_scr_act());
-        lv_obj_set_size(otaUploadOverlay, screenWidth, screenHeight);
-        lv_obj_set_pos(otaUploadOverlay, 0, 0);
-        lv_obj_set_style_bg_color(otaUploadOverlay, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(otaUploadOverlay, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(otaUploadOverlay, 0, 0);
-        lv_obj_clear_flag(otaUploadOverlay, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_t *l = lv_label_create(otaUploadOverlay);
-        lv_label_set_text(l, "Nahravam firmware...");
-        lv_obj_center(l);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_22, 0);
-        lv_obj_set_style_text_color(l, lv_color_white(), 0);
-        lv_obj_move_foreground(otaUploadOverlay);
-        lv_task_handler();
-      } else if (up.status == UPLOAD_FILE_WRITE && !otaUploadAborted) {
-        if (Update.write(up.buf, up.currentSize) != up.currentSize) {
-          otaUploadAborted = true;
-          Update.printError(Serial);
-        }
-      } else if (up.status == UPLOAD_FILE_END && !otaUploadAborted) {
-        if (!Update.end(true)) {  // true = set boot partition
-          otaUploadAborted = true;
-          Update.printError(Serial);
-        } else {
-          Serial.printf("OTA OK: %u bytes\n", up.totalSize);
-        }
-      } else if (up.status == UPLOAD_FILE_ABORTED) {
-        otaUploadAborted = true;
-        Update.abort();
-      }
-      yield();
-    });
-
-  // Block AutoConnect's portal pages from STA clients and redirect AP clients
-  // to /setup. Registered before portal.begin() so these handlers take precedence.
-  // Without this, /_ac/reset or /_ac/update would be reachable from public WiFi.
-  {
-    auto acGuard = [isApClient]() {
-      const bool inConfigMode = portalRequestedByUser || portalRequiredForMissingConfig;
-      if (!isApClient() && !inConfigMode) {
-        server.send(403, "text/plain",
-          "Config portal only via AP — hold BOOT button 3 s to enable");
-        server.client().stop();
-        return;
-      }
-      server.sendHeader("Location", "/setup", true);
-      server.send(302, "text/plain", "");
-      server.client().stop();
-    };
-    // AutoConnect internal portal UI
-    server.on("/_ac",                acGuard);
-    server.on("/_ac/",               acGuard);
-    server.on("/_ac/config",         acGuard);
-    server.on("/_ac/open",           acGuard);
-    server.on("/_ac/savecredential", acGuard);
-    server.on("/_ac/devinfo",        acGuard);
-    server.on("/_ac/reset",          acGuard);
-    server.on("/_ac/update",         acGuard);
-    server.on("/_ac/update_do",      acGuard);
-    // AutoConnect Aux pages registered via portal.join()
-    server.on("/config",    acGuard);
-    server.on("/elements",  acGuard);
-    server.on("/save",      acGuard);
-    server.on("/first",     acGuard);
-    server.on("/savefirst", acGuard);
-    server.on("/second",    acGuard);
-    server.on("/savesecond",acGuard);
-    server.on("/third",     acGuard);
-    server.on("/savethird", acGuard);
-    server.on("/gui",       acGuard);
-    server.on("/savegui",   acGuard);
-    server.on("/ota",       acGuard);
-    server.on("/otado",     acGuard);
-  }
 
   elementsAux.load(FPSTR(PAGE_ELEMENTS));
   elementsAux.on([](AutoConnectAux &aux, PageArgument &arg) {
@@ -1931,7 +1510,7 @@ void setup() {
       AC_MENUITEM_CONFIGNEW | AC_MENUITEM_OPENSSIDS |
       AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET | AC_MENUITEM_HOME;
   acConfig.title = "LN ATM";
-  acConfig.homeUri = "/setup";
+  acConfig.homeUri = "/_ac";
   acConfig.reconnectInterval = 1;
   acConfig.channel = 6;        // Fixed channel for stable AP (avoids scan disrupting clients)
   acConfig.beginTimeout = 12000; // 12 s — fast fallback to AP if saved WiFi unreachable
@@ -2212,7 +1791,7 @@ void setup() {
   server.onNotFound([]() {
     const IPAddress c = server.client().remoteIP();
     if (c[0] == 192 && c[1] == 168 && c[2] == 4) {
-      server.sendHeader("Location", "http://192.168.4.1/setup", true);
+      server.sendHeader("Location", "http://192.168.4.1/_ac", true);
       server.send(302, "text/plain", "");
     } else {
       server.send(404, "text/plain", "");
