@@ -80,10 +80,13 @@ async function scanWifiAction() {
       dl.appendChild(opt);
     }
     if (networks.length) {
-      setHint(`✓ Nájdených ${networks.length} sietí — klikni do poľa SSID a vyber zo zoznamu.`, 'ok');
+      setHint(`✓ Nájdených ${networks.length} sietí — vyber zo zoznamu v poli SSID.`, 'ok');
       const ssidEl = document.getElementById('wifi_ssid');
+      // A datalist only offers entries matching the current text, so a
+      // pre-filled SSID would hide the rest of the scan results — clear it
+      // to drop down the full list (picking re-saves it right away).
+      ssidEl.value = '';
       ssidEl.focus();
-      // Empty field shows the datalist immediately on focus in Chrome
     } else {
       setHint('Žiadne siete sa nenašli — skús znova bližšie k routeru.', 'err');
     }
