@@ -254,6 +254,75 @@ export async function scanWifiViaSerial({ log }) {
   }
 }
 
+// Read the device's current configuration via the serial provisioning window.
+// Secrets arrive redacted as "__SET__" (they never leave the device).
+// Returns { '/first.json': parsedJson, ... }.
+export async function readConfigViaSerial({ log }) {
+  log('Vyber COM port zariadenia...');
+  const port = await navigator.serial.requestPort();
+  try {
+    await port.open({ baudRate: 115200 });
+  } catch (e) {
+    throw new Error('Port sa nedá otvoriť — pravdepodobne ho drží iný program '
+                  + '(sériový monitor, iný tab flashera). Zavri ho a skús znova.');
+  }
+
+  try {
+    log('Reštartujem zariadenie cez RTS (ak hardvér podporuje)...');
+    const rtsOk = await pulseResetViaRTS(port, log);
+    if (!rtsOk) log('Ak nič nepríde do 20 s, stlač RESET na zariadení.');
+    log('Čakám na CONFIG_READY...');
+
+    const decoder = new TextDecoder();
+    const reader  = port.readable.getReader();
+    let buf = '';
+    let readySeen = false;
+    let dumpDone = false;
+    let cancelTimer = setTimeout(() => reader.cancel(), 20000);
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        if (!readySeen && buf.includes('FIAT-HELL:CONFIG_READY')) {
+          readySeen = true;
+          clearTimeout(cancelTimer);
+          log('Načítavam konfiguráciu zo zariadenia...');
+          const writer = port.writable.getWriter();
+          try { await writer.write(enc('READ_CONFIG\n')); }
+          finally { writer.releaseLock(); }
+          cancelTimer = setTimeout(() => reader.cancel(), 12000);
+        }
+
+        if (buf.includes('FIAT-HELL:CONFIG_DUMP_DONE')) { dumpDone = true; break; }
+      }
+    } finally {
+      clearTimeout(cancelTimer);
+      try { reader.releaseLock(); } catch (_) {}
+    }
+
+    if (!readySeen) {
+      throw new Error('Zariadenie sa neohlásilo (CONFIG_READY neprišiel). '
+                    + 'Skontroluj, či je v ňom FIAT-HELL firmvér a či port nedrží iný program.');
+    }
+    if (!dumpDone) {
+      throw new Error('Konfigurácia neprišla — firmvér je pravdepodobne starší '
+                    + 'bez podpory čítania. Preflashuj na aktuálnu verziu.');
+    }
+
+    const files = {};
+    for (const m of buf.matchAll(/FIAT-HELL:CONFIG_FILE:(\/[\w.-]+\.json):(.*)\r?\n/g)) {
+      try { files[m[1]] = JSON.parse(m[2]); } catch (_) { /* skip broken line */ }
+    }
+    log(`Načítaných súborov: ${Object.keys(files).length}`);
+    return files;
+  } finally {
+    try { await port.close(); } catch (_) {}
+  }
+}
+
 // "Config only" flow: open the port, pulse RTS to reset the chip, then run
 // the same wait-and-send sequence. No flashing happens.
 export async function uploadConfigOnly({ log, setProgress, configFiles }) {

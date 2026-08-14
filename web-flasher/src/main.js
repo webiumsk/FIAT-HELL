@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { checkBrowserSupport, connectAndFlash, uploadConfigOnly, scanWifiViaSerial } from './flash.js';
+import { checkBrowserSupport, connectAndFlash, uploadConfigOnly, scanWifiViaSerial, readConfigViaSerial } from './flash.js';
 import { FW_VERSION, BOARDS, DEFAULT_BOARD, GITHUB_REPO } from './config.js';
 
 /* ══════════════════════════════════════════════════════════════
@@ -106,6 +106,152 @@ function v(id)   { return document.getElementById(id).value.trim(); }
 function num(id) { const val = v(id); return val === '' ? '' : val; }
 
 /* ══════════════════════════════════════════════════════════════
+   Kept secrets — values that stay on the device.
+   A device dump redacts secrets to "__SET__"; those fields show a
+   placeholder and, when left empty, upload "__KEEP__" so the device
+   keeps its stored value. Typing anything replaces the secret.
+══════════════════════════════════════════════════════════════ */
+const KEEP = '__KEEP__';
+const keptSecrets = new Set();
+
+function markKeptSecret(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  keptSecrets.add(id);
+  el.value = '';
+  el.dataset.origPlaceholder ??= el.placeholder;
+  el.placeholder = '•••• uložené v zariadení — ponechá sa';
+}
+
+function clearKeptSecret(id) {
+  if (!keptSecrets.delete(id)) return;
+  const el = document.getElementById(id);
+  if (el && el.dataset.origPlaceholder !== undefined) {
+    el.placeholder = el.dataset.origPlaceholder;
+  }
+}
+
+// Empty field + kept flag -> tell the device to keep its stored secret.
+function secretVal(id) {
+  const val = v(id);
+  if (val) return val;
+  return keptSecrets.has(id) ? KEEP : '';
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Load current configuration from the device (redacted dump)
+══════════════════════════════════════════════════════════════ */
+const SECRET_SET = '__SET__';
+
+function applyDumpField(fieldId, value, isSecret) {
+  const el = document.getElementById(fieldId);
+  if (!el) return;
+  if (isSecret) {
+    if (value === SECRET_SET) markKeptSecret(fieldId);
+    else { clearKeptSecret(fieldId); el.value = value || ''; }
+  } else {
+    el.value = value ?? '';
+  }
+}
+
+function applyDumpToForm(files) {
+  const byName = (arr, name, idx) => {
+    if (!Array.isArray(arr)) return '';
+    const hit = arr.find(e => e && e.name === name);
+    if (hit) return hit.value ?? '';
+    return arr[idx]?.value ?? '';
+  };
+  const csv = (val) => String(val ?? '').split(',');
+
+  const el = files['/elements.json'];
+  if (el) {
+    applyDumpField('ap_password',  byName(el, 'password', 0), true);
+    applyDumpField('atm_desc',     byName(el, 'atmdesc', 1));
+    applyDumpField('atm_subtitle', byName(el, 'atmsubtitle', 2));
+    applyDumpField('atm_title',    byName(el, 'atmtitle', 3));
+  }
+
+  const gui = files['/gui.json'];
+  if (Array.isArray(gui)) {
+    const radioFor = { fundingsource: 'funding', ratesource: 'ratesource', animated: 'animated' };
+    for (const entry of gui) {
+      const radioName = radioFor[entry?.name];
+      if (!radioName || !Array.isArray(entry.value)) continue;
+      const chosen = entry.value[(entry.checked ?? 1) - 1];
+      const radio = document.querySelector(`input[name="${radioName}"][value="${chosen}"]`);
+      if (radio) radio.checked = true;
+    }
+  }
+
+  const first = files['/first.json'];
+  if (first) {
+    applyDumpField('cur1_blink_apikey', byName(first, 'blinkapikey', 0), true);
+    applyDumpField('cur1_blink_wallet', byName(first, 'blinkwalletid', 1));
+    const [base = '', secret = '', atmCur = ''] = csv(byName(first, 'lnurl', 2));
+    applyDumpField('cur1_lnurl_base', base);
+    applyDumpField('cur1_lnurl_secret', secret, true);
+    applyDumpField('cur1_lnurl_atm', atmCur);
+    applyDumpField('cur1_adminkey', byName(first, 'adminkey', 3), true);
+    applyDumpField('cur1_readkey',  byName(first, 'readkey', 4), true);
+    applyDumpField('cur1_code',     byName(first, 'currencyOne', 5));
+    applyDumpField('cur1_bills',    byName(first, 'billmech', 6));
+    applyDumpField('cur1_max',      byName(first, 'maxamount', 7));
+    applyDumpField('cur1_charge',   byName(first, 'charge1', 8));
+  }
+
+  for (const [file, prefix, curName, lnurlName] of [
+    ['/second.json', 'cur2', 'currencyTwo', 'lnurl2'],
+    ['/third.json',  'cur3', 'currencyThree', 'lnurl3'],
+  ]) {
+    const doc = files[file];
+    if (!doc) continue;
+    applyDumpField(`${prefix}_code`, byName(doc, curName, 0));
+    const [base = '', secret = '', atmCur = ''] = csv(byName(doc, lnurlName, 1));
+    applyDumpField(`${prefix}_lnurl_base`, base);
+    applyDumpField(`${prefix}_lnurl_secret`, secret, true);
+    applyDumpField(`${prefix}_lnurl_atm`, atmCur);
+    applyDumpField(`${prefix}_bills`,  byName(doc, `billmech${prefix[3] === '2' ? 2 : 3}`, 2));
+    applyDumpField(`${prefix}_max`,    byName(doc, `maxamount${prefix[3] === '2' ? 2 : 3}`, 3));
+    applyDumpField(`${prefix}_charge`, byName(doc, `charge${prefix[3] === '2' ? 2 : 3}`, 4));
+  }
+
+  const wifi = files['/wifi.json'];
+  if (wifi && typeof wifi === 'object') {
+    applyDumpField('wifi_ssid', wifi.ssid ?? '');
+    applyDumpField('wifi_password', wifi.password ?? '', true);
+  }
+
+  onFundingChange();
+  saveToStorage();
+  updateSecretFingerprints();
+}
+
+async function loadFromDeviceAction() {
+  const status = document.getElementById('device-load-status');
+  const setStatus = (msg, tone) => {
+    if (!status) return;
+    status.textContent = msg;
+    status.style.color = tone === 'err' ? 'var(--red, #f66)'
+                       : tone === 'ok'  ? 'var(--green, #6f6)' : '';
+    status.style.fontWeight = tone ? '600' : '';
+  };
+  try {
+    setStatus('Načítavam… (zariadenie sa reštartuje, trvá to ~10 s)');
+    const files = await readConfigViaSerial({ log: m => setStatus(m) });
+    if (Object.keys(files).length === 0) {
+      setStatus('Zariadenie neposlalo žiadnu konfiguráciu — je vôbec nakonfigurované?', 'err');
+      return;
+    }
+    applyDumpToForm(files);
+    setStatus('✓ Konfigurácia načítaná. Tajné hodnoty (kľúče, heslá) ostávajú v zariadení — '
+            + 'polia s „uložené v zariadení" sa pri nahratí nezmenia, pokiaľ ich neprepíšeš.', 'ok');
+  } catch (e) {
+    setStatus('✗ ' + e.message, 'err');
+    console.error(e);
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
    JSON generators (order MUST match ConfigService load order)
 ══════════════════════════════════════════════════════════════ */
 // The firmware's ConfigService reads these files positionally, but the
@@ -114,7 +260,7 @@ function num(id) { const val = v(id); return val === '' ? '' : val; }
 // fields even though the device is configured.
 function makeElementsJson() {
   return [
-    { name: 'password',    type: 'ACInput', value: v('ap_password') },
+    { name: 'password',    type: 'ACInput', value: secretVal('ap_password') },
     { name: 'atmdesc',     type: 'ACInput', value: v('atm_desc') },
     { name: 'atmsubtitle', type: 'ACInput', value: v('atm_subtitle') },
     { name: 'atmtitle',    type: 'ACInput', value: v('atm_title') || 'FIAT HELL' },
@@ -123,7 +269,9 @@ function makeElementsJson() {
 
 function validateConfig() {
   const pwd = v('ap_password');
-  if (!pwd || pwd.length < 8 || pwd === 'changeme') {
+  if (!pwd && keptSecrets.has('ap_password')) {
+    // password stays on the device — nothing to validate here
+  } else if (!pwd || pwd.length < 8 || pwd === 'changeme') {
     alert('Heslo pre AP portál musí mať aspoň 8 znakov a nesmie byť "changeme".');
     showPanel('config');
     if (!document.getElementById('body-general').classList.contains('open')) toggleSection('general');
@@ -156,13 +304,13 @@ function makeGuiJson() {
 
 function makeFirstJson() {
   const isLNbits = document.getElementById('fund_lnbits').checked;
-  const lnurlValue = [v('cur1_lnurl_base'), v('cur1_lnurl_secret'), v('cur1_lnurl_atm') || v('cur1_code')].join(',');
+  const lnurlValue = [v('cur1_lnurl_base'), secretVal('cur1_lnurl_secret'), v('cur1_lnurl_atm') || v('cur1_code')].join(',');
   return [
-    { name: 'blinkapikey',   type: 'ACInput', value: isLNbits ? '' : v('cur1_blink_apikey') },
+    { name: 'blinkapikey',   type: 'ACInput', value: isLNbits ? '' : secretVal('cur1_blink_apikey') },
     { name: 'blinkwalletid', type: 'ACInput', value: isLNbits ? '' : v('cur1_blink_wallet') },
     { name: 'lnurl',         type: 'ACInput', value: isLNbits ? lnurlValue : '' },
-    { name: 'adminkey',      type: 'ACInput', value: isLNbits ? v('cur1_adminkey') : '' },
-    { name: 'readkey',       type: 'ACInput', value: isLNbits ? v('cur1_readkey')  : '' },
+    { name: 'adminkey',      type: 'ACInput', value: isLNbits ? secretVal('cur1_adminkey') : '' },
+    { name: 'readkey',       type: 'ACInput', value: isLNbits ? secretVal('cur1_readkey')  : '' },
     { name: 'currencyOne',   type: 'ACInput', value: v('cur1_code') },
     { name: 'billmech',      type: 'ACInput', value: v('cur1_bills') },
     { name: 'maxamount',     type: 'ACInput', value: num('cur1_max') },
@@ -172,7 +320,7 @@ function makeFirstJson() {
 
 function makeSecondJson() {
   if (!v('cur2_code')) return null;
-  const lnurlValue = [v('cur2_lnurl_base'), v('cur2_lnurl_secret'), v('cur2_lnurl_atm') || v('cur2_code')].join(',');
+  const lnurlValue = [v('cur2_lnurl_base'), secretVal('cur2_lnurl_secret'), v('cur2_lnurl_atm') || v('cur2_code')].join(',');
   return [
     { name: 'currencyTwo', type: 'ACInput', value: v('cur2_code') },
     { name: 'lnurl2',      type: 'ACInput', value: lnurlValue },
@@ -184,7 +332,7 @@ function makeSecondJson() {
 
 function makeThirdJson() {
   if (!v('cur3_code')) return null;
-  const lnurlValue = [v('cur3_lnurl_base'), v('cur3_lnurl_secret'), v('cur3_lnurl_atm') || v('cur3_code')].join(',');
+  const lnurlValue = [v('cur3_lnurl_base'), secretVal('cur3_lnurl_secret'), v('cur3_lnurl_atm') || v('cur3_code')].join(',');
   return [
     { name: 'currencyThree', type: 'ACInput', value: v('cur3_code') },
     { name: 'lnurl3',        type: 'ACInput', value: lnurlValue },
@@ -197,7 +345,7 @@ function makeThirdJson() {
 function makeWifiJson() {
   const ssid = v('wifi_ssid');
   if (!ssid) return null;
-  return { ssid, password: document.getElementById('wifi_password').value };
+  return { ssid, password: document.getElementById('wifi_password').value || secretVal('wifi_password') };
 }
 
 function makeConfigFiles() {
@@ -253,6 +401,7 @@ function clearForm() {
   document.querySelectorAll('input[type="text"], input[type="password"], input[type="number"]')
     .forEach(el => { el.value = el.defaultValue || ''; });
   document.querySelectorAll('input[type="radio"]').forEach(r => { r.checked = r.defaultChecked; });
+  [...keptSecrets].forEach(clearKeptSecret);
   onFundingChange();
   saveToStorage();
 }
@@ -698,6 +847,7 @@ document.addEventListener('DOMContentLoaded', () => {
     onFundingChange,
     onBoardChange,
     scanWifiAction,
+    loadFromDeviceAction,
     onRememberSecretsChange,
     saveProfile,
     loadProfileFromFile,

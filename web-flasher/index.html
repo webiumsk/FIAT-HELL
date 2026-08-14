@@ -305,6 +305,9 @@
 
     <!-- Akcie -->
     <div class="btn-row">
+      <button class="btn btn-outline" onclick="loadFromDeviceAction()">
+        ⬇ Načítať zo zariadenia
+      </button>
       <button class="btn btn-primary" onclick="downloadConfigZip()">
         ⬇ Stiahnuť konfig ZIP
       </button>
@@ -323,6 +326,7 @@
         Vymazať formulár
       </button>
     </div>
+    <div class="hint" id="device-load-status" style="margin-top:8px;"></div>
 
     <div class="instructions" style="margin-top:24px;">
       <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:8px;"><strong style="color:var(--text);">Ako nahrať konfiguráciu?</strong></p>
@@ -438,6 +442,7 @@
     <div class="instructions" style="margin-top:16px;">
       <p style="font-weight:600;margin-bottom:10px;">2️⃣ Konfigurácia (Krok 1)</p>
       <ol>
+        <li><strong>Už nakonfigurované ATM?</strong> Klikni <strong>⬇ Načítať zo zariadenia</strong> — formulár sa naplní aktuálnymi hodnotami. Kľúče a heslá zariadenie nikdy neposiela: príslušné polia ukážu „uložené v zariadení" a pri nahratí sa nezmenia, pokiaľ ich neprepíšeš.</li>
         <li>Vyplň menu, hodnoty bankoviek, poplatok a heslo AP portálu (min. 8 znakov).</li>
         <li><strong>WiFi:</strong> ak už je v zariadení FIAT-HELL firmvér, klikni <strong>📶 Načítať siete zo zariadenia</strong> a vyber sieť zo zoznamu; pri úplne prvom flashi zadaj názov ručne.</li>
         <li><strong>Heslá:</strong> štandardne sa nepamätajú. Zaškrtni „Zapamätať aj heslá", ak chceš, aby ostali v tomto prehliadači, alebo použi <strong>💾 Uložiť profil</strong> — celý formulár (vrátane hesiel) sa uloží do súboru, ktorý si držíš sám a kedykoľvek načítaš aj na inom počítači.</li>
