@@ -26,11 +26,23 @@ const char *galoyWalletCurrency(const char *fundingSource) {
   return (fundingSource && strcmp(fundingSource, "Flash") == 0) ? "USD" : "BTC";
 }
 
+// Flash is migrating Cash wallets from IBEX-USD to USDT ("cash wallet
+// cutover"). Without this capability header the API presents the legacy USD
+// wallet id whose IBEX account is empty - payments from it fail with
+// INSUFFICIENT_BALANCE while the real funds sit in the USDT wallet.
+static void addFlashCapabilityHeader(HTTPClient &http,
+                                     const char *fundingSource) {
+  if (fundingSource && strcmp(fundingSource, "Flash") == 0) {
+    http.addHeader("x-flash-client-capabilities", "cash-wallet-usdt-v1");
+  }
+}
+
 bool fetchGaloyBalance(HTTPClient &http, DeviceState &ds, SessionState &ss,
                        const char *walletCurrency) {
   http.begin(galoyEndpoint(ds.fundingSourceBuffer));
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", String(ds.blinkapikey));
+  addFlashCapabilityHeader(http, ds.fundingSourceBuffer);
 
   const char *query = R"(
     query Me {
@@ -74,20 +86,42 @@ bool fetchGaloyBalance(HTTPClient &http, DeviceState &ds, SessionState &ss,
     return false;
   }
 
-  // Pick the wallet matching walletCurrency — the account may also hold a
-  // fiat/stablesats wallet and the order of the array is not guaranteed.
+  // Pick the funding wallet. For "USD" (Flash cash mode) prefer the active
+  // USDT wallet with legacy-USD fallback (cash wallet cutover); otherwise
+  // match walletCurrency exactly. Wallets with a null balance are external
+  // (non-custodial) - the server cannot spend them, skip them.
   JsonArray wallets = respDoc["data"]["me"]["defaultAccount"]["wallets"];
+  const bool cashMode = strcmp(walletCurrency, "USD") == 0;
+  JsonObject chosen;
   for (JsonObject wallet : wallets) {
-    if (strcmp(wallet["walletCurrency"] | "", walletCurrency) == 0) {
-      strlcpy(ds.blinkwalletid, wallet["id"] | "", sizeof(ds.blinkwalletid));
-      ss.balanceSats = wallet["balance"]; // sats for BTC, cents for USD
-      Serial.printf("balance[Galoy]: %lld (%s wallet)\n",
-                    (long long)ss.balanceSats, walletCurrency);
-      return true;
+    const char *cur = wallet["walletCurrency"] | "";
+    if (wallet["balance"].isNull()) continue;
+    if (!cashMode) {
+      if (strcmp(cur, walletCurrency) == 0) {
+        chosen = wallet;
+        break;
+      }
+    } else {
+      if (strcmp(cur, "USDT") == 0) {
+        chosen = wallet;
+        break;
+      }
+      if (strcmp(cur, "USD") == 0 && chosen.isNull()) {
+        chosen = wallet; // keep looking - a USDT wallet still wins
+      }
     }
   }
 
-  Serial.printf("balance[Galoy]: no %s wallet in the account\n",
+  if (!chosen.isNull()) {
+    strlcpy(ds.blinkwalletid, chosen["id"] | "", sizeof(ds.blinkwalletid));
+    ss.balanceSats = chosen["balance"]; // sats for BTC, cents for USD/USDT
+    Serial.printf("balance[Galoy]: %lld (%s wallet)\n",
+                  (long long)ss.balanceSats,
+                  (const char *)(chosen["walletCurrency"] | ""));
+    return true;
+  }
+
+  Serial.printf("balance[Galoy]: no spendable %s wallet in the account\n",
                 walletCurrency);
   return false;
 }
@@ -97,6 +131,7 @@ bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice,
   http.begin(galoyEndpoint(ds.fundingSourceBuffer));
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", ds.blinkapikey);
+  addFlashCapabilityHeader(http, ds.fundingSourceBuffer);
   // Lightning routing can legitimately take a while and the shared HTTPClient
   // may carry pollBoltInvoice's short 5 s timeout — give the payout headroom.
   http.setTimeout(30000);
@@ -113,11 +148,15 @@ bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice,
         }
     })";
 
-  DynamicJsonDocument doc(1024);
-  doc["query"] = graphqlQuery;
-  doc["variables"]["input"]["walletId"] =
+  const char *payWalletId =
       (walletIdOverride && walletIdOverride[0] != '\0') ? walletIdOverride
                                                         : ds.blinkwalletid;
+  Serial.print("payInvoice walletId: ");
+  Serial.println(payWalletId);
+
+  DynamicJsonDocument doc(1024);
+  doc["query"] = graphqlQuery;
+  doc["variables"]["input"]["walletId"] = payWalletId;
   doc["variables"]["input"]["paymentRequest"] = invoice;
   doc["variables"]["input"]["memo"] = "LightningATM payout";
 
