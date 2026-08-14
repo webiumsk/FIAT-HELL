@@ -1135,40 +1135,12 @@ void setup() {
   });
   bootStage(22, "root route registered");
 
-  auto redirectToConfigPortal = [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "text/plain",
-        "Portal accessible only via AP — hold BOOT button 3 s to enable");
-      server.client().stop();
-      return;
-    }
-    server.sendHeader("Location", "/_ac", true);
-    server.send(302, "text/plain", "");
-    server.client().stop();
-  };
-
-  // Common captive-portal probe URLs used by Android, iPhone, and Windows.
-  // Android: /generate_204 — return 204 when STA (no notification), 302 → /setup when AP.
-  server.on("/generate_204", [isApClient]() {
-    if (!isApClient()) { server.send(204, "text/plain", ""); return; }
-    server.sendHeader("Location", "/_ac", true);
-    server.send(302, "text/plain", "");
-    server.client().stop();
-  });
-  // iOS/macOS: /hotspot-detect.html — return "Success" when STA, 302 → /setup when AP.
-  server.on("/hotspot-detect.html", [isApClient]() {
-    if (!isApClient()) {
-      server.send(200, "text/html",
-        "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
-      return;
-    }
-    server.sendHeader("Location", "/_ac", true);
-    server.send(302, "text/plain", "");
-    server.client().stop();
-  });
-  server.on("/connecttest.txt", redirectToConfigPortal);
-  server.on("/ncsi.txt", redirectToConfigPortal);
-  server.on("/fwlink", redirectToConfigPortal);
+  // Captive-portal probe URLs (generate_204, hotspot-detect.html, ...) are
+  // intentionally NOT handled here: AutoConnect's own onNotFound/_captivePortal
+  // catches them and replies with an absolute-URL 302 to the portal, which is
+  // what makes phones auto-open the sign-in page (matching WT32). Registering
+  // explicit handlers here would shadow that and only offer a relative
+  // redirect that Android won't auto-open.
   server.on("/favicon.ico", []() { server.send(204, "text/plain", ""); });
 
   // On-device Flash API key wizard (see pageflashkey.h). AP-only: it creates
@@ -1784,19 +1756,10 @@ void setup() {
   (void)portal.begin(); // may connect STA or start AP depending on config
   bootStage(47, "portal begin returned");
 
-  // Catch-all: AutoConnect sets its own onNotFound in begin(), so register
-  // ours AFTER. Any URL/host a phone probes (captive detection uses many)
-  // gets redirected to /setup for AP clients — this is how a captive portal
-  // is "disguised" so the OS shows the sign-in prompt.
-  server.onNotFound([]() {
-    const IPAddress c = server.client().remoteIP();
-    if (c[0] == 192 && c[1] == 168 && c[2] == 4) {
-      server.sendHeader("Location", "http://192.168.4.1/_ac", true);
-      server.send(302, "text/plain", "");
-    } else {
-      server.send(404, "text/plain", "");
-    }
-  });
+  // NOTE: we intentionally do NOT register our own onNotFound here. AutoConnect
+  // installs its _handleNotFound/_captivePortal in begin(); leaving it in place
+  // gives WT32-identical captive behaviour (absolute-URL 302 to the portal,
+  // host-header based) so phones auto-open the sign-in page.
 
   if (wifiStatus()) {
     Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
