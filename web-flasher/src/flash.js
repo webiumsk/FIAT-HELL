@@ -57,7 +57,16 @@ export async function connectAndFlash({ log, setProgress, configFiles, flashPart
     const fileArray = [];
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
-      const resp = await fetch(part.path);
+      let resp;
+      try {
+        resp = await fetch(part.path);
+      } catch (e) {
+        if (isRemote) {
+          throw new Error('GitHub nepovoľuje sťahovanie .bin z prehliadača (CORS). '
+            + 'Vyber „Najnovšia (lokálna kópia zo stránky)", alebo použi offline balík z releasu.');
+        }
+        throw e;
+      }
       if (!resp.ok) throw new Error(`Chyba pri načítaní ${part.path}: HTTP ${resp.status}`);
       const blob = await resp.blob();
       const data = await blobToBinaryString(blob);

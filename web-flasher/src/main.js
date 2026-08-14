@@ -733,9 +733,10 @@ async function populateVersionDropdown() {
     sel.add(opt);
   }
 
-  // Default selection: newest non-prerelease, else newest overall.
-  const defaultRelease = flashable.find(r => !r.prerelease) || flashable[0];
-  if (defaultRelease) sel.value = 'release:' + defaultRelease.id;
+  // Keep the local (same-origin) copy selected by default: it is the latest
+  // deployed version and always flashable. GitHub release assets can't be
+  // fetched cross-origin (no CORS), so a release is opt-in with a warning.
+  sel.value = '__local__';
   onVersionChange();
 }
 
@@ -751,10 +752,14 @@ function onVersionChange() {
   const hint = document.getElementById('fw-version-hint');
   if (!sel || !hint) return;
   if (sel.value === '__local__') {
-    hint.textContent = 'Verzia zabundlená do tejto stránky pri jej deploye.';
+    hint.textContent = 'Aktuálna verzia zabundlená do tejto stránky (odporúčané).';
+    hint.style.color = '';
   } else {
     const opt = sel.options[sel.selectedIndex];
-    hint.textContent = `.bin súbory sa stiahnu z GitHub release: ${opt.textContent.trim()}`;
+    hint.innerHTML = `⚠ Staršie verzie sa cez prehliadač nedajú stiahnuť z GitHubu `
+      + `(chýba CORS). Ak potrebuješ práve <b>${opt.textContent.trim()}</b>, `
+      + `použi <b>offline balík</b> z toho releasu. Inak nechaj „Najnovšia (lokálna kópia)".`;
+    hint.style.color = 'var(--orange, #f90)';
   }
 }
 
