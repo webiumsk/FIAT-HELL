@@ -78,6 +78,8 @@ LV_IMG_DECLARE(lnbits);
 #include "services/FundingService.h"
 #include "services/PaymentService.h"
 #include "services/UiController.h"
+// pageflashkey.h must come before the field alias macros below (blinkapikey...)
+#include "pageflashkey.h"
 
 // Global device state (persistent configuration)
 static DeviceState deviceState;
@@ -502,6 +504,17 @@ void setup() {
   server.on("/", []() {
     content += AUTOCONNECT_LINK(COG_24);
     server.send(200, "text/html", content);
+  });
+
+  // On-device Flash API key wizard (see pageflashkey.h)
+  server.on("/flashkey", HTTP_GET, []() {
+    server.send(200, "text/html", flashKeyPageHtml(wifiStatus()));
+  });
+  server.on("/flashkey/run", HTTP_POST, []() {
+    server.send(200, "text/html",
+                flashKeyRunAndRender(http, deviceState, configService, FlashFS,
+                                     FIRST_FILE, server.arg("phone"),
+                                     server.arg("code")));
   });
 
   elementsAux.load(FPSTR(PAGE_ELEMENTS));

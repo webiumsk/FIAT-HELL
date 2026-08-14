@@ -125,6 +125,8 @@ LV_IMG_DECLARE(lnbits);
 #include "services/FundingService.h"
 #include "services/PaymentService.h"
 #include "services/UiController.h"
+// pageflashkey.h must come before the http/field alias macros below
+#include "pageflashkey.h"
 #include "pageota.h"
 
 // Runtime-allocated to avoid pre-setup global constructors on ESP32.
@@ -1109,6 +1111,17 @@ void setup() {
   server.on("/ncsi.txt", redirectToConfigPortal);
   server.on("/fwlink", redirectToConfigPortal);
   server.on("/favicon.ico", []() { server.send(204, "text/plain", ""); });
+
+  // On-device Flash API key wizard (see pageflashkey.h)
+  server.on("/flashkey", HTTP_GET, []() {
+    server.send(200, "text/html", flashKeyPageHtml(wifiStatus()));
+  });
+  server.on("/flashkey/run", HTTP_POST, []() {
+    server.send(200, "text/html",
+                flashKeyRunAndRender(http, deviceState, configService, FlashFS,
+                                     FIRST_FILE, server.arg("phone"),
+                                     server.arg("code")));
+  });
 
   // Lightweight mobile config portal — served only to AP clients (192.168.4.x).
   server.on("/setup", HTTP_GET, [isApClient]() {

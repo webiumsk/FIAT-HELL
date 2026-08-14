@@ -220,6 +220,44 @@ bool ConfigService::loadFirst(fs::FS &fs, const char *path, FirstConfig &out) {
   return out.valid;
 }
 
+bool ConfigService::updateFirstBlinkApiKey(fs::FS &fs, const char *path,
+                                           const char *apiKey) {
+  DynamicJsonDocument doc(2400);
+
+  File f = fs.open(path, "r");
+  bool loaded = false;
+  if (f) {
+    loaded = (deserializeJson(doc, f) == DeserializationError::Ok);
+    f.close();
+  }
+
+  if (!loaded || !doc.is<JsonArray>() || doc.as<JsonArray>().size() == 0) {
+    // No usable file yet - create the minimal positional layout loadFirst
+    // expects (same order as the web flasher's makeFirstJson).
+    doc.clear();
+    JsonArray arr = doc.to<JsonArray>();
+    static const char *const names[] = {
+        "blinkapikey", "blinkwalletid", "lnurl",    "adminkey", "readkey",
+        "currencyOne", "billmech",      "maxamount", "charge1"};
+    for (auto name : names) {
+      JsonObject o = arr.createNestedObject();
+      o["name"] = name;
+      o["type"] = "ACInput";
+      o["value"] = "";
+    }
+  }
+
+  doc[0]["value"] = apiKey;
+
+  File out = fs.open(path, "w");
+  if (!out) {
+    return false;
+  }
+  serializeJson(doc, out);
+  out.close();
+  return true;
+}
+
 bool ConfigService::loadSecond(fs::FS &fs, const char *path,
                                SecondConfig &out) {
   File f = fs.open(path, "r");

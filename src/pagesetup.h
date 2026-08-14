@@ -81,6 +81,7 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
 </div>
 <div class="blink-fields">
   <label>API kľúč (Blink / Flash)<input type="text" name="blink_apikey" value="%%BLINK_APIKEY%%"></label>
+  <div class="hint"><a href="/flashkey" style="color:#f90">⚡ Nemáš Flash API kľúč? Získaj ho tu</a></div>
   <label>Wallet ID (Blink / Flash)<input type="text" name="blink_wallet" value="%%BLINK_WALLET%%"></label>
 </div>
 <div class="lnbits-fields">

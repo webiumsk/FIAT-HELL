@@ -17,6 +17,11 @@ static const char PAGE_FIRST[] PROGMEM = R"(
       "value": "<hr>"
     },
     {
+      "name": "flashkeylink",
+      "type": "ACElement",
+      "value": "<p style='margin:4px 0'><a href='/flashkey'>&#9889; Nem&aacute;&scaron; Flash API k&#318;&uacute;&#269;? Z&iacute;skaj ho tu</a></p>"
+    },
+    {
       "name": "blinkapikey",
       "type": "ACInput",
       "label": "API key",
