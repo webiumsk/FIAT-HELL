@@ -150,13 +150,30 @@ function scanWifi(btn){
   var lst=document.getElementById('wifi-list');
   var orig=btn.textContent;
   btn.disabled=true;btn.textContent='Hľadám…';
-  lst.innerHTML='<p class="hint">Skenujem 2.4GHz pásmo (5–8 s)…</p>';
-  fetch('/setup/wifi-scan',{cache:'no-store'}).then(function(r){
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    return r.json();
-  }).then(function(arr){
+  lst.innerHTML='<p class="hint">Skenujem 2.4GHz pásmo…</p>';
+  var tries=0;
+  function poll(){
+    tries++;
+    fetch('/setup/wifi-scan',{cache:'no-store'}).then(function(r){
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      return r.json();
+    }).then(function(res){
+      // Async scan: {"scanning":true} means keep polling; an array = results.
+      if(res&&res.scanning){
+        if(tries>12){throw new Error('vypršal čas skenu');}
+        setTimeout(poll,1500);return;
+      }
+      render(res);
+    }).catch(function(e){
+      // The scan briefly disrupts the AP; a dropped poll is expected - retry.
+      if(tries<=12){setTimeout(poll,1500);return;}
+      btn.disabled=false;btn.textContent=orig;
+      lst.innerHTML='<p class="hint">Chyba pri vyhľadávaní: '+e.message+'. Zadaj SSID ručne nižšie.</p>';
+    });
+  }
+  function render(arr){
     btn.disabled=false;btn.textContent=orig;
-    if(!arr||!arr.length){lst.innerHTML='<p class="hint">Nenašli sa žiadne siete.</p>';return;}
+    if(!arr||!arr.length){lst.innerHTML='<p class="hint">Nenašli sa žiadne siete. Zadaj SSID ručne nižšie.</p>';return;}
     var h='';
     arr.forEach(function(n){
       var s=(n.ssid||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -173,10 +190,8 @@ function scanWifi(btn){
         var p=document.getElementById('wifi_password');p.value='';p.focus();
       });
     });
-  }).catch(function(e){
-    btn.disabled=false;btn.textContent=orig;
-    lst.innerHTML='<p class="hint">Chyba pri vyhľadávaní: '+e.message+'</p>';
-  });
+  }
+  poll();
 }
 </script>
 </body>

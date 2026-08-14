@@ -95,8 +95,8 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
 #include <JC_Button.h>
 #include <SPI.h>
 
-#include <DNSServer.h>
 #include <ESPmDNS.h>
+#include <WiFiUdp.h>
 #include <Bitcoin.h>
 #include <HTTPClient.h>
 #include <Hash.h>
@@ -574,27 +574,86 @@ static bool suspendTouchPolling = false;
 // Own captive-portal DNS. AutoConnect only starts its DNS from handleClient
 // when its whileCaptivePortal callback returns true, and it isn't involved at
 // all when we bring up the AP manually - so the config AP had no DNS and
-// phones showed "connected, no internet" instead of the sign-in prompt. We
-// run our own resolver (all names -> softAP IP) whenever the AP is up, and
-// tell AutoConnect to keep its hands off port 53 (see the callback below).
-static DNSServer apDnsServer;
+// phones showed "connected, no internet" instead of the sign-in prompt.
+//
+// We answer every query with the softAP IP. The Arduino DNSServer mangles
+// EDNS0 queries (modern phones send them) into malformed replies, so this is
+// a minimal hand-rolled responder that drops the additional/OPT section and
+// returns a valid A answer. AutoConnect is told to keep off port 53 via the
+// whileCaptivePortal callback below.
+static WiFiUDP apDnsUdp;
 static bool apDnsRunning = false;
 
 static void ensureApDns() {
   if (apDnsRunning) return;
   if (!(WiFi.getMode() & WIFI_AP)) return;
-  apDnsServer.setErrorReplyCode(DNSReplyCode::NoError);
-  if (apDnsServer.start(53, "*", WiFi.softAPIP())) {
+  if (apDnsUdp.begin(53)) {
     apDnsRunning = true;
-    Serial.println("Captive DNS started -> " + WiFi.softAPIP().toString());
+    Serial.println("Captive DNS up -> " + WiFi.softAPIP().toString());
   }
 }
 
 static void stopApDns() {
   if (!apDnsRunning) return;
-  apDnsServer.stop();
+  apDnsUdp.stop();
   apDnsRunning = false;
-  Serial.println("Captive DNS stopped");
+}
+
+// Handle one pending DNS query, if any. Returns true if a packet was serviced.
+static bool processApDnsOnce() {
+  const int avail = apDnsUdp.parsePacket();
+  if (avail <= 0) return false;
+
+  static uint8_t buf[512];
+  int n = apDnsUdp.read(buf, sizeof(buf));
+  if (n < 12) return true;              // too short to be a query
+  if (buf[2] & 0x80) return true;       // already a response, ignore
+
+  // Walk the first question: QNAME (labels) then QTYPE(2) + QCLASS(2).
+  int p = 12;
+  while (p < n && buf[p] != 0) {
+    if ((buf[p] & 0xC0) == 0xC0) { p += 2; goto have_end; } // compressed
+    p += buf[p] + 1;
+  }
+  if (p >= n) return true;
+  p += 1; // null label
+have_end:
+  if (p + 4 > n) return true;
+  const uint16_t qtype = (buf[p] << 8) | buf[p + 1];
+  const int qend = p + 4; // end of question section
+
+  // Response header: QR=1, AA=1, keep RD; RCODE=0.
+  buf[2] = 0x84 | (buf[2] & 0x01);
+  buf[3] = 0x00;
+  buf[6] = 0x00; buf[8] = 0x00; buf[10] = 0x00; buf[11] = 0x00; // NS/AR=0
+  // Answer only A queries with an address; anything else -> valid empty answer
+  // (NODATA) so EDNS/AAAA probes still get a well-formed reply.
+  const bool answerA = (qtype == 1);
+  buf[7] = answerA ? 0x01 : 0x00; // ANCOUNT
+
+  int outLen = qend;
+  if (answerA && qend + 16 <= (int)sizeof(buf)) {
+    uint8_t *a = buf + qend;
+    a[0] = 0xC0; a[1] = 0x0C;             // name -> pointer to question
+    a[2] = 0x00; a[3] = 0x01;             // TYPE A
+    a[4] = 0x00; a[5] = 0x01;             // CLASS IN
+    a[6] = 0; a[7] = 0; a[8] = 0; a[9] = 30; // TTL 30s
+    a[10] = 0x00; a[11] = 0x04;           // RDLENGTH 4
+    const IPAddress ip = WiFi.softAPIP();
+    a[12] = ip[0]; a[13] = ip[1]; a[14] = ip[2]; a[15] = ip[3];
+    outLen = qend + 16;
+  }
+
+  apDnsUdp.beginPacket(apDnsUdp.remoteIP(), apDnsUdp.remotePort());
+  apDnsUdp.write(buf, outLen);
+  apDnsUdp.endPacket();
+  return true;
+}
+
+// Drain a small burst of queries per loop so bursts aren't dropped.
+static void processApDns() {
+  for (int i = 0; i < 6 && processApDnsOnce(); i++) {
+  }
 }
 static bool pendingPortalCompletion = false;
 static bool appStartupCompleted = false;
@@ -1244,8 +1303,22 @@ void setup() {
     if (!(WiFi.getMode() & WIFI_MODE_STA)) {
       WiFi.mode(WIFI_AP_STA);
     }
-    int n = WiFi.scanNetworks(false, false);  // sync, no hidden
-    if (n < 0) n = 0;
+
+    // Async scan: a synchronous scan blocks for seconds and makes the SoftAP
+    // hop channels, dropping the phone mid-request. Instead return immediately
+    // with {"scanning":true} and let the client poll; results are delivered on
+    // a later poll once the scan finished and the AP recovered.
+    const int st = WiFi.scanComplete();
+    if (st == WIFI_SCAN_RUNNING) {
+      server.send(200, "application/json", "{\"scanning\":true}");
+      return;
+    }
+    if (st == WIFI_SCAN_FAILED) { // -2: nothing started yet (or failed)
+      WiFi.scanNetworks(true, false); // start async, no hidden
+      server.send(200, "application/json", "{\"scanning\":true}");
+      return;
+    }
+    int n = st; // >= 0: results are ready
 
     struct Net { String ssid; int rssi; bool secure; };
     std::vector<Net> nets;
@@ -2074,10 +2147,16 @@ void setup() {
   portalRequiredForWifiRecovery = (wifiRequired && !wifiStatus());
 
   // In config-first mode, keep the AP stable for phones instead of trying to
-  // reconnect to a remembered WiFi in the background.
-  acConfig.autoReconnect = !(portalRequestedByUser || portalRequiredForMissingConfig);
-  acConfig.preserveAPMode =
-      (portalRequestedByUser || portalRequiredForMissingConfig);
+  // reconnect to a remembered WiFi in the background. Background STA scans in
+  // AP+STA mode make the SoftAP hop channels, so phones drop the connection
+  // ("connects and disconnects") - so we also stop retries when the portal is
+  // up because WiFi failed (the recovery case), not just on explicit entry.
+  const bool portalActiveNow = portalRequestedByUser ||
+                               portalRequiredForMissingConfig ||
+                               portalRequiredForWifiRecovery;
+  acConfig.autoReconnect = !portalActiveNow;
+  acConfig.reconnectInterval = portalActiveNow ? 0 : 1;
+  acConfig.preserveAPMode = portalActiveNow;
 
   // Decide portal behavior once, then call portal.begin() once.
   acConfig.immediateStart = (userWantsPortal || apiDataMissing);
@@ -2085,8 +2164,9 @@ void setup() {
   exitCaptivePortalLoopOnce = shouldOpenPortalNow;
   portal.whileCaptivePortal(allowSetupToContinueWhilePortalStaysAlive);
 
-  if (portalRequestedByUser || portalRequiredForMissingConfig) {
-    Serial.println("Config portal requested: disconnecting STA to keep captive AP stable");
+  if (portalActiveNow) {
+    Serial.println("Config portal active: stopping STA retries to keep captive AP stable");
+    WiFi.setAutoReconnect(false);
     WiFi.disconnect(false, false);
   }
 
@@ -2124,6 +2204,20 @@ void setup() {
   Serial.println("Attempting to connect via AutoConnect...");
   (void)portal.begin(); // may connect STA or start AP depending on config
   bootStage(47, "portal begin returned");
+
+  // Catch-all: AutoConnect sets its own onNotFound in begin(), so register
+  // ours AFTER. Any URL/host a phone probes (captive detection uses many)
+  // gets redirected to /setup for AP clients — this is how a captive portal
+  // is "disguised" so the OS shows the sign-in prompt.
+  server.onNotFound([]() {
+    const IPAddress c = server.client().remoteIP();
+    if (c[0] == 192 && c[1] == 168 && c[2] == 4) {
+      server.sendHeader("Location", "http://192.168.4.1/setup", true);
+      server.send(302, "text/plain", "");
+    } else {
+      server.send(404, "text/plain", "");
+    }
+  });
 
   if (wifiStatus()) {
     Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
@@ -4157,7 +4251,7 @@ void loop() {
   // the AP is gone.
   if (WiFi.getMode() & WIFI_AP) {
     ensureApDns();
-    if (apDnsRunning) apDnsServer.processNextRequest();
+    if (apDnsRunning) processApDns();
   } else {
     stopApDns();
   }
