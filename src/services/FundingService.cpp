@@ -4,10 +4,12 @@
 
 namespace FundingService {
 
-static const char *blinkGraphqlEndpoint = "https://api.blink.sv/graphql";
-static const char *flashGraphqlEndpoint = "https://api.flashapp.me/graphql";
-static const char *primaryProxyEndpoint = "https://api.lnbc.sk/v1/lnurl";
-static const char *secondaryProxyEndpoint = "https://api.lnurlproxy.me/v1/lnurl";
+static const char *const blinkGraphqlEndpoint = "https://api.blink.sv/graphql";
+static const char *const flashGraphqlEndpoint =
+    "https://api.flashapp.me/graphql";
+static const char *const primaryProxyEndpoint = "https://api.lnbc.sk/v1/lnurl";
+static const char *const secondaryProxyEndpoint =
+    "https://api.lnurlproxy.me/v1/lnurl";
 
 bool isGaloy(const char *fundingSource) {
   return fundingSource && (strcmp(fundingSource, "Blink") == 0 ||
@@ -86,10 +88,14 @@ bool fetchGaloyBalance(HTTPClient &http, DeviceState &ds, SessionState &ss,
   return false;
 }
 
-bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice) {
+bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice,
+                const char *walletIdOverride) {
   http.begin(galoyEndpoint(ds.fundingSourceBuffer));
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", ds.blinkapikey);
+  // Lightning routing can legitimately take a while and the shared HTTPClient
+  // may carry pollBoltInvoice's short 5 s timeout — give the payout headroom.
+  http.setTimeout(30000);
 
   String graphqlQuery = R"(
     mutation LnInvoicePaymentSend($input: LnInvoicePaymentInput!) {
@@ -105,7 +111,9 @@ bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice) {
 
   DynamicJsonDocument doc(1024);
   doc["query"] = graphqlQuery;
-  doc["variables"]["input"]["walletId"] = ds.blinkwalletid;
+  doc["variables"]["input"]["walletId"] =
+      (walletIdOverride && walletIdOverride[0] != '\0') ? walletIdOverride
+                                                        : ds.blinkwalletid;
   doc["variables"]["input"]["paymentRequest"] = invoice;
   doc["variables"]["input"]["memo"] = "LightningATM payout";
 
@@ -132,8 +140,11 @@ bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice) {
     return false;
   }
 
-  if (!respDoc["errors"].isNull()) {
-    Serial.println("Payment failed: GraphQL error");
+  // Top-level errors may be present-but-empty; only a non-empty array is a
+  // failure (same pattern as fetchGaloyBalance).
+  if (respDoc["errors"].is<JsonArray>() && respDoc["errors"].size() > 0) {
+    const char *msg = respDoc["errors"][0]["message"] | "(no message)";
+    Serial.printf("Payment failed: GraphQL error: %s\n", msg);
     return false;
   }
 
@@ -156,6 +167,12 @@ bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice) {
 
 bool requestLnurlWithdraw(HTTPClient &http, SessionState &ss,
                           long amountSats) {
+  // Clear previous withdraw state up front so a failed request can't leave a
+  // stale QR/callback from an earlier transaction behind.
+  ss.lnURLgen[0] = '\0';
+  ss.modifiedLnURLgen[0] = '\0';
+  ss.callback[0] = '\0';
+
   DynamicJsonDocument doc(1024);
   doc["amount"] = amountSats;
   doc["memo"] = "Fiat Hell ATM";
@@ -184,17 +201,24 @@ bool requestLnurlWithdraw(HTTPClient &http, SessionState &ss,
     Serial.println(responsePayload);
 
     DynamicJsonDocument respDoc(1024);
-    deserializeJson(respDoc, responsePayload);
-
-    strlcpy(ss.lnURLgen, respDoc["lnurl"] | "", sizeof(ss.lnURLgen));
-    if (strlen(ss.lnURLgen) > 10) {
-      strlcpy(ss.modifiedLnURLgen, ss.lnURLgen + 10,
-              sizeof(ss.modifiedLnURLgen));
+    DeserializationError parseErr = deserializeJson(respDoc, responsePayload);
+    if (parseErr) {
+      Serial.print("LNURL proxy response parse error: ");
+      Serial.println(parseErr.c_str());
     } else {
-      ss.modifiedLnURLgen[0] = '\0';
+      strlcpy(ss.lnURLgen, respDoc["lnurl"] | "", sizeof(ss.lnURLgen));
+      if (strlen(ss.lnURLgen) > 10) {
+        strlcpy(ss.modifiedLnURLgen, ss.lnURLgen + 10,
+                sizeof(ss.modifiedLnURLgen));
+      }
+      strlcpy(ss.callback, respDoc["callback"] | "", sizeof(ss.callback));
+      // Both are required downstream: the QR shows lnURLgen and the invoice
+      // polling loop GETs callback — without it polling would just time out.
+      ok = ss.lnURLgen[0] != '\0' && ss.callback[0] != '\0';
+      if (!ok) {
+        Serial.println("LNURL proxy response missing lnurl/callback");
+      }
     }
-    strlcpy(ss.callback, respDoc["callback"] | "", sizeof(ss.callback));
-    ok = ss.lnURLgen[0] != '\0';
   } else {
     Serial.println("Failed to generate LNURL: " + String(httpCode));
   }

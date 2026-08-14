@@ -37,8 +37,11 @@ bool fetchGaloyBalance(HTTPClient &http, DeviceState &ds, SessionState &ss,
  * Pay a BOLT11 invoice via lnInvoicePaymentSend from the configured wallet.
  * Returns true only when the backend reports SUCCESS, PENDING (payment in
  * flight) or ALREADY_PAID — callers must treat false as a failed payout.
+ * walletIdOverride, when non-empty, is used instead of ds.blinkwalletid —
+ * for callers that snapshot the id under a lock (S3 background task).
  */
-bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice);
+bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice,
+                const char *walletIdOverride = nullptr);
 
 /**
  * Ask the LNURL-withdraw proxy for a withdraw QR worth amountSats.

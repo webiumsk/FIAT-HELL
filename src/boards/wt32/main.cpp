@@ -30,7 +30,7 @@ static LGFX lcd;         // declare display variable
 #include "lv_font_the_bold_48.c"
 #include <lvgl.h>
 
-lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_ORANGE,
+static const lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_ORANGE,
                        LV_COLOR_YELLOW, LV_COLOR_GREEN, LV_COLOR_BLUE};
 
 #include <FS.h>
@@ -881,8 +881,12 @@ void setup() {
   if (isGaloyMode) {
     Serial.print(deviceState.fundingSourceBuffer);
     Serial.println(" mode => Internet needed");
-  } else {
+  } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
     Serial.println("LNbits mode => offline possible");
+  } else {
+    Serial.print("Unrecognized funding source: '");
+    Serial.print(deviceState.fundingSourceBuffer);
+    Serial.println("'");
   }
 
   if (userWantsPortal) {
@@ -2416,10 +2420,10 @@ bool getBlinkLnURL(const char *invoice) {
  * @note This function requires the `http` library and the `primaryApiEndpoint`
  * and `secondaryApiEndpoint` variables to be defined.
  *
- * @param None
- * @return None
+ * @return true when the proxy returned both the LNURL and the callback URL;
+ *         false when no QR should be shown (caller must handle the failure).
  */
-void createLNURLWithdraw() {
+bool createLNURLWithdraw() {
   float temp = ((total / 100.0) / fiatValue * 1e8);
 
   Serial.print("Temp (satoshis): ");
@@ -2437,7 +2441,7 @@ void createLNURLWithdraw() {
   Serial.print("Result (rounded satoshis): ");
   Serial.println(result);
 
-  FundingService::requestLnurlWithdraw(http, sessionState, result);
+  return FundingService::requestLnurlWithdraw(http, sessionState, result);
 }
 
 /**
@@ -3061,20 +3065,30 @@ void loop() {
         if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
           uiController.deleteInsertMoneyScreen();
           Serial.println("deleteInsertMoneyScreen() - Blink online");
-          createLNURLWithdraw();
+          const bool withdrawOk = createLNURLWithdraw();
           Serial.println("createLNURLWithdraw() - Blink online");
-          // Display the QR code for online
-          showQRCodeLVGL(lnURLgen);
-          Serial.println("showQRCodeLVGL() - Blink online");
-          lv_task_handler();
-          Serial.println("lv_task_handler() - Blink online");
-          // Turn off machines
+          // Turn off machines in both outcomes - cash is already inside
           SerialPort1.write(185);
           digitalWrite(INHIBITMECH, LOW);
-          currentUiState = UI_SHOWING_QR;
-          stateEnterTime = millis();
-          qrDebounceDone = false;
-          isBlinkFlow = true; // Mark that we're in Blink flow
+          if (withdrawOk) {
+            // Display the QR code for online
+            showQRCodeLVGL(lnURLgen);
+            Serial.println("showQRCodeLVGL() - Blink online");
+            lv_task_handler();
+            Serial.println("lv_task_handler() - Blink online");
+            currentUiState = UI_SHOWING_QR;
+            stateEnterTime = millis();
+            qrDebounceDone = false;
+            isBlinkFlow = true; // Mark that we're in Blink flow
+          } else {
+            // No LNURL/callback - showing a QR would trap the customer in a
+            // polling loop that can never succeed.
+            Serial.println("LNURL withdraw failed => payment error screen");
+            createPaymentErrorScreen();
+            lv_task_handler();
+            currentUiState = UI_PAYMENT_ERROR;
+            stateEnterTime = millis();
+          }
         }
         if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
           if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {

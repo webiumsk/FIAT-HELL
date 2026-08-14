@@ -38,4 +38,15 @@ bool consumePriceBalanceDataReady();
  */
 void startPriceBalanceTask(DeviceState *ds, SessionState *ss);
 
+/**
+ * @brief Copy the cached Galoy wallet id under the task's data mutex.
+ *
+ * The background task rewrites deviceState.blinkwalletid during balance
+ * fetches; payout code must snapshot it through here to avoid reading a
+ * half-written id. Returns false when the task isn't running (caller should
+ * fall back to reading deviceState directly — no concurrent writer exists
+ * then).
+ */
+bool priceBalanceCopyWalletId(char *dst, size_t dstSize);
+
 #endif // PRICE_BALANCE_TASK_H

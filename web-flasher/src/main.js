@@ -345,10 +345,14 @@ async function fetchReleases() {
   return releases;
 }
 
+// Guards against interleaved invocations (rapid board toggling): only the
+// most recent call may touch the dropdown and releaseFlashParts.
+let versionDropdownRequestId = 0;
+
 async function populateVersionDropdown() {
   const sel = document.getElementById('fw-version-select');
   if (!sel) return;
-  releaseFlashParts.clear();
+  const requestId = ++versionDropdownRequestId;
   const boardKey = selectedBoard();
 
   let releases = [];
@@ -358,6 +362,9 @@ async function populateVersionDropdown() {
   } catch (e) {
     error = e.message;
   }
+  if (requestId !== versionDropdownRequestId) return; // superseded
+
+  releaseFlashParts.clear();
 
   // Clear all options except the "local" first option
   while (sel.options.length > 1) sel.remove(1);

@@ -267,6 +267,16 @@ void triggerPriceBalanceFetch(PriceBalanceRequest req) {
     xQueueSend(g_requestQueue, &req, 0);
 }
 
+bool priceBalanceCopyWalletId(char *dst, size_t dstSize) {
+  if (!g_deviceState || !g_dataMutex)
+    return false;
+  if (xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(1000)) != pdTRUE)
+    return false;
+  strlcpy(dst, g_deviceState->blinkwalletid, dstSize);
+  xSemaphoreGive(g_dataMutex);
+  return true;
+}
+
 bool isPriceBalanceDataReady() { return g_dataReadyForUi; }
 
 bool consumePriceBalanceDataReady() {
