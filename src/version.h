@@ -2,4 +2,4 @@
 // Bumped by scripts/release.sh; read by .github/workflows/web-flasher.yml.
 #pragma once
 
-#define FW_VERSION "1.3.2"
+#define FW_VERSION "1.3.3"
