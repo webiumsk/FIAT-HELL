@@ -17,9 +17,10 @@ h1{color:#f90;font-size:1.3em;margin:0 0 2px}
 .sub{color:#555;font-size:.85em;margin:0 0 20px}
 h2{color:#888;font-size:.8em;margin:16px 0 8px;text-transform:uppercase;letter-spacing:.08em}
 label{display:block;color:#999;font-size:.85em;margin-top:10px}
-input[type=text],input[type=password],input[type=number],input[type=file]{
+input[type=text],input[type=password],input[type=number],input[type=file],textarea{
   display:block;width:100%;padding:10px;margin-top:4px;
   background:#1e1e1e;color:#eee;border:1px solid #444;border-radius:6px;font-size:1em}
+textarea{font-family:monospace;font-size:.85em;resize:vertical}
 input[name=funding]{position:absolute;opacity:0;width:0;height:0}
 .ftabs{display:flex;gap:8px;margin:10px 0 14px}
 .ftab{flex:1;text-align:center;padding:10px;border:2px solid #444;border-radius:8px;cursor:pointer;font-size:1em;color:#999}
@@ -93,6 +94,13 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
   <label>LNURL base URL<input type="text" name="lnurl_base" value="%%LNURL_BASE%%"></label>
   <label>LNURL secret<input type="text" name="lnurl_secret" value="%%LNURL_SECRET%%"></label>
 </div>
+</div>
+
+<div class="card">
+<h2>LNURL proxy</h2>
+<label>Adresy proxy serverov, jedna na riadok
+<textarea name="proxy_endpoints" rows="3" autocomplete="off" spellcheck="false" placeholder="%%PROXY_DEFAULT%%">%%PROXY_ENDPOINTS%%</textarea></label>
+<p class="hint">Skúšajú sa v poradí zhora nadol, prvý funkčný vyhrá (max. %%PROXY_MAX%%). Prázdne = predvolené: %%PROXY_DEFAULT_INLINE%%.</p>
 </div>
 
 <div class="card">

@@ -223,6 +223,11 @@ function applyDumpToForm(files) {
     applyDumpField(`${prefix}_charge`, byName(doc, `charge${prefix[3] === '2' ? 2 : 3}`, 4));
   }
 
+  const proxy = files['/proxy.json'];
+  if (proxy && Array.isArray(proxy.endpoints)) {
+    applyDumpField('proxy_endpoints', proxy.endpoints.join(', '));
+  }
+
   const wifi = files['/wifi.json'];
   if (wifi && typeof wifi === 'object') {
     applyDumpField('wifi_ssid', wifi.ssid ?? '');
@@ -356,11 +361,22 @@ function makeWifiJson() {
   return { ssid, password: document.getElementById('wifi_password').value || secretVal('wifi_password') };
 }
 
+// Always written so clearing the field resets the device to the firmware's
+// built-in proxy list (an empty "endpoints" array means "use defaults").
+function makeProxyJson() {
+  const endpoints = v('proxy_endpoints')
+    .split(/[\s,]+/)
+    .map(s => s.trim())
+    .filter(s => /^https?:\/\/\S+$/.test(s));
+  return { endpoints: [...new Set(endpoints)].slice(0, 4) };
+}
+
 function makeConfigFiles() {
   const files = {
     '/elements.json': makeElementsJson(),
     '/gui.json':      makeGuiJson(),
     '/first.json':    makeFirstJson(),
+    '/proxy.json':    makeProxyJson(),
   };
   const second = makeSecondJson();
   if (second) files['/second.json'] = second;
@@ -404,6 +420,7 @@ async function downloadConfigZip() {
   zip.file('elements.json', JSON.stringify(j(makeElementsJson()), null, 2));
   zip.file('gui.json',      JSON.stringify(makeGuiJson(),         null, 2));
   zip.file('first.json',    JSON.stringify(j(makeFirstJson()),    null, 2));
+  zip.file('proxy.json',    JSON.stringify(makeProxyJson(),       null, 2));
   const second = j(makeSecondJson());
   if (second) zip.file('second.json', JSON.stringify(second, null, 2));
   const third = j(makeThirdJson());

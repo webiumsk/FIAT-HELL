@@ -349,3 +349,105 @@ bool ConfigService::loadThird(fs::FS &fs, const char *path, ThirdConfig &out) {
   out.valid = out.currencyLabel[0] != '\0';
   return out.valid;
 }
+
+// Built-in LNURL-withdraw proxies, in priority order.
+static const char *const kDefaultProxyEndpoints[] = {
+    "https://api.lnbc.sk/v1/lnurl",
+    "https://api2.lnbc.sk/v1/lnurl",
+};
+
+String ConfigService::defaultProxyEndpoints(const char *sep) {
+  String out;
+  for (auto url : kDefaultProxyEndpoints) {
+    if (out.length()) out += sep;
+    out += url;
+  }
+  return out;
+}
+
+// Accept only absolute http(s) URLs that fit DeviceState::proxyEndpoints.
+static bool isUsableProxyUrl(const String &url) {
+  return (url.startsWith("https://") || url.startsWith("http://")) &&
+         url.length() > 10 &&
+         url.length() < sizeof(DeviceState::proxyEndpoints[0]) &&
+         url.indexOf(' ') < 0;
+}
+
+typedef char ProxyUrl[sizeof(DeviceState::proxyEndpoints[0])];
+
+static void addProxyEndpoint(ProxyUrl *list, size_t &count,
+                             const String &url) {
+  if (count >= DeviceState::kMaxProxyEndpoints || !isUsableProxyUrl(url)) {
+    return;
+  }
+  for (size_t i = 0; i < count; i++) {
+    if (url == list[i]) return;
+  }
+  strlcpy(list[count++], url.c_str(), sizeof(ProxyUrl));
+}
+
+bool ConfigService::loadProxyConfig(fs::FS &fs, const char *path,
+                                    DeviceState &ds) {
+  memset(ds.proxyEndpoints, 0, sizeof(ds.proxyEndpoints));
+  ds.proxyEndpointCount = 0;
+
+  File f = fs.open(path, "r");
+  if (f) {
+    DynamicJsonDocument doc(1024);
+    DeserializationError error = deserializeJson(doc, f);
+    f.close();
+    if (!error) {
+      for (JsonVariant v : doc["endpoints"].as<JsonArray>()) {
+        String url = v.as<String>();
+        url.trim();
+        addProxyEndpoint(ds.proxyEndpoints, ds.proxyEndpointCount, url);
+      }
+    }
+  }
+
+  ds.proxyFromFile = ds.proxyEndpointCount > 0;
+  if (!ds.proxyFromFile) {
+    for (auto url : kDefaultProxyEndpoints) {
+      addProxyEndpoint(ds.proxyEndpoints, ds.proxyEndpointCount, url);
+    }
+  }
+  return ds.proxyFromFile;
+}
+
+bool ConfigService::saveProxyConfig(fs::FS &fs, const char *path,
+                                    const String &list) {
+  ProxyUrl urls[DeviceState::kMaxProxyEndpoints] = {{0}};
+  size_t count = 0;
+  int start = 0;
+  const int len = list.length();
+  while (start <= len) {
+    int end = start;
+    while (end < len && list[end] != '\n' && list[end] != '\r' &&
+           list[end] != ',') {
+      end++;
+    }
+    String url = list.substring(start, end);
+    url.trim();
+    if (url.length()) addProxyEndpoint(urls, count, url);
+    start = end + 1;
+  }
+
+  if (count == 0) {
+    fs.remove(path);
+    return true;
+  }
+
+  DynamicJsonDocument doc(1024);
+  JsonArray arr = doc.createNestedArray("endpoints");
+  for (size_t i = 0; i < count; i++) {
+    arr.add((const char *)urls[i]);
+  }
+
+  File f = fs.open(path, "w");
+  if (!f) {
+    return false;
+  }
+  serializeJson(doc, f);
+  f.close();
+  return true;
+}

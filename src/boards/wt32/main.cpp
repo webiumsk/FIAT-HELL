@@ -95,6 +95,7 @@ HTTPClient http; // Declare object of class HTTPClient
 #define SECOND_FILE "/second.json"
 #define THIRD_FILE "/third.json"
 #define GUI_FILE "/gui.json"
+#define PROXY_FILE "/proxy.json"
 
 // Convenience macros for compatibility (point to deviceState/sessionState)
 #define qrData sessionState.qrData
@@ -623,6 +624,10 @@ void setup() {
   if (format == true) {
     SPIFFS.format();
   }
+
+  configService.loadProxyConfig(FlashFS, PROXY_FILE, deviceState);
+  Serial.print("LNURL proxies: ");
+  Serial.println(deviceState.proxyEndpointCount);
 
   // Gui page start - use ConfigService to load persisted GUI settings
   if (configService.loadGuiConfig(FlashFS, GUI_FILE, guiConfig)) {
@@ -2438,13 +2443,9 @@ bool getBlinkLnURL(const char *invoice) {
  *
  * This function calculates the withdrawal amount in satoshis based on the total
  * amount and fiat value. If a charge percentage is specified, it deducts the
- * charge from the withdrawal amount. Then, it sends a POST request to the
- * primary API endpoint. If the request fails, it tries the secondary endpoint.
- * If the request is successful, it parses the response JSON and extracts the
- * LNURL and callback URL.
- *
- * @note This function requires the `http` library and the `primaryApiEndpoint`
- * and `secondaryApiEndpoint` variables to be defined.
+ * charge from the withdrawal amount. Then it asks the LNURL proxies from
+ * /proxy.json (deviceState.proxyEndpoints) in order and extracts the LNURL
+ * and callback URL from the first usable response.
  *
  * @return true when the proxy returned both the LNURL and the callback URL;
  *         false when no QR should be shown (caller must handle the failure).
@@ -2467,7 +2468,8 @@ bool createLNURLWithdraw() {
   Serial.print("Result (rounded satoshis): ");
   Serial.println(result);
 
-  return FundingService::requestLnurlWithdraw(http, sessionState, result);
+  return FundingService::requestLnurlWithdraw(http, deviceState, sessionState,
+                                              result);
 }
 
 /**

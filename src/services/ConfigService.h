@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DeviceState.h"
 #include <ArduinoJson.h>
 #if FIAT_HAS_AUTOCONNECT
 #include <AutoConnect.h>
@@ -80,4 +81,23 @@ public:
                               const char *apiKey);
   bool loadSecond(fs::FS &fs, const char *path, SecondConfig &out);
   bool loadThird(fs::FS &fs, const char *path, ThirdConfig &out);
+
+  /**
+   * LNURL-withdraw proxy list: {"endpoints":["https://...", ...]}.
+   * Fills ds.proxyEndpoints in file order (invalid/duplicate entries are
+   * skipped, at most DeviceState::kMaxProxyEndpoints). When the file is
+   * missing or yields nothing usable, ds gets the built-in defaults so the
+   * ATM always has a proxy. Returns (and sets ds.proxyFromFile) true when
+   * the file was used.
+   */
+  bool loadProxyConfig(fs::FS &fs, const char *path, DeviceState &ds);
+
+  /**
+   * Save a newline/comma separated list of proxy URLs. An input with no
+   * valid URL removes the file, so the built-in defaults apply again.
+   */
+  bool saveProxyConfig(fs::FS &fs, const char *path, const String &list);
+
+  /** Built-in defaults used when /proxy.json is absent, joined by sep. */
+  static String defaultProxyEndpoints(const char *sep);
 };
