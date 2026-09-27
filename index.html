@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>FIAT HELL – Web Flasher</title>
-  <script type="module" crossorigin src="./assets/index-D01dRrDc.js"></script>
+  <script type="module" crossorigin src="./assets/index-Cl2l0mUk.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-BjsgrJU5.css">
 </head>
 <body>
@@ -76,7 +76,7 @@
           <div>
             <label for="ap_password">Heslo WiFi AP portálu</label>
             <input type="password" id="ap_password" placeholder="min. 8 znakov" required minlength="8">
-            <div class="hint">Heslo pre "LN ATM-xxxx" AP aj pre webový portál (meno: <strong>admin</strong>)</div>
+            <div class="hint">Heslo pre WiFi "LN ATM-xxxx" (S3: chráni aj portál; WT32: login do portálu je <strong>admin</strong> + toto heslo)</div>
             <div class="hint secret-fingerprint" id="fp_ap_password"></div>
           </div>
           <div class="full">
@@ -469,7 +469,7 @@
       <p style="font-weight:600;margin-bottom:10px;">4️⃣ Prvé spustenie</p>
       <ol>
         <li>Zariadenie sa reštartuje, pripojí na WiFi a hlavná obrazovka ukáže kurz a zostatok tvojho Cash walletu. Ak ukazuje OFFLINE, skontroluj WiFi; ak 0, skontroluj Cash zostatok a API kľúč.</li>
-        <li>Nastavenia zmeníš cez AP portál: podrž <span class="kbd">BOOT</span> pri štarte (S3) alebo klikni na logo, pripoj sa na AP <strong>LN ATM-xxxx</strong> a otvor <strong>http://192.168.4.1</strong> (meno <strong>admin</strong> + tvoje heslo portálu).</li>
+        <li>Nastavenia zmeníš cez AP portál: podrž <span class="kbd">BOOT</span> pri štarte (S3) alebo klikni na logo, pripoj sa na AP <strong>LN ATM-xxxx</strong> (heslo portálu). Telefón by mal sám otvoriť nastavenia; inak otvor <strong>http://192.168.4.1/setup</strong> (WT32: <strong>http://192.168.4.1</strong>, meno <strong>admin</strong> + heslo).</li>
         <li>Skúšobná výplata: vlož najmenšiu bankovku a vyplať si ju do vlastnej peňaženky.</li>
       </ol>
     </div>
