@@ -1522,10 +1522,8 @@ void setup() {
     server.send(200, "text/html", page);
   });
   bootStage(40, "setup routes registered");
-
-  server.begin();
-  bootStage(41, "http server started");
-  bootStage(42, "portal ready");
+  // server.begin() až po inicializácii WiFi stacku (nižšie) - lwip musí bežať,
+  // inak assert "Invalid mbox" v tcpip_send_msg_wait_sem.
 
   // Create the loading indicator
   createLoadingIndicator();
@@ -1624,6 +1622,12 @@ void setup() {
   // STA: jeden blokujúci pokus (max. 12 s) VŽDY pred spustením AP. Ak sa
   // nepripojí, STA ostane nečinné - žiadne opakované skeny, ktoré by menili
   // kanál AP a zhadzovali telefóny.
+  // Inicializovať WiFi stack (lwip/tcpip) aj keď nemáme credentials -
+  // HTTP server ho potrebuje pri begin().
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  bootStage(46, "wifi stack initialized");
+
   WifiCredentials creds;
   const bool haveCreds = WifiPortal::loadCredentials(SPIFFS, creds);
   bool connected = false;
@@ -1639,6 +1643,9 @@ void setup() {
     Serial.println("WiFi not connected.");
   }
   bootStage(47, connected ? "wifi connected" : "wifi not connected");
+
+  server.begin();
+  bootStage(48, "http server started");
 
   portalRequiredForWifiRecovery = (wifiRequired && !connected);
   const bool openPortal =
@@ -1668,8 +1675,6 @@ void setup() {
     bootStage(49, "setup exits into portal mode");
     return;
   }
-  bootStage(48, "wifi or portal state evaluated");
-
   completeStartupAfterPortal();
 }
 
