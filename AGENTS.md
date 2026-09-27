@@ -9,7 +9,7 @@ Tento dokument popisuje kontext projektu a pravidlá pre úpravy kódu, aby agen
 - **Firmvér** pre zariadenie typu Bitcoin/Lightning ATM (fiat → Bitcoin/Lightning).
 - **Platforma:** ESP32-S3 (Sunton ESP32-8048S050), PlatformIO, Arduino framework.
 - **UI:** LVGL 8.1 na RGB displeji, dotyk TAMC_GT911.
-- **Funkcie:** prijímanie bankoviek (NV10USB+), LNbits/Blink integrácia, OTA aktualizácie, WiFi cez AutoConnect, konfigurácia cez web/SPIFFS.
+- **Funkcie:** prijímanie bankoviek (NV10USB+), LNbits/Blink integrácia, OTA aktualizácie, WiFi cez vlastný modul `WifiPortal` (S3) resp. AutoConnect (WT32), konfigurácia cez web/SPIFFS.
 
 ---
 
@@ -23,7 +23,7 @@ Tento dokument popisuje kontext projektu a pravidlá pre úpravy kódu, aby agen
 | `src/services/` | ConfigService, PaymentService, UiController – služby a čiastočná abstrakcia. |
 | `src/PriceBalanceTask.*` | Úloha pre ceny a balance. |
 | `src/SuntonDisplay.h` | Inicializácia a ovládanie RGB displeja. |
-| `src/page*.h` | Jednotlivé obrazovky/stránky UI (pagegui, pageota, pagefirst, pageone, pagesecond, pagethird). |
+| `src/page*.h` | Stránky portálu: `pagesetup.h` (S3, vlastný `/setup`), ostatné (pagegui, pageota, pagefirst, pageone, pagesecond, pagethird) sú AutoConnect stránky pre WT32. |
 | `src/lv_conf.h`, `lv_font_*.c` | Konfigurácia LVGL a fonty. |
 | `platformio.ini` | Build env `esp32-8048s050`, knižnice, build_flags (LVGL, PSRAM, stack). |
 | `docs/` | Dokumentácia (napr. `BILL_ACCEPTOR_NV10USB.md`). |

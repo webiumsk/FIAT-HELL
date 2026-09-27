@@ -1,6 +1,7 @@
 #pragma once
 
-// Mobile-friendly config portal page served at /setup when device is in AP mode.
+// Mobile-friendly config portal page served at /setup when the config AP is up
+// (see boards/s3/WifiPortal.h). Placeholders %%NAME%% are filled in main.cpp.
 // Uses CSS-only Blink/LNbits toggle (no JavaScript).
 // OTA upload is a separate form OUTSIDE the main settings form.
 static const char SETUP_PAGE_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
@@ -52,7 +53,8 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
 
 <div class="card">
 <h2>WiFi</h2>
-<p class="hint">Vyplň iba ak chceš zmeniť sieť. Prázdne pole zachová aktuálne nastavenie.</p>
+<p class="hint">Stav: <strong>%%WIFI_STATE%%</strong></p>
+<p class="hint">Vyplň iba ak chceš zmeniť sieť. Prázdne SSID zachová aktuálne nastavenie; prázdne heslo pri rovnakom SSID ponechá uložené.</p>
 <button type="button" class="secondary" onclick="scanWifi(this)">&#128269; Vyhľadať siete</button>
 <div id="wifi-list"></div>
 <label>SSID (názov siete)<input type="text" id="wifi_ssid" name="wifi_ssid" value="%%WIFI_SSID%%" autocomplete="off"></label>
@@ -65,6 +67,7 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
   <option value="CoinYEP"     %%RS_COINYEP%%>CoinYEP</option>
   <option value="Kraken"      %%RS_KRAKEN%%>Kraken</option>
   <option value="ExchangeApi" %%RS_EXCHANGEAPI%%>ExchangeApi (Fawaz)</option>
+  <option value="CoinGecko"   %%RS_COINGECKO%%>CoinGecko</option>
 </select>
 <p class="hint">Ak jeden zdroj nefunguje (HTTP -1 / connection refused v logu), skús iný.</p>
 </div>
@@ -143,6 +146,13 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
   <label>Vyber .bin súbor<input type="file" name="firmware" accept=".bin,application/octet-stream" required></label>
   <button type="submit" class="secondary">&#8593; Nahrať firmware</button>
 </form>
+<p class="hint" style="margin-top:14px">Alebo stiahni verziu z OTA servera (zariadenie musí byť pripojené na WiFi).</p>
+<button type="button" class="secondary" onclick="loadCatalog(this)">&#128268; Načítať verzie zo servera</button>
+<form method="POST" action="/setup/ota-run" id="ota-run" style="display:none" onsubmit="return confirm('Aktualizovať firmware zo servera?')">
+  <select name="file" id="ota-file" style="display:block;width:100%;padding:10px;margin-top:8px;background:#1e1e1e;color:#eee;border:1px solid #444;border-radius:6px;font-size:1em"></select>
+  <button type="submit" class="secondary">&#8595; Aktualizovať zo servera</button>
+</form>
+<div id="ota-msg" class="hint"></div>
 </div>
 
 <script>
@@ -192,6 +202,23 @@ function scanWifi(btn){
     });
   }
   poll();
+}
+function loadCatalog(btn){
+  var msg=document.getElementById('ota-msg'),frm=document.getElementById('ota-run'),sel=document.getElementById('ota-file');
+  var orig=btn.textContent;btn.disabled=true;btn.textContent='Načítavam…';msg.textContent='';
+  fetch('/setup/ota-catalog',{cache:'no-store'}).then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})
+  .then(function(res){
+    btn.disabled=false;btn.textContent=orig;
+    if(!res.ok||!Array.isArray(res.j)){msg.textContent=(res.j&&res.j.error)||'Katalóg sa nepodarilo načítať.';return;}
+    if(!res.j.length){msg.textContent='Na serveri nie sú žiadne verzie.';return;}
+    sel.innerHTML='';
+    res.j.forEach(function(f){
+      var o=document.createElement('option');o.value=f.name;
+      o.textContent=f.name+(f.date?' ('+f.date:'')+(f.size?(f.date?', ':' (')+Math.round(f.size/1024)+' KB':'')+((f.date||f.size)?')':'');
+      sel.appendChild(o);
+    });
+    frm.style.display='block';
+  }).catch(function(e){btn.disabled=false;btn.textContent=orig;msg.textContent='Chyba: '+e.message;});
 }
 </script>
 </body>

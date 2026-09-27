@@ -83,13 +83,11 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
   }
 }
 
-#include <AutoConnect.h>
-#include <AutoConnectCredential.h>
+#include "WifiPortal.h"
 #include <HTTPUpdate.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include "PriceBalanceTask.h"
-#define AUTOCONNECT_USE_LOG 1
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
 #include <JC_Button.h>
@@ -129,7 +127,7 @@ LV_IMG_DECLARE(lnbits);
 #include "services/UiController.h"
 // pageflashkey.h must come before the http/field alias macros below
 #include "pageflashkey.h"
-#include "pageota.h"
+#include "pagesetup.h"
 
 // Runtime-allocated to avoid pre-setup global constructors on ESP32.
 static DeviceState *deviceStatePtr = nullptr;
@@ -433,50 +431,8 @@ bool triggerAp = false;
 static String *contentPtr = nullptr;
 #define content (*contentPtr)
 
-#include "pagefirst.h"
-#include "pagegui.h"
-#include "pageone.h"
-#include "pagesecond.h"
-#include "pagethird.h"
-
 WebServerClass *serverPtr = nullptr;
-AutoConnect *portalPtr = nullptr;
 #define server (*serverPtr)
-#define portal (*portalPtr)
-AutoConnectConfig *configPtr = nullptr;
-AutoConnectAux *elementsAuxPtr = nullptr;
-AutoConnectAux *saveAuxPtr = nullptr;
-AutoConnectConfig *firstPtr = nullptr;
-AutoConnectAux *firstAuxPtr = nullptr;
-AutoConnectAux *savefirstAuxPtr = nullptr;
-AutoConnectConfig *secondPtr = nullptr;
-AutoConnectAux *secondAuxPtr = nullptr;
-AutoConnectAux *savesecondAuxPtr = nullptr;
-AutoConnectConfig *thirdPtr = nullptr;
-AutoConnectAux *thirdAuxPtr = nullptr;
-AutoConnectAux *savethirdAuxPtr = nullptr;
-AutoConnectConfig *guiPtr = nullptr;
-AutoConnectAux *guiAuxPtr = nullptr;
-AutoConnectAux *saveguiAuxPtr = nullptr;
-AutoConnectAux *otaAuxPtr = nullptr;
-AutoConnectAux *otaDoAuxPtr = nullptr;
-#define acConfig (*configPtr)
-#define elementsAux (*elementsAuxPtr)
-#define saveAux (*saveAuxPtr)
-#define first (*firstPtr)
-#define firstAux (*firstAuxPtr)
-#define savefirstAux (*savefirstAuxPtr)
-#define second (*secondPtr)
-#define secondAux (*secondAuxPtr)
-#define savesecondAux (*savesecondAuxPtr)
-#define third (*thirdPtr)
-#define thirdAux (*thirdAuxPtr)
-#define savethirdAux (*savethirdAuxPtr)
-#define gui (*guiPtr)
-#define   guiAux (*guiAuxPtr)
-#define otaAux (*otaAuxPtr)
-#define otaDoAux (*otaDoAuxPtr)
-#define saveguiAux (*saveguiAuxPtr)
 
 /*** Setup screen resolution for LVGL ***/
 static const uint16_t screenWidth = 800;
@@ -516,7 +472,6 @@ static long computeMixedTotalSats();
 static long computeMixedMaxSats();
 
 void checkNetworkAndDeviceStatus();
-void startConfigPortal();
 //void btn_reset_event_handler(lv_event_t *e);
 void handleUiStateMachine();
 
@@ -567,93 +522,8 @@ static int billAcceptorRead() {
   return -1;
 }
 
-static bool exitCaptivePortalLoopOnce = false;
 static bool suspendTouchPolling = false;
 
-// Own captive-portal DNS. AutoConnect only starts its DNS from handleClient
-// when its whileCaptivePortal callback returns true, and it isn't involved at
-// all when we bring up the AP manually - so the config AP had no DNS and
-// phones showed "connected, no internet" instead of the sign-in prompt.
-//
-// We answer every query with the softAP IP. The Arduino DNSServer mangles
-// EDNS0 queries (modern phones send them) into malformed replies, so this is
-// a minimal hand-rolled responder that drops the additional/OPT section and
-// returns a valid A answer. AutoConnect is told to keep off port 53 via the
-// whileCaptivePortal callback below.
-static WiFiUDP apDnsUdp;
-static bool apDnsRunning = false;
-
-static void ensureApDns() {
-  if (apDnsRunning) return;
-  if (!(WiFi.getMode() & WIFI_AP)) return;
-  if (apDnsUdp.begin(53)) {
-    apDnsRunning = true;
-    Serial.println("Captive DNS up -> " + WiFi.softAPIP().toString());
-  }
-}
-
-static void stopApDns() {
-  if (!apDnsRunning) return;
-  apDnsUdp.stop();
-  apDnsRunning = false;
-}
-
-// Handle one pending DNS query, if any. Returns true if a packet was serviced.
-static bool processApDnsOnce() {
-  const int avail = apDnsUdp.parsePacket();
-  if (avail <= 0) return false;
-
-  static uint8_t buf[512];
-  int n = apDnsUdp.read(buf, sizeof(buf));
-  if (n < 12) return true;              // too short to be a query
-  if (buf[2] & 0x80) return true;       // already a response, ignore
-
-  // Walk the first question: QNAME (labels) then QTYPE(2) + QCLASS(2).
-  int p = 12;
-  while (p < n && buf[p] != 0) {
-    if ((buf[p] & 0xC0) == 0xC0) { p += 2; goto have_end; } // compressed
-    p += buf[p] + 1;
-  }
-  if (p >= n) return true;
-  p += 1; // null label
-have_end:
-  if (p + 4 > n) return true;
-  const uint16_t qtype = (buf[p] << 8) | buf[p + 1];
-  const int qend = p + 4; // end of question section
-
-  // Response header: QR=1, AA=1, keep RD; RCODE=0.
-  buf[2] = 0x84 | (buf[2] & 0x01);
-  buf[3] = 0x00;
-  buf[6] = 0x00; buf[8] = 0x00; buf[10] = 0x00; buf[11] = 0x00; // NS/AR=0
-  // Answer only A queries with an address; anything else -> valid empty answer
-  // (NODATA) so EDNS/AAAA probes still get a well-formed reply.
-  const bool answerA = (qtype == 1);
-  buf[7] = answerA ? 0x01 : 0x00; // ANCOUNT
-
-  int outLen = qend;
-  if (answerA && qend + 16 <= (int)sizeof(buf)) {
-    uint8_t *a = buf + qend;
-    a[0] = 0xC0; a[1] = 0x0C;             // name -> pointer to question
-    a[2] = 0x00; a[3] = 0x01;             // TYPE A
-    a[4] = 0x00; a[5] = 0x01;             // CLASS IN
-    a[6] = 0; a[7] = 0; a[8] = 0; a[9] = 30; // TTL 30s
-    a[10] = 0x00; a[11] = 0x04;           // RDLENGTH 4
-    const IPAddress ip = WiFi.softAPIP();
-    a[12] = ip[0]; a[13] = ip[1]; a[14] = ip[2]; a[15] = ip[3];
-    outLen = qend + 16;
-  }
-
-  apDnsUdp.beginPacket(apDnsUdp.remoteIP(), apDnsUdp.remotePort());
-  apDnsUdp.write(buf, outLen);
-  apDnsUdp.endPacket();
-  return true;
-}
-
-// Drain a small burst of queries per loop so bursts aren't dropped.
-static void processApDns() {
-  for (int i = 0; i < 6 && processApDnsOnce(); i++) {
-  }
-}
 static bool pendingPortalCompletion = false;
 static bool appStartupCompleted = false;
 static bool portalRequestedByUser = false;
@@ -662,18 +532,6 @@ static bool portalRequiredForWifiRecovery = false;
 static bool portalNetworkStateLogged = false;
 static bool pendingConfigReload = false;
 static unsigned long pendingRestartAt = 0;
-
-static bool allowSetupToContinueWhilePortalStaysAlive() {
-  // When our own captive DNS owns port 53, returning false here keeps
-  // AutoConnect from starting a second DNS server on the same port.
-  if (apDnsRunning) return false;
-  if (exitCaptivePortalLoopOnce) {
-    exitCaptivePortalLoopOnce = false;
-    Serial.println("Leaving blocking captive portal loop; keeping portal alive");
-    return false;
-  }
-  return true;
-}
 
 void completeStartupAfterPortal() {
   if (appStartupCompleted) {
@@ -828,10 +686,6 @@ void reloadRuntimeConfigFromFlash() {
     strlcpy(lnbitsURL, baseURLATM1, sizeof(lnbitsURL));
   }
 
-  acConfig.psk = deviceState.password;
-  acConfig.password = deviceState.password;
-  portal.config(acConfig);
-
   if (appStartupCompleted) {
     uiController.deleteMainScreen();
     createMainScreen();
@@ -896,35 +750,16 @@ void setup() {
   sessionStatePtr = new SessionState();
   contentPtr = new String();
   serverPtr = new WebServerClass();
-  portalPtr = new AutoConnect(server);
   secureClientPtr = new WiFiClientSecure();
   httpPtr = new HTTPClient();
   serialPort1Ptr = new HardwareSerial(1);
   serialPort2Ptr = new HardwareSerial(2);
   BTNAPtr = new Button(BTN1);
-  configPtr = new AutoConnectConfig();
-  elementsAuxPtr = new AutoConnectAux();
-  saveAuxPtr = new AutoConnectAux();
-  firstPtr = new AutoConnectConfig();
-  firstAuxPtr = new AutoConnectAux();
-  savefirstAuxPtr = new AutoConnectAux();
-  secondPtr = new AutoConnectConfig();
-  secondAuxPtr = new AutoConnectAux();
-  savesecondAuxPtr = new AutoConnectAux();
-  thirdPtr = new AutoConnectConfig();
-  thirdAuxPtr = new AutoConnectAux();
-  savethirdAuxPtr = new AutoConnectAux();
-  guiPtr = new AutoConnectConfig();
-  guiAuxPtr = new AutoConnectAux();
-  saveguiAuxPtr = new AutoConnectAux();
-  otaAuxPtr = new AutoConnectAux();
-  otaDoAuxPtr = new AutoConnectAux();
   uiControllerPtr = new UiController(screen_logo, screen_portal, screen_api,
                                      screen_thx, screen_main,
                                      screen_insert_money, screen_qr);
   if ((deviceStatePtr == nullptr) || (sessionStatePtr == nullptr) ||
       (contentPtr == nullptr) || (serverPtr == nullptr) ||
-      (portalPtr == nullptr) ||
       (secureClientPtr == nullptr) || (httpPtr == nullptr) ||
       (serialPort1Ptr == nullptr) || (serialPort2Ptr == nullptr) ||
       (BTNAPtr == nullptr)) {
@@ -1077,70 +912,28 @@ void setup() {
   }
   bootStage(20, "main params loaded");
 
-  // Save WiFi credentials from /wifi.json into AutoConnect's NVS credential store.
-  // AutoConnect reads from there during portal.begin(), so this is the correct hook.
-  // The file is written by the web-flasher via USB serial (WRITE_CONFIG:/wifi.json).
-  {
-    File wifiFile = SPIFFS.open("/wifi.json", "r");
-    if (wifiFile) {
-      DynamicJsonDocument wifiDoc(256);
-      if (deserializeJson(wifiDoc, wifiFile) == DeserializationError::Ok) {
-        const char* ssid = wifiDoc["ssid"] | "";
-        const char* pwd  = wifiDoc["password"] | "";
-        if (ssid[0] != '\0') {
-          AutoConnectCredential cred;
-          station_config_t stConfig;
-          memset(&stConfig, 0, sizeof(stConfig));
-          strlcpy((char*)stConfig.ssid,     ssid, sizeof(stConfig.ssid));
-          strlcpy((char*)stConfig.password, pwd,  sizeof(stConfig.password));
-          memset(stConfig.bssid, 0, sizeof(stConfig.bssid));
-          stConfig.dhcp = STA_DHCP;
-          cred.save(&stConfig);
-          Serial.print("WiFi credentials saved to AutoConnect NVS: ");
-          Serial.println(ssid);
-          SPIFFS.remove("/wifi.json"); // consumed — don't re-apply on every boot
-        }
-      }
-      wifiFile.close();
-    }
-  }
-  bootStage(21, "wifi.json applied");
+  // /wifi.json (from the web flasher or /setup) is read by WifiPortal.
+  bootStage(21, "wifi credentials deferred to WifiPortal");
 
-  // Returns true only when the request comes from a client on the AP subnet.
-  // Blocks portal access from the STA (public WiFi) interface.
-  auto isApClient = []() -> bool {
-    const IPAddress c = server.client().remoteIP();
-    return c[0] == 192 && c[1] == 168 && c[2] == 4;
-  };
+  // true iba pre klientov z AP podsiete (192.168.4.x) - portál nie je
+  // dostupný zo STA (verejnej) siete.
+  auto isApClient = []() -> bool { return WifiPortal::isApClient(server); };
 
   server.on("/", [isApClient]() {
-    const bool routeToConfigPortal =
-        pendingPortalCompletion || portalRequestedByUser ||
-        portalRequiredForMissingConfig || portal.isPortalAvailable();
-    if (routeToConfigPortal) {
-      if (!isApClient()) {
-        server.send(403, "text/plain",
-          "Portal accessible only via AP — hold BOOT button 3 s to enable");
-        server.client().stop();
-        return;
-      }
-      server.sendHeader("Location", "/_ac", true);
+    if (isApClient()) {
+      server.sendHeader("Location", "/setup", true);
       server.send(302, "text/plain", "");
       server.client().stop();
       return;
     }
-
-    const String page = content + AUTOCONNECT_LINK(COG_24);
-    server.send(200, "text/html", page);
+    server.send(200, "text/html", content);
   });
   bootStage(22, "root route registered");
 
-  // Captive-portal probe URLs (generate_204, hotspot-detect.html, ...) are
-  // intentionally NOT handled here: AutoConnect's own onNotFound/_captivePortal
-  // catches them and replies with an absolute-URL 302 to the portal, which is
-  // what makes phones auto-open the sign-in page (matching WT32). Registering
-  // explicit handlers here would shadow that and only offer a relative
-  // redirect that Android won't auto-open.
+  // Captive probe URL (generate_204, hotspot-detect.html, ...) a onNotFound:
+  // AP klientov presmeruje absolútnou URL na /setup, aby telefón sám otvoril
+  // prihlasovaciu stránku.
+  WifiPortal::registerCaptiveRoutes(server, "/setup");
   server.on("/favicon.ico", []() { server.send(204, "text/plain", ""); });
 
   // On-device Flash API key wizard (see pageflashkey.h). AP-only: it creates
@@ -1165,26 +958,7 @@ void setup() {
   });
 
 
-  elementsAux.load(FPSTR(PAGE_ELEMENTS));
-  elementsAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    File param = FlashFS.open(PARAM_FILE, "r");
-    if (param) {
-      aux.loadElement(param,
-                      {"password", "atmdesc", "atmsubtitle", "atmtitle"});
-      param.close();
-    }
-
-    if (portal.where() == "/config") {
-      File param = FlashFS.open(PARAM_FILE, "r");
-      if (param) {
-        aux.loadElement(param,
-                        {"password", "atmdesc", "atmsubtitle", "atmtitle"});
-        param.close();
-      }
-    }
-    return String();
-  });
-  bootStage(22, "elements aux configured");
+  bootStage(22, "elements loaded");
 
   // First page start
   //  get the saved details and store in global variables
@@ -1207,22 +981,7 @@ void setup() {
   }
   bootStage(23, "first config loaded");
 
-  firstAux.load(FPSTR(PAGE_FIRST));
-  firstAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    configService.loadAuxConfig(FlashFS, FIRST_FILE, aux,
-                                {"blinkapikey", "blinkwalletid", "lnurl",
-                                 "adminkey", "readkey", "currencyOne",
-                                 "billmech", "maxamount", "charge1"});
-
-    if (portal.where() == "/first") {
-      configService.loadAuxConfig(FlashFS, FIRST_FILE, aux,
-                                  {"blinkapikey", "blinkwalletid", "lnurl",
-                                   "adminkey", "readkey", "currencyOne",
-                                   "billmech", "maxamount", "charge1"});
-    }
-    return String();
-  });
-  bootStage(24, "first aux configured");
+  bootStage(24, "first config applied");
 
   // Second page start
   // get the saved details and store in global variables
@@ -1241,19 +1000,7 @@ void setup() {
   }
   bootStage(25, "second config loaded");
 
-  secondAux.load(FPSTR(PAGE_SECOND));
-  secondAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    configService.loadAuxConfig(
-        FlashFS, SECOND_FILE, aux,
-        {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
-    if (portal.where() == "/second") {
-      configService.loadAuxConfig(
-          FlashFS, SECOND_FILE, aux,
-          {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
-    }
-    return String();
-  });
-  bootStage(26, "second aux configured");
+  bootStage(26, "second config applied");
 
   //*
   //*
@@ -1274,19 +1021,7 @@ void setup() {
   }
   bootStage(27, "third config loaded");
 
-  thirdAux.load(FPSTR(PAGE_THIRD));
-  thirdAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    configService.loadAuxConfig(
-        FlashFS, THIRD_FILE, aux,
-        {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
-    if (portal.where() == "/third") {
-      configService.loadAuxConfig(
-          FlashFS, THIRD_FILE, aux,
-          {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
-    }
-    return String();
-  });
-  bootStage(28, "third aux configured");
+  bootStage(28, "third config applied");
 
   bootStage(29, "before second filesystem init");
   FlashFS.begin(FORMAT_ON_FAIL);
@@ -1326,121 +1061,13 @@ void setup() {
   }
   bootStage(31, "gui config loaded");
 
-  guiAux.load(FPSTR(PAGE_GUI));
-  guiAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    File paramGui = FlashFS.open(GUI_FILE, "r");
-    if (paramGui) {
-      aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
-      paramGui.close();
-    }
-
-    if (portal.where() == "/gui") {
-      File paramGui = FlashFS.open(GUI_FILE, "r");
-      if (paramGui) {
-        aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
-        paramGui.close();
-      }
-    }
-    return String();
-  });
-  bootStage(32, "gui aux configured");
+  bootStage(32, "gui config applied");
 
   //*
   //*
   //*
   // Save page one
-  saveAux.load(FPSTR(PAGE_SAVE));
-  saveAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    aux["caption"].value = PARAM_FILE;
-    File param = FlashFS.open(PARAM_FILE, "w");
-    if (param) {
-      // save as a loadable set for parameters.
-      elementsAux.saveElement(
-          param, {"password", "atmdesc", "atmsubtitle", "atmtitle"});
-      param.close();
-      // read the saved elements again to display.
-      param = FlashFS.open(PARAM_FILE, "r");
-      aux["echo"].value = param.readString();
-      param.close();
-    } else {
-      aux["echo"].value = "Filesystem failed to open.";
-    }
-    pendingConfigReload = true;
-    return String();
-  });
-  bootStage(33, "save aux configured");
-
-  // Save first page
-  savefirstAux.load(FPSTR(FIRST_SAVE));
-  savefirstAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    aux["caption"].value = FIRST_FILE;
-    String echo;
-    if (configService.saveAuxConfig(FlashFS, FIRST_FILE, firstAux,
-                                    {"blinkapikey", "blinkwalletid", "lnurl",
-                                     "adminkey", "readkey", "currencyOne",
-                                     "billmech", "maxamount", "charge1"},
-                                    echo)) {
-      aux["echo"].value = echo;
-      pendingConfigReload = true;
-    } else {
-      aux["echo"].value = "Filesystem failed to open.";
-    }
-    return String();
-  });
-  bootStage(34, "save first aux configured");
-
-  // Save second page
-  savesecondAux.load(FPSTR(SECOND_SAVE));
-  savesecondAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    aux["caption"].value = SECOND_FILE;
-    String echo;
-    if (configService.saveAuxConfig(
-            FlashFS, SECOND_FILE, secondAux,
-            {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"},
-            echo)) {
-      aux["echo"].value = echo;
-      pendingConfigReload = true;
-    } else {
-      aux["echo"].value = "Filesystem failed to open.";
-    }
-    return String();
-  });
-  bootStage(35, "save second aux configured");
-
-  // Save third page
-  savethirdAux.load(FPSTR(THIRD_SAVE));
-  savethirdAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    aux["caption"].value = THIRD_FILE;
-    String echo;
-    if (configService.saveAuxConfig(
-            FlashFS, THIRD_FILE, thirdAux,
-            {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"},
-            echo)) {
-      aux["echo"].value = echo;
-      pendingConfigReload = true;
-    } else {
-      aux["echo"].value = "Filesystem failed to open.";
-    }
-    return String();
-  });
-  bootStage(36, "save third aux configured");
-
-  // Save gui page
-  saveguiAux.load(FPSTR(GUI_SAVE));
-  saveguiAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    aux["caption"].value = GUI_FILE;
-    String echo;
-    if (configService.saveAuxConfig(FlashFS, GUI_FILE, guiAux,
-                                    {"fundingsource", "ratesource", "animated"},
-                                    echo)) {
-      aux["echo"].value = echo;
-      pendingConfigReload = true;
-    } else {
-      aux["echo"].value = "Filesystem failed to open.";
-    }
-    return String();
-  });
-  bootStage(37, "save gui aux configured");
+  bootStage(37, "config pages served by /setup");
 
   originalSizeOne = billAmountIntOne.size();
   originalSizeTwo = billAmountIntTwo.size();
@@ -1461,109 +1088,394 @@ void setup() {
   bootStage(39, "bill vectors merged");
 
   /*********************************************************/
-  /*** Set AutoConnect before launching the portal       ***/
+  /*** Config portal: /setup (iba pre klientov z AP)      ***/
   /*********************************************************/
-  acConfig.auth = AC_AUTH_BASIC;
-  acConfig.authScope = AC_AUTHSCOPE_PORTAL;
-  acConfig.ticker = true;
-  acConfig.autoReset = false;
-  acConfig.autoReconnect = true;
-  acConfig.retainPortal = true;
-  acConfig.autoRise = false; // set dynamically during startup based on mode
-  acConfig.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  acConfig.psk = deviceState.password; // Password for AP
-  // AutoConnect 1.4.2 defaults apip to 172.217.28.1 (Google IP, surprising).
-  // Force the standard 192.168.4.0/24 so the apClient subnet check works
-  // and so users see a familiar AP IP in the browser URL bar.
-  acConfig.apip    = IPAddress(192, 168, 4, 1);
-  acConfig.gateway = IPAddress(192, 168, 4, 1);
-  acConfig.netmask = IPAddress(255, 255, 255, 0);
-  acConfig.menuItems =
-      AC_MENUITEM_CONFIGNEW | AC_MENUITEM_OPENSSIDS |
-      AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET | AC_MENUITEM_HOME;
-  acConfig.title = "LN ATM";
-  acConfig.homeUri = "/_ac";
-  acConfig.reconnectInterval = 1;
-  acConfig.channel = 6;        // Fixed channel for stable AP (avoids scan disrupting clients)
-  acConfig.beginTimeout = 12000; // 12 s — fast fallback to AP if saved WiFi unreachable
-  acConfig.immediateStart =
-      false; // If we don't have WiFi saved, it will start AP
-  acConfig.username = "admin";
-  acConfig.password = deviceState.password;
-  bootStage(40, "autoconnect config prepared");
+  server.on("/setup", HTTP_GET, [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "text/plain", "Setup only via AP — hold BOOT 3 s to enable");
+      return;
+    }
+    const bool isLNbitsMode = (strcmp(deviceStatePtr->fundingSourceBuffer, "LNbits") == 0);
+    const bool isFlashMode  = (strcmp(deviceStatePtr->fundingSourceBuffer, "Flash") == 0);
+    const char *rs = deviceStatePtr->rateSourceBuffer;
+    String html = FPSTR(SETUP_PAGE_HTML);
 
-  // Register all Aux pages to the portal
-  otaAux.load(FPSTR(PAGE_OTA));
-  otaAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    // Populate version select from catalog
+    const bool rsKraken      = (strcmp(rs, "Kraken")      == 0);
+    const bool rsExchangeApi = (strcmp(rs, "ExchangeApi") == 0);
+    const bool rsCoinGecko   = (strcmp(rs, "CoinGecko")   == 0);
+    html.replace(F("%%RS_KRAKEN%%"),      rsKraken      ? "selected" : "");
+    html.replace(F("%%RS_EXCHANGEAPI%%"), rsExchangeApi ? "selected" : "");
+    html.replace(F("%%RS_COINGECKO%%"),   rsCoinGecko   ? "selected" : "");
+    html.replace(F("%%RS_COINYEP%%"),
+                 (!rsKraken && !rsExchangeApi && !rsCoinGecko) ? "selected" : "");
+
+    auto esc = [](const char *v) -> String {
+      String out(v);
+      out.replace(F("&"), F("&amp;"));
+      out.replace(F("\""), F("&quot;"));
+      out.replace(F("<"), F("&lt;"));
+      out.replace(F(">"), F("&gt;"));
+      return out;
+    };
+    auto billsCsvFromVec = [](const std::vector<int> &v, size_t count) -> String {
+      String out;
+      for (size_t i = 0; i < v.size() && i < count; i++) {
+        if (i) out += ',';
+        out += v[i];
+      }
+      return out;
+    };
+
+    WifiCredentials creds;
+    WifiPortal::loadCredentials(SPIFFS, creds);
+    html.replace(F("%%WIFI_SSID%%"), esc(creds.valid ? creds.ssid : ""));
+    html.replace(F("%%WIFI_STATE%%"),
+                 wifiStatus() ? "pripojené, IP " + WiFi.localIP().toString()
+                              : String("nepripojené"));
+
+    html.replace(F("%%CHECKED_BLINK%%"),  (!isLNbitsMode && !isFlashMode) ? "checked" : "");
+    html.replace(F("%%CHECKED_LNBITS%%"), isLNbitsMode ? "checked" : "");
+    html.replace(F("%%CHECKED_FLASH%%"),  isFlashMode  ? "checked" : "");
+    html.replace(F("%%BLINK_APIKEY%%"),   esc(blinkapikey));
+    html.replace(F("%%BLINK_WALLET%%"),   esc(blinkwalletid));
+    html.replace(F("%%ADMINKEY%%"),       esc(adminkey));
+    html.replace(F("%%READKEY%%"),        esc(readkey));
+    html.replace(F("%%LNURL_BASE%%"),     esc(baseURLATM1));
+    html.replace(F("%%LNURL_SECRET%%"),   esc(secretATM1));
+    html.replace(F("%%CUR1_CODE%%"),      esc(currencyOne));
+    // billAmountIntOne má po štarte zlúčené aj meny 2 a 3 - vziať len prvú.
+    html.replace(F("%%CUR1_BILLS%%"),     billsCsvFromVec(billAmountIntOne, originalSizeOne));
+    html.replace(F("%%CUR1_MAX%%"),       String(maxamount, 0));
+    html.replace(F("%%CUR1_CHARGE%%"),    String(charge1, 2));
+    html.replace(F("%%ATM_TITLE%%"),      esc(atmtitle));
+    html.replace(F("%%ATM_SUBTITLE%%"),   esc(atmsubtitle));
+    html.replace(F("%%ATM_DESC%%"),       esc(atmdesc));
+
+    html.replace(F("%%CUR2_CODE%%"),         esc(currencyTwo));
+    html.replace(F("%%CUR2_LNURL_BASE%%"),   esc(baseURLATM2));
+    html.replace(F("%%CUR2_LNURL_SECRET%%"), esc(secretATM2));
+    html.replace(F("%%CUR2_BILLS%%"),        billsCsvFromVec(billAmountIntTwo, billAmountIntTwo.size()));
+    html.replace(F("%%CUR2_MAX%%"),          String(maxamount2, 0));
+    html.replace(F("%%CUR2_CHARGE%%"),       String(charge2, 2));
+
+    html.replace(F("%%CUR3_CODE%%"),         esc(currencyThree));
+    html.replace(F("%%CUR3_LNURL_BASE%%"),   esc(baseURLATM3));
+    html.replace(F("%%CUR3_LNURL_SECRET%%"), esc(secretATM3));
+    html.replace(F("%%CUR3_BILLS%%"),        billsCsvFromVec(billAmountIntThree, billAmountIntThree.size()));
+    html.replace(F("%%CUR3_MAX%%"),          String(maxamount3, 0));
+    html.replace(F("%%CUR3_CHARGE%%"),       String(charge3, 2));
+
+    html.replace(F("%%FW_VERSION%%"), F(FW_VERSION));
+
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "text/html", html);
+  });
+
+  // Sken WiFi sietí: JSON [{ssid,rssi,secure}], zoradené podľa RSSI.
+  // Asynchrónne - synchrónny sken by na sekundy rozhodil AP a zhodil telefón
+  // uprostred requestu. Vracia {"scanning":true}, klient polluje.
+  server.on("/setup/wifi-scan", HTTP_GET, [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "application/json", "[]");
+      return;
+    }
+    if (!(WiFi.getMode() & WIFI_MODE_STA)) {
+      WiFi.mode(WIFI_AP_STA);
+    }
+    const int st = WiFi.scanComplete();
+    if (st == WIFI_SCAN_RUNNING) {
+      server.send(200, "application/json", "{\"scanning\":true}");
+      return;
+    }
+    if (st == WIFI_SCAN_FAILED) {
+      WiFi.scanNetworks(true, false);
+      server.send(200, "application/json", "{\"scanning\":true}");
+      return;
+    }
+    const int n = st;
+    struct Net { String ssid; int rssi; bool secure; };
+    std::vector<Net> nets;
+    nets.reserve(n);
+    for (int i = 0; i < n; i++) {
+      const String ssid = WiFi.SSID(i);
+      if (ssid.length() == 0) continue;
+      bool merged = false;
+      for (auto &e : nets) {
+        if (e.ssid == ssid) {
+          merged = true;
+          if (WiFi.RSSI(i) > e.rssi) {
+            e.rssi   = WiFi.RSSI(i);
+            e.secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+          }
+          break;
+        }
+      }
+      if (!merged) {
+        nets.push_back({ssid, WiFi.RSSI(i), WiFi.encryptionType(i) != WIFI_AUTH_OPEN});
+      }
+    }
+    WiFi.scanDelete();
+    std::sort(nets.begin(), nets.end(),
+              [](const Net &a, const Net &b) { return a.rssi > b.rssi; });
+    if (nets.size() > 30) nets.resize(30);
+
+    DynamicJsonDocument doc(4096);
+    JsonArray arr = doc.to<JsonArray>();
+    for (auto &nt : nets) {
+      JsonObject o = arr.createNestedObject();
+      o["ssid"]   = nt.ssid;
+      o["rssi"]   = nt.rssi;
+      o["secure"] = nt.secure;
+    }
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+  });
+
+  server.on("/setup/save", HTTP_POST, [isApClient]() {
+    if (!isApClient()) {
+      server.send(403, "text/plain", "Setup only via AP");
+      return;
+    }
+
+    // WiFi: prázdne SSID = nemeniť; prázdne heslo pri rovnakom SSID = nechať.
+    {
+      const String newSsid = server.arg("wifi_ssid");
+      const String newPwd  = server.arg("wifi_password");
+      if (newSsid.length() > 0) {
+        WifiCredentials cur;
+        WifiPortal::loadCredentials(SPIFFS, cur);
+        const bool keepPwd =
+            (newPwd.length() == 0 && cur.valid && newSsid == cur.ssid);
+        WifiPortal::saveCredentials(SPIFFS, newSsid.c_str(),
+                                    keepPwd ? cur.password : newPwd.c_str());
+      }
+    }
+
+    // elements.json — [{name,value},...]
+    {
+      DynamicJsonDocument doc(512);
+      JsonArray arr = doc.to<JsonArray>();
+      auto add = [&](const char *n, const String &v) {
+        JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
+      };
+      const String newPwd = server.arg("ap_password");
+      const String title  = server.arg("atm_title");
+      add("password",    newPwd.length() >= 8 ? newPwd : String(deviceStatePtr->password));
+      add("atmdesc",     server.arg("atm_desc"));
+      add("atmsubtitle", server.arg("atm_subtitle"));
+      add("atmtitle",    title.length() ? title : "FIAT HELL");
+      File f = FlashFS.open(PARAM_FILE, "w");
+      if (f) { serializeJson(doc, f); f.close(); }
+    }
+
+    // gui.json — funding + rate source; animated zachovať
+    {
+      GuiConfig gui;
+      if (!configService.loadGuiConfig(FlashFS, GUI_FILE, gui)) {
+        strlcpy(gui.rateSource, "CoinYEP", sizeof(gui.rateSource));
+        strlcpy(gui.animated,   "No",      sizeof(gui.animated));
+      }
+      const String funding = server.arg("funding");
+      strlcpy(gui.fundingSource,
+              (funding == "LNbits")  ? "LNbits"
+              : (funding == "Flash") ? "Flash"
+                                     : "Blink",
+              sizeof(gui.fundingSource));
+      const String rs = server.arg("ratesource");
+      if (rs == "CoinYEP" || rs == "Kraken" || rs == "ExchangeApi" || rs == "CoinGecko") {
+        strlcpy(gui.rateSource, rs.c_str(), sizeof(gui.rateSource));
+      }
+      configService.saveGuiConfig(FlashFS, GUI_FILE, gui);
+    }
+
+    // first.json — poradie musí sedieť s ConfigService::loadFirst()
+    {
+      DynamicJsonDocument doc(1024);
+      JsonArray arr = doc.to<JsonArray>();
+      const bool isLNbitsMode = (server.arg("funding") == "LNbits");
+      const String lnurlVal = server.arg("lnurl_base") + "," +
+                              server.arg("lnurl_secret") + "," +
+                              server.arg("cur1_code");
+      auto add = [&](const char *n, const String &v) {
+        JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
+      };
+      add("blinkapikey",   isLNbitsMode ? "" : server.arg("blink_apikey"));
+      add("blinkwalletid", isLNbitsMode ? "" : server.arg("blink_wallet"));
+      add("lnurl",         isLNbitsMode ? lnurlVal : "");
+      add("adminkey",      isLNbitsMode ? server.arg("adminkey") : "");
+      add("readkey",       isLNbitsMode ? server.arg("readkey")  : "");
+      add("currencyOne",   server.arg("cur1_code"));
+      add("billmech",      server.arg("cur1_bills"));
+      add("maxamount",     server.arg("cur1_max"));
+      add("charge1",       server.arg("cur1_charge"));
+      File f = FlashFS.open(FIRST_FILE, "w");
+      if (f) { serializeJson(doc, f); f.close(); }
+    }
+
+    // second.json / third.json — zapísať iba ak je kód meny, inak zmazať
+    auto saveExtraCurrency = [&](const char *path, const char *prefix,
+                                 const char *nCode, const char *nLnurl,
+                                 const char *nBills, const char *nMax,
+                                 const char *nCharge) {
+      const String pre(prefix);
+      const String code = server.arg(pre + "code");
+      if (code.length() == 0) {
+        FlashFS.remove(path);
+        return;
+      }
+      DynamicJsonDocument doc(1024);
+      JsonArray arr = doc.to<JsonArray>();
+      auto add = [&](const char *n, const String &v) {
+        JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
+      };
+      add(nCode,   code);
+      add(nLnurl,  server.arg(pre + "lnurl_base") + "," +
+                   server.arg(pre + "lnurl_secret") + "," + code);
+      add(nBills,  server.arg(pre + "bills"));
+      add(nMax,    server.arg(pre + "max"));
+      add(nCharge, server.arg(pre + "charge"));
+      File f = FlashFS.open(path, "w");
+      if (f) { serializeJson(doc, f); f.close(); }
+    };
+    saveExtraCurrency(SECOND_FILE, "cur2_", "currencyTwo",   "lnurl2", "billmech2", "maxamount2", "charge2");
+    saveExtraCurrency(THIRD_FILE,  "cur3_", "currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3");
+
+    server.send(200, "text/html",
+      "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
+      "<body style='background:#111;color:#eee;font-family:sans-serif;padding:32px;text-align:center'>"
+      "<h2 style='color:#f90'>&#10003; Uložené</h2>"
+      "<p>Zariadenie sa reštartuje za 2 sekundy…</p>"
+      "</body></html>");
+    pendingRestartAt = millis() + 2000UL;
+  });
+
+  // OTA z telefónu: multipart upload .bin cez AP, internet netreba.
+  server.on("/setup/ota", HTTP_POST,
+    [isApClient]() {
+      if (!isApClient()) { server.send(403, "text/plain", "AP only"); return; }
+      const bool ok = !otaUploadAborted && !Update.hasError();
+      String page = F("<html><head><meta charset='utf-8'></head><body style='background:#111;color:#eee;font-family:sans-serif;padding:32px;text-align:center'>");
+      if (ok) {
+        page += F("<h2 style='color:#0c0'>&#10003; Firmware nahraný</h2>"
+                  "<p>Zariadenie sa reštartuje za 2 sekundy…</p>");
+      } else {
+        page += F("<h2 style='color:#f33'>&#10007; Chyba</h2><p>");
+        page += Update.errorString();
+        page += F("</p><a href='/setup' style='color:#f90'>&#8592; Späť</a>");
+      }
+      page += F("</body></html>");
+      server.send(200, "text/html", page);
+      if (otaUploadOverlay) {
+        lv_obj_del(otaUploadOverlay);
+        otaUploadOverlay = nullptr;
+        lv_task_handler();
+      }
+      if (ok) pendingRestartAt = millis() + 2000UL;
+    },
+    [isApClient]() {
+      HTTPUpload &up = server.upload();
+      if (up.status == UPLOAD_FILE_START) {
+        otaUploadAborted = !isApClient();
+        if (otaUploadAborted) return;
+        Serial.printf("OTA upload begin: %s\n", up.filename.c_str());
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+          otaUploadAborted = true;
+          Update.printError(Serial);
+          return;
+        }
+        otaUploadOverlay = lv_obj_create(lv_scr_act());
+        lv_obj_set_size(otaUploadOverlay, screenWidth, screenHeight);
+        lv_obj_set_pos(otaUploadOverlay, 0, 0);
+        lv_obj_set_style_bg_color(otaUploadOverlay, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(otaUploadOverlay, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(otaUploadOverlay, 0, 0);
+        lv_obj_clear_flag(otaUploadOverlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t *l = lv_label_create(otaUploadOverlay);
+        lv_label_set_text(l, "Nahravam firmware...");
+        lv_obj_center(l);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_22, 0);
+        lv_obj_set_style_text_color(l, lv_color_white(), 0);
+        lv_obj_move_foreground(otaUploadOverlay);
+        lv_task_handler();
+      } else if (up.status == UPLOAD_FILE_WRITE && !otaUploadAborted) {
+        if (Update.write(up.buf, up.currentSize) != up.currentSize) {
+          otaUploadAborted = true;
+          Update.printError(Serial);
+        }
+      } else if (up.status == UPLOAD_FILE_END && !otaUploadAborted) {
+        if (!Update.end(true)) {
+          otaUploadAborted = true;
+          Update.printError(Serial);
+        } else {
+          Serial.printf("OTA OK: %u bytes\n", up.totalSize);
+        }
+      } else if (up.status == UPLOAD_FILE_ABORTED) {
+        otaUploadAborted = true;
+        Update.abort();
+      }
+      yield();
+    });
+
+  // OTA zo servera: zoznam verzií z katalógu (JSON [{name,date,size}]).
+  server.on("/setup/ota-catalog", HTTP_GET, [isApClient]() {
+    if (!isApClient()) { server.send(403, "application/json", "[]"); return; }
+    if (!wifiStatus()) {
+      server.send(503, "application/json", "{\"error\":\"Zariadenie nie je pripojené na WiFi\"}");
+      return;
+    }
     WiFiClientSecure client;
     client.setInsecure();
     HTTPClient catalogHttp;
     catalogHttp.setTimeout(8000);
+    String out = "{\"error\":\"Katalóg sa nepodarilo načítať\"}";
+    int status = 502;
     if (catalogHttp.begin(client, OTA_CATALOG_URL)) {
-      int code = catalogHttp.GET();
-      if (code == 200) {
-        String payload = catalogHttp.getString();
-        DynamicJsonDocument doc(2048);
-        if (deserializeJson(doc, payload) == DeserializationError::Ok &&
+      if (catalogHttp.GET() == 200) {
+        DynamicJsonDocument doc(4096);
+        if (deserializeJson(doc, catalogHttp.getString()) == DeserializationError::Ok &&
             doc.is<JsonArray>()) {
-          AutoConnectSelect &versionSelect =
-              aux["version"].as<AutoConnectSelect>();
-          versionSelect.empty(16);
+          DynamicJsonDocument res(4096);
+          JsonArray arr = res.to<JsonArray>();
           for (JsonObject item : doc.as<JsonArray>()) {
             const char *name = item["name"];
-            if (name && item["type"] == "bin") {
-              const char *date = item["date"] | "";
-              size_t sizeVal = item["size"] | 0;
-              String label = String(name);
-              if (date[0])
-                label += " (" + String(date);
-              if (sizeVal > 0)
-                label += date[0] ? ", " : " (";
-              if (sizeVal > 0)
-                label += String(sizeVal / 1024) + " KB";
-              if (date[0] || sizeVal > 0)
-                label += ")";
-              versionSelect.add(label);
-            }
+            if (!name || item["type"] != "bin") continue;
+            JsonObject o = arr.createNestedObject();
+            o["name"] = name;
+            o["date"] = item["date"] | "";
+            o["size"] = item["size"] | 0;
           }
-          if (versionSelect.size() == 0)
-            versionSelect.add("No firmware found");
-        } else {
-          aux["version"].as<AutoConnectSelect>().empty(1);
-          aux["version"].as<AutoConnectSelect>().add("Catalog parse error");
+          out = "";
+          serializeJson(res, out);
+          status = 200;
         }
-      } else {
-        aux["version"].as<AutoConnectSelect>().empty(1);
-        aux["version"].as<AutoConnectSelect>().add("Catalog fetch failed");
       }
       catalogHttp.end();
-    } else {
-      aux["version"].as<AutoConnectSelect>().empty(1);
-      aux["version"].as<AutoConnectSelect>().add("Connection failed");
     }
-    return String();
-  }, AC_EXIT_AHEAD);
-  otaDoAux.load(FPSTR(PAGE_OTA_DO));
-  otaDoAux.on([](AutoConnectAux &aux, PageArgument &arg) {
-    String selected = arg.arg("version");
-    // Extract filename: "fiat-hell-v1.2.0.bin (2026-03-08, 1911 KB)" -> "fiat-hell-v1.2.0.bin"
-    int parenIdx = selected.indexOf(" (");
-    String filename = parenIdx > 0 ? selected.substring(0, parenIdx) : selected;
+    server.send(status, "application/json", out);
+  });
+
+  // OTA zo servera: stiahnuť a nahrať vybranú verziu (HTTPS).
+  server.on("/setup/ota-run", HTTP_POST, [isApClient]() {
+    if (!isApClient()) { server.send(403, "text/plain", "AP only"); return; }
+    String filename = server.arg("file");
     filename.trim();
-    if (!filename.endsWith(".bin"))
-      filename = "";
-    if (filename.length() == 0) {
-      aux["result"].value = "No version selected.";
-      return String();
+    if (!filename.endsWith(".bin") || filename.indexOf('/') >= 0 ||
+        filename.indexOf("..") >= 0) {
+      server.send(400, "text/plain", "Neplatný súbor");
+      return;
     }
-    String updateUrl = String(OTA_BASE_URL) + "/" + filename;
+    if (!wifiStatus()) {
+      server.send(503, "text/plain", "Zariadenie nie je pripojené na WiFi");
+      return;
+    }
+    const String updateUrl = String(OTA_BASE_URL) + "/" + filename;
     WiFiClientSecure client;
     client.setInsecure();
     HTTPUpdate updater;
-    updater.setLedPin(-1); // Disable LED – GPIO2 is backlight on this display
-    updater.rebootOnUpdate(true);
-    // Show OTA overlay on display so user sees clear feedback (no blinking)
+    updater.setLedPin(-1); // GPIO2 je podsvietenie displeja
+    updater.rebootOnUpdate(false);
+
     static lv_obj_t *otaOverlay = nullptr;
     otaOverlay = lv_obj_create(lv_scr_act());
     lv_obj_set_size(otaOverlay, screenWidth, screenHeight);
@@ -1578,53 +1490,42 @@ void setup() {
     lv_obj_set_style_text_font(otaLabel, &lv_font_montserrat_22, 0);
     lv_obj_set_style_text_color(otaLabel, lv_color_white(), 0);
     lv_obj_move_foreground(otaOverlay);
-    for (int i = 0; i < 8; i++) {
-      lv_task_handler();
-      delay(30);
-    }
-    updater.onStart([]() {
-      if (otaOverlay) {
-        lv_label_set_text(lv_obj_get_child(otaOverlay, 0),
-                          "Downloading firmware...");
-        lv_task_handler();
-      }
-    });
+    for (int i = 0; i < 8; i++) { lv_task_handler(); delay(30); }
     updater.onProgress([](int curBytes, int totalBytes) {
       if (otaOverlay && totalBytes > 0) {
-        int pct = (int)((100ULL * curBytes) / totalBytes);
         char buf[48];
-        snprintf(buf, sizeof(buf), "Downloading... %d%%", pct);
+        snprintf(buf, sizeof(buf), "Downloading... %d%%",
+                 (int)((100ULL * curBytes) / totalBytes));
         lv_label_set_text(lv_obj_get_child(otaOverlay, 0), buf);
       }
       lv_task_handler();
       yield();
     });
-    HTTPUpdateResult updateResult = updater.update(client, updateUrl);
+    const HTTPUpdateResult r = updater.update(client, updateUrl);
     if (otaOverlay) {
       lv_obj_del(otaOverlay);
       otaOverlay = nullptr;
       lv_task_handler();
     }
-    if (updateResult == HTTP_UPDATE_OK) {
-      aux["result"].value = "Update OK. Rebooting...";
-      return String();
+    String page = F("<html><head><meta charset='utf-8'></head><body style='background:#111;color:#eee;font-family:sans-serif;padding:32px;text-align:center'>");
+    if (r == HTTP_UPDATE_OK) {
+      page += F("<h2 style='color:#0c0'>&#10003; Aktualizované</h2><p>Zariadenie sa reštartuje za 2 sekundy…</p>");
+      pendingRestartAt = millis() + 2000UL;
+    } else if (r == HTTP_UPDATE_NO_UPDATES) {
+      page += F("<h2>Žiadna aktualizácia</h2><a href='/setup' style='color:#f90'>&#8592; Späť</a>");
+    } else {
+      page += F("<h2 style='color:#f33'>&#10007; Chyba</h2><p>");
+      page += updater.getLastErrorString();
+      page += F("</p><a href='/setup' style='color:#f90'>&#8592; Späť</a>");
     }
-    if (updateResult == HTTP_UPDATE_NO_UPDATES) {
-      aux["result"].value = "No update available.";
-      return String();
-    }
-    aux["result"].value =
-        "Update failed: " + updater.getLastErrorString();
-    return String();
-  }, AC_EXIT_AHEAD);
-  portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
-               savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux,
-               otaAux, otaDoAux});
-  bootStage(41, "portal aux pages joined");
+    page += F("</body></html>");
+    server.send(200, "text/html", page);
+  });
+  bootStage(40, "setup routes registered");
 
-  // Apply config
-  portal.config(acConfig);
-  bootStage(42, "portal config applied");
+  server.begin();
+  bootStage(41, "http server started");
+  bootStage(42, "portal ready");
 
   // Create the loading indicator
   createLoadingIndicator();
@@ -1669,7 +1570,7 @@ void setup() {
   Serial.println(charge1);*/
 
   /**************************************************************************/
-  /***  Starting AutoConnect - connection attempt or AP (portal)         ***/
+  /***  WiFi: jeden pokus o STA (blokujúci), potom prípadne konfiguračné AP ***/
   /**************************************************************************/
 
   const bool isGaloyMode =
@@ -1688,38 +1589,8 @@ void setup() {
         blinkwalletid[0] == '\0') ||
        (currencyOne[0] == '\0'));
 
-  const bool shouldOpenPortalNow =
-      (userWantsPortal || apiDataMissing || (wifiRequired && !wifiStatus()));
-  const bool showPortalScreenImmediately =
-      (userWantsPortal || apiDataMissing);
-
   portalRequestedByUser = userWantsPortal;
   portalRequiredForMissingConfig = apiDataMissing;
-  portalRequiredForWifiRecovery = (wifiRequired && !wifiStatus());
-
-  // In config-first mode, keep the AP stable for phones instead of trying to
-  // reconnect to a remembered WiFi in the background. Background STA scans in
-  // AP+STA mode make the SoftAP hop channels, so phones drop the connection
-  // ("connects and disconnects") - so we also stop retries when the portal is
-  // up because WiFi failed (the recovery case), not just on explicit entry.
-  const bool portalActiveNow = portalRequestedByUser ||
-                               portalRequiredForMissingConfig ||
-                               portalRequiredForWifiRecovery;
-  acConfig.autoReconnect = !portalActiveNow;
-  acConfig.reconnectInterval = portalActiveNow ? 0 : 1;
-  acConfig.preserveAPMode = portalActiveNow;
-
-  // Decide portal behavior once, then call portal.begin() once.
-  acConfig.immediateStart = (userWantsPortal || apiDataMissing);
-  acConfig.autoRise = (userWantsPortal || apiDataMissing || wifiRequired);
-  exitCaptivePortalLoopOnce = shouldOpenPortalNow;
-  portal.whileCaptivePortal(allowSetupToContinueWhilePortalStaysAlive);
-
-  if (portalActiveNow) {
-    Serial.println("Config portal active: stopping STA retries to keep captive AP stable");
-    WiFi.setAutoReconnect(false);
-    WiFi.disconnect(false, false);
-  }
 
   if (isGaloyMode) {
     Serial.print(deviceState.fundingSourceBuffer);
@@ -1733,16 +1604,16 @@ void setup() {
   }
 
   if (userWantsPortal) {
-    Serial.println("User tap => start AP portal immediately");
+    Serial.println("User tap => config AP after STA attempt");
   } else if (apiDataMissing) {
-    Serial.println("API data missing => start AP portal immediately");
+    Serial.println("API data missing => config AP after STA attempt");
   } else {
     Serial.println("No tap => try STA first");
   }
   bootStage(44, "portal mode decision made");
 
   bool portalScreenShown = false;
-  if (showPortalScreenImmediately) {
+  if (userWantsPortal || apiDataMissing) {
     createPortalScreen();
     lv_task_handler();
     delay(50);
@@ -1750,51 +1621,54 @@ void setup() {
     portalScreenShown = true;
   }
 
-  portal.config(acConfig);
-  bootStage(46, "portal config re-applied");
-  Serial.println("Attempting to connect via AutoConnect...");
-  (void)portal.begin(); // may connect STA or start AP depending on config
-  bootStage(47, "portal begin returned");
-
-  // NOTE: we intentionally do NOT register our own onNotFound here. AutoConnect
-  // installs its _handleNotFound/_captivePortal in begin(); leaving it in place
-  // gives WT32-identical captive behaviour (absolute-URL 302 to the portal,
-  // host-header based) so phones auto-open the sign-in page.
-
-  if (wifiStatus()) {
+  // STA: jeden blokujúci pokus (max. 12 s) VŽDY pred spustením AP. Ak sa
+  // nepripojí, STA ostane nečinné - žiadne opakované skeny, ktoré by menili
+  // kanál AP a zhadzovali telefóny.
+  WifiCredentials creds;
+  const bool haveCreds = WifiPortal::loadCredentials(SPIFFS, creds);
+  bool connected = false;
+  if (haveCreds) {
+    Serial.println("WiFi: connecting to " + String(creds.ssid));
+    connected = WifiPortal::connectSta(creds, 12000, []() { lv_task_handler(); });
+  } else {
+    Serial.println("WiFi: no saved credentials");
+  }
+  if (connected) {
     Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
-    if (wifiRequired) {
-      // If you don't want to leave the AP on, switch to STA only
-      WiFi.mode(WIFI_STA);
-    }
   } else {
     Serial.println("WiFi not connected.");
-    if (acConfig.autoRise) {
-      if (!portalScreenShown) {
-        createPortalScreen();
-        lv_task_handler();
-        delay(50);
-        bootStage(45, "portal screen shown");
-        portalScreenShown = true;
-      }
-      Serial.println("Portal available. AP Name: " + acConfig.apid);
-      Serial.println("Portal AP IP: " + WiFi.softAPIP().toString());
-      ensureApDns();
-      if (MDNS.begin("fiathell")) {
-        MDNS.addService("http", "tcp", 80);
-        Serial.println("mDNS: http://fiathell.local (config AP)");
-      }
-      digitalWrite(11, LOW);
-    }
   }
-  bootStage(48, "wifi or portal state evaluated");
+  bootStage(47, connected ? "wifi connected" : "wifi not connected");
 
-  // If portal is required (tap / missing data / Blink no-wifi), stay in portal.
-  if (userWantsPortal || apiDataMissing || (wifiRequired && !wifiStatus())) {
+  portalRequiredForWifiRecovery = (wifiRequired && !connected);
+  const bool openPortal =
+      userWantsPortal || apiDataMissing || portalRequiredForWifiRecovery;
+
+  if (openPortal) {
+    if (!portalScreenShown) {
+      createPortalScreen();
+      lv_task_handler();
+      delay(50);
+      bootStage(45, "portal screen shown");
+      portalScreenShown = true;
+    }
+    const String apName = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+    WifiPortal::startAp(apName, String(deviceState.password));
+    // Recovery (WiFi nutné, ale nedostupné): skúšať STA každých 5 min.
+    // Každý pokus na chvíľu rozhodí AP, preto tak zriedka.
+    WifiPortal::setBackgroundStaRetry(portalRequiredForWifiRecovery && haveCreds,
+                                      5UL * 60UL * 1000UL);
+    if (MDNS.begin("fiathell")) {
+      MDNS.addService("http", "tcp", 80);
+      Serial.println("mDNS: http://fiathell.local (config AP)");
+    }
+    digitalWrite(11, LOW);
+    Serial.println("Portal: http://" + WifiPortal::apIp().toString() + "/setup");
     pendingPortalCompletion = true;
     bootStage(49, "setup exits into portal mode");
     return;
   }
+  bootStage(48, "wifi or portal state evaluated");
 
   completeStartupAfterPortal();
 }
@@ -1955,7 +1829,7 @@ void createPortalScreen() {
   lv_obj_set_style_text_font(portaltext2b, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(portaltext2b, LV_COLOR_WHITE, 0);*/
 
-  String LVGL_PORTAL_URL = "http://fiathell.local  alebo  http://192.168.4.1";
+  String LVGL_PORTAL_URL = "http://192.168.4.1/setup   (alebo http://fiathell.local)";
   lv_obj_t *portalurl = lv_label_create(screen_portal);
   lv_label_set_text(portalurl, LVGL_PORTAL_URL.c_str());
   lv_obj_align(portalurl, LV_ALIGN_TOP_MID, 0, 198);
@@ -3529,32 +3403,6 @@ void printHeapStatus() {
   }
 }*/
 
-/**
- * @brief Starts the configuration portal.
- *
- * This function is responsible for starting the configuration portal, which
- * allows the user to configure the device settings. It assumes that the
- * 'config' and 'portal' objects have been previously defined and configured
- * appropriately.
- *
- * @note This function enters an infinite loop until the configuration process
- * is completed.
- */
-void startConfigPortal() {
-  Serial.println("Entered Config Portal");
-
-  // Assume config and portal are previously defined and configured
-  // appropriately
-  acConfig.immediateStart = true;
-  portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
-               savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux,
-               otaAux, otaDoAux});
-  portal.config(acConfig);
-  portal.begin();
-  Serial.println("Portal started. IP2: " + WiFi.localIP().toString());
-  // No infinite loop; portal.handleClient() is called in the main loop
-  // timer = 2000;
-}
 
 /* Back button */
 
@@ -3607,15 +3455,12 @@ static unsigned long configModeActiveUntil = 0;
 
 void triggerRuntimeConfigMode() {
   if (configModeActiveUntil) return; // already active
-  portalRequestedByUser   = true;
-  acConfig.preserveAPMode = true;
-  acConfig.autoReconnect  = false;
-  portal.config(acConfig);
-  if (!(WiFi.getMode() & WIFI_AP)) WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str(), acConfig.channel);
-  ensureApDns();
+  portalRequestedByUser = true;
+  WifiPortal::startAp("LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX),
+                      String(deviceState.password));
   configModeActiveUntil = millis() + 5UL * 60UL * 1000UL;
-  Serial.println("Config mode active: " + acConfig.apid + " -> 192.168.4.1  (5 min)");
+  Serial.println("Config mode active: " + WifiPortal::apSsid() +
+                 " -> 192.168.4.1/setup  (5 min)");
 }
 
 void handleUiStateMachine() {
@@ -3775,62 +3620,42 @@ void loop() {
   // Auto-close config mode AP after 5-minute timeout (defensive — only ever
   // triggered if triggerRuntimeConfigMode() was called by some future caller).
   if (configModeActiveUntil && millis() > configModeActiveUntil) {
-    configModeActiveUntil   = 0;
-    portalRequestedByUser   = false;
-    acConfig.preserveAPMode = false;
-    acConfig.autoReconnect  = true;
-    portal.config(acConfig);
-    stopApDns();
-    if (WiFi.getMode() & WIFI_AP) WiFi.mode(WIFI_STA);
+    configModeActiveUntil = 0;
+    portalRequestedByUser = false;
+    WifiPortal::stopAp();
     Serial.println("Config mode timed out — AP closed");
   }
 
   lv_timer_handler();    // Let the GUI do its work
 
-  // Own captive-portal DNS: claim port 53 before AutoConnect's handleClient so
-  // its callback keeps it from starting a second resolver. Keep it running
-  // while the AP is up (so the sign-in prompt appears on phones), stop it once
-  // the AP is gone.
-  if (WiFi.getMode() & WIFI_AP) {
-    ensureApDns();
-    if (apDnsRunning) processApDns();
-  } else {
-    stopApDns();
-  }
-
-  portal.handleClient(); // Already non‑blocking
+  WifiPortal::loop();    // captive DNS (AP), STA watchdog
+  server.handleClient(); // non-blocking
 
   if (pendingConfigReload) {
     reloadRuntimeConfigFromFlash();
   }
 
-  const bool portalActive = portal.isPortalAvailable();
+  const bool portalActive = WifiPortal::apActive();
   suspendTouchPolling = portalActive;
 
   if (pendingPortalCompletion && wifiStatus()) {
     if (portalRequestedByUser || portalRequiredForMissingConfig) {
       if (!portalNetworkStateLogged) {
-        if (!(WiFi.getMode() & WIFI_AP)) {
-          Serial.println("Re-enabling config AP alongside STA");
-          WiFi.mode(WIFI_AP_STA);
-          WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str());
-          ensureApDns();
-        }
-
         Serial.println("WiFi connected in config portal; staying in settings mode");
-        Serial.println("Portal available on home WiFi IP: " +
-                       WiFi.localIP().toString());
         Serial.println("Portal AP IP: " + WiFi.softAPIP().toString());
         portalNetworkStateLogged = true;
       }
     } else {
+      // Recovery: WiFi sa vrátilo -> zavrieť AP a dokončiť štart.
       Serial.println("WiFi connected from portal flow; completing startup");
+      WifiPortal::stopAp();
+      portalRequiredForWifiRecovery = false;
       completeStartupAfterPortal();
     }
   }
 
   // Keep the portal responsive and avoid unrelated app work while a client is
-  // still configuring WiFi through AutoConnect.
+  // still configuring the device through the AP.
   if (portalActive && !wifiStatus()) {
     delay(5);
     return;
