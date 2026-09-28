@@ -362,13 +362,20 @@ function makeWifiJson() {
   return { ssid, password: document.getElementById('wifi_password').value || secretVal('wifi_password') };
 }
 
+// https with a non-empty host ([A-Za-z0-9.-], optional :port). Mirrors
+// isUsableProxyUrl() in src/services/ConfigService.cpp.
+function isValidProxyUrl(s) {
+  return s.length > 10 && s.length < 128 &&
+    /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d+)?(?:[\/?#]\S*)?$/.test(s);
+}
+
 // Always written so clearing the field resets the device to the firmware's
 // built-in proxy list (an empty "endpoints" array means "use defaults").
 function makeProxyJson() {
   const endpoints = v('proxy_endpoints')
     .split(/[\s,]+/)
     .map(s => s.trim())
-    .filter(s => /^https:\/\/\S+$/.test(s));
+    .filter(isValidProxyUrl);
   return { endpoints: [...new Set(endpoints)].slice(0, 4) };
 }
 

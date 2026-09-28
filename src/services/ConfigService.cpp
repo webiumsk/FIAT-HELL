@@ -365,12 +365,33 @@ String ConfigService::defaultProxyEndpoints(const char *sep) {
   return out;
 }
 
-// Accept only absolute https URLs that fit DeviceState::proxyEndpoints.
+// Accept only absolute https URLs with a non-empty host ([A-Za-z0-9.-],
+// optional :port) that fit DeviceState::proxyEndpoints. Mirrors
+// isValidProxyUrl() in web-flasher/src/main.js.
 static bool isUsableProxyUrl(const String &url) {
-  return url.startsWith("https://") &&
-         url.length() > 10 &&
-         url.length() < sizeof(DeviceState::proxyEndpoints[0]) &&
-         url.indexOf(' ') < 0;
+  if (!url.startsWith("https://") || url.length() <= 10 ||
+      url.length() >= sizeof(DeviceState::proxyEndpoints[0]) ||
+      url.indexOf(' ') >= 0) {
+    return false;
+  }
+  const int hostStart = 8; // strlen("https://")
+  int i = hostStart;
+  while (i < (int)url.length() &&
+         (isalnum((unsigned char)url[i]) || url[i] == '.' || url[i] == '-')) {
+    i++;
+  }
+  const int hostLen = i - hostStart;
+  if (hostLen == 0 || url[hostStart] == '.' || url[hostStart] == '-' ||
+      url[i - 1] == '.' || url[i - 1] == '-') {
+    return false;
+  }
+  if (i < (int)url.length() && url[i] == ':') {
+    const int portStart = ++i;
+    while (i < (int)url.length() && isdigit((unsigned char)url[i])) i++;
+    if (i == portStart) return false;
+  }
+  return i == (int)url.length() || url[i] == '/' || url[i] == '?' ||
+         url[i] == '#';
 }
 
 typedef char ProxyUrl[sizeof(DeviceState::proxyEndpoints[0])];
