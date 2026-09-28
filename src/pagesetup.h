@@ -98,7 +98,7 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
 
 <div class="card">
 <h2>LNURL proxy</h2>
-<label>Adresy proxy serverov, jedna na riadok
+<label>Adresy proxy serverov (iba https://), jedna na riadok
 <textarea name="proxy_endpoints" rows="3" autocomplete="off" spellcheck="false" placeholder="%%PROXY_DEFAULT%%">%%PROXY_ENDPOINTS%%</textarea></label>
 <p class="hint">Skúšajú sa v poradí zhora nadol, prvý funkčný vyhrá (max. %%PROXY_MAX%%). Prázdne = predvolené: %%PROXY_DEFAULT_INLINE%%.</p>
 </div>

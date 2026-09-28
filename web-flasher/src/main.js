@@ -223,10 +223,11 @@ function applyDumpToForm(files) {
     applyDumpField(`${prefix}_charge`, byName(doc, `charge${prefix[3] === '2' ? 2 : 3}`, 4));
   }
 
+  // No /proxy.json = device uses built-in defaults; clear the field so a
+  // stale value from localStorage isn't uploaded back.
   const proxy = files['/proxy.json'];
-  if (proxy && Array.isArray(proxy.endpoints)) {
-    applyDumpField('proxy_endpoints', proxy.endpoints.join(', '));
-  }
+  applyDumpField('proxy_endpoints',
+                 proxy && Array.isArray(proxy.endpoints) ? proxy.endpoints.join(', ') : '');
 
   const wifi = files['/wifi.json'];
   if (wifi && typeof wifi === 'object') {
@@ -367,7 +368,7 @@ function makeProxyJson() {
   const endpoints = v('proxy_endpoints')
     .split(/[\s,]+/)
     .map(s => s.trim())
-    .filter(s => /^https?:\/\/\S+$/.test(s));
+    .filter(s => /^https:\/\/\S+$/.test(s));
   return { endpoints: [...new Set(endpoints)].slice(0, 4) };
 }
 

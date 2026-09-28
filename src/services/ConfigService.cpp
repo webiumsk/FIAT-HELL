@@ -365,9 +365,9 @@ String ConfigService::defaultProxyEndpoints(const char *sep) {
   return out;
 }
 
-// Accept only absolute http(s) URLs that fit DeviceState::proxyEndpoints.
+// Accept only absolute https URLs that fit DeviceState::proxyEndpoints.
 static bool isUsableProxyUrl(const String &url) {
-  return (url.startsWith("https://") || url.startsWith("http://")) &&
+  return url.startsWith("https://") &&
          url.length() > 10 &&
          url.length() < sizeof(DeviceState::proxyEndpoints[0]) &&
          url.indexOf(' ') < 0;
