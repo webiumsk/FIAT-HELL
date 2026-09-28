@@ -47,13 +47,26 @@ enum PriceBalanceWalletIdResult {
 /**
  * @brief Copy the cached Galoy wallet id under the task's data mutex.
  *
- * The background task rewrites deviceState.blinkwalletid during balance
- * fetches (holding the mutex across its HTTP calls), so payout code must
- * snapshot it through here to avoid reading a half-written id. Only the
- * TASK_NOT_RUNNING result permits a direct deviceState fallback; on TIMEOUT
- * the caller must not read the id (the writer may be mid-update).
+ * The background task rewrites deviceState.blinkwalletid when a balance
+ * fetch finishes. The HTTPS call itself does not hold the mutex; the wallet
+ * id is published under it. Payout code snapshots through here so it never
+ * reads a half-written id. Only TASK_NOT_RUNNING permits a direct
+ * deviceState fallback; on TIMEOUT the caller must not read the id.
  */
 PriceBalanceWalletIdResult priceBalanceCopyWalletId(char *dst, size_t dstSize,
                                                     uint32_t timeoutMs = 1000);
+
+// Copy a freshly fetched Galoy wallet id and balance. S3 takes the price-task
+// mutex; the weak fallback used by WT32 writes directly.
+void priceBalancePublishWallet(DeviceState &ds, SessionState &ss,
+                               const char *walletId, long balanceSats);
+
+/**
+ * Synchronous single-currency price fetch with its own TLS session, for the
+ * boot self-check (the background task is not running yet at that point).
+ * Returns true only when a positive price came back.
+ */
+bool priceBalanceFetchPriceNow(const char *currency, const char *rateSource,
+                               float *outFiat);
 
 #endif // PRICE_BALANCE_TASK_H

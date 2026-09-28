@@ -4,7 +4,7 @@
 // Uses CSS-only Blink/LNbits toggle (no JavaScript).
 // OTA upload is a separate form OUTSIDE the main settings form.
 static const char SETUP_PAGE_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
-<html lang="sk">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -46,31 +46,31 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
 </head>
 <body>
 <h1>&#9889; FIAT HELL</h1>
-<p class="sub">Nastavenia zariadenia</p>
+<p class="sub">Device settings</p>
 
 <form method="POST" action="/setup/save">
 
 <div class="card">
 <h2>WiFi</h2>
-<p class="hint">Vyplň iba ak chceš zmeniť sieť. Prázdne pole zachová aktuálne nastavenie.</p>
-<button type="button" class="secondary" onclick="scanWifi(this)">&#128269; Vyhľadať siete</button>
+<p class="hint">Fill in only if you want to change networks. Empty fields keep the current setting.</p>
+<button type="button" class="secondary" onclick="scanWifi(this)">&#128269; Scan for networks</button>
 <div id="wifi-list"></div>
-<label>SSID (názov siete)<input type="text" id="wifi_ssid" name="wifi_ssid" value="%%WIFI_SSID%%" autocomplete="off"></label>
-<label>Heslo WiFi<input type="password" id="wifi_password" name="wifi_password" autocomplete="new-password"></label>
+<label>SSID (network name)<input type="text" id="wifi_ssid" name="wifi_ssid" value="%%WIFI_SSID%%" autocomplete="off"></label>
+<label>WiFi password<input type="password" id="wifi_password" name="wifi_password" autocomplete="new-password"></label>
 </div>
 
 <div class="card">
-<h2>Zdroj BTC ceny</h2>
+<h2>BTC price source</h2>
 <select name="ratesource" style="display:block;width:100%;padding:10px;margin-top:4px;background:#1e1e1e;color:#eee;border:1px solid #444;border-radius:6px;font-size:1em">
   <option value="CoinYEP"     %%RS_COINYEP%%>CoinYEP</option>
   <option value="Kraken"      %%RS_KRAKEN%%>Kraken</option>
   <option value="ExchangeApi" %%RS_EXCHANGEAPI%%>ExchangeApi (Fawaz)</option>
 </select>
-<p class="hint">Ak jeden zdroj nefunguje (HTTP -1 / connection refused v logu), skús iný.</p>
+<p class="hint">If one source stops working (HTTP -1 / connection refused in the log), try another.</p>
 </div>
 
 <div class="card">
-<h2>Financovanie</h2>
+<h2>Funding</h2>
 <input type="radio" name="funding" id="fund_blink" value="Blink" %%CHECKED_BLINK%%>
 <input type="radio" name="funding" id="fund_flash" value="Flash" %%CHECKED_FLASH%%>
 <input type="radio" name="funding" id="fund_lnbits" value="LNbits" %%CHECKED_LNBITS%%>
@@ -80,68 +80,68 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
   <label class="ftab" for="fund_lnbits">LNbits</label>
 </div>
 <div class="blink-fields">
-  <label>API kľúč (Blink / Flash)<input type="text" name="blink_apikey" value="%%BLINK_APIKEY%%"></label>
-  <div class="hint"><a href="/flashkey" style="color:#f90">⚡ Nemáš Flash API kľúč? Získaj ho tu</a></div>
+  <label>API key (Blink / Flash)<input type="text" name="blink_apikey" value="%%BLINK_APIKEY%%"></label>
+  <div class="hint"><a href="/flashkey" style="color:#f90">⚡ No Flash API key? Get one here</a></div>
   <label>Wallet ID (Blink / Flash)<input type="text" name="blink_wallet" value="%%BLINK_WALLET%%"></label>
 </div>
 <div class="lnbits-fields">
-  <label>Admin kľúč<input type="text" name="adminkey" value="%%ADMINKEY%%"></label>
-  <label>Read kľúč<input type="text" name="readkey" value="%%READKEY%%"></label>
+  <label>Admin key<input type="text" name="adminkey" value="%%ADMINKEY%%"></label>
+  <label>Read key<input type="text" name="readkey" value="%%READKEY%%"></label>
   <label>LNURL base URL<input type="text" name="lnurl_base" value="%%LNURL_BASE%%"></label>
   <label>LNURL secret<input type="text" name="lnurl_secret" value="%%LNURL_SECRET%%"></label>
 </div>
 </div>
 
 <div class="card">
-<h2>Mena 1</h2>
-<label>Kód meny (napr. EUR)<input type="text" name="cur1_code" value="%%CUR1_CODE%%" maxlength="8"></label>
-<label>Sumy bankoviek, CSV (napr. 5,10,20,50)<input type="text" name="cur1_bills" value="%%CUR1_BILLS%%"></label>
-<p class="hint">Nominálne hodnoty bankoviek, ktoré prijíma NV10 — oddelené čiarkou.</p>
-<label>Max suma (0 = bez limitu)<input type="number" name="cur1_max" value="%%CUR1_MAX%%" min="0" step="1"></label>
-<label>Poplatok %<input type="number" name="cur1_charge" value="%%CUR1_CHARGE%%" step="0.01" min="0"></label>
+<h2>Currency 1</h2>
+<label>Currency code (e.g. EUR)<input type="text" name="cur1_code" value="%%CUR1_CODE%%" maxlength="8"></label>
+<label>Bill amounts, CSV (e.g. 5,10,20,50)<input type="text" name="cur1_bills" value="%%CUR1_BILLS%%"></label>
+<p class="hint">Denominations accepted by the NV10, comma-separated.</p>
+<label>Max amount (0 = no limit)<input type="number" name="cur1_max" value="%%CUR1_MAX%%" min="0" step="1"></label>
+<label>Fee %<input type="number" name="cur1_charge" value="%%CUR1_CHARGE%%" step="0.01" min="0"></label>
 </div>
 
 <div class="card">
-<h2>Mena 2 <span class="optional">(voliteľné, LNbits)</span></h2>
-<p class="hint">Nechaj prázdne ak nepoužívaš druhú menu.</p>
-<label>Kód meny<input type="text" name="cur2_code" value="%%CUR2_CODE%%" maxlength="8"></label>
+<h2>Currency 2 <span class="optional">(optional, LNbits)</span></h2>
+<p class="hint">Leave empty if you don't use a second currency.</p>
+<label>Currency code<input type="text" name="cur2_code" value="%%CUR2_CODE%%" maxlength="8"></label>
 <label>LNURL base URL<input type="text" name="cur2_lnurl_base" value="%%CUR2_LNURL_BASE%%"></label>
 <label>LNURL secret<input type="text" name="cur2_lnurl_secret" value="%%CUR2_LNURL_SECRET%%"></label>
-<label>Sumy bankoviek, CSV<input type="text" name="cur2_bills" value="%%CUR2_BILLS%%"></label>
-<label>Max suma (0 = bez limitu)<input type="number" name="cur2_max" value="%%CUR2_MAX%%" min="0" step="1"></label>
-<label>Poplatok %<input type="number" name="cur2_charge" value="%%CUR2_CHARGE%%" step="0.01" min="0"></label>
+<label>Bill amounts, CSV<input type="text" name="cur2_bills" value="%%CUR2_BILLS%%"></label>
+<label>Max amount (0 = no limit)<input type="number" name="cur2_max" value="%%CUR2_MAX%%" min="0" step="1"></label>
+<label>Fee %<input type="number" name="cur2_charge" value="%%CUR2_CHARGE%%" step="0.01" min="0"></label>
 </div>
 
 <div class="card">
-<h2>Mena 3 <span class="optional">(voliteľné, LNbits)</span></h2>
-<p class="hint">Nechaj prázdne ak nepoužívaš tretiu menu.</p>
-<label>Kód meny<input type="text" name="cur3_code" value="%%CUR3_CODE%%" maxlength="8"></label>
+<h2>Currency 3 <span class="optional">(optional, LNbits)</span></h2>
+<p class="hint">Leave empty if you don't use a third currency.</p>
+<label>Currency code<input type="text" name="cur3_code" value="%%CUR3_CODE%%" maxlength="8"></label>
 <label>LNURL base URL<input type="text" name="cur3_lnurl_base" value="%%CUR3_LNURL_BASE%%"></label>
 <label>LNURL secret<input type="text" name="cur3_lnurl_secret" value="%%CUR3_LNURL_SECRET%%"></label>
-<label>Sumy bankoviek, CSV<input type="text" name="cur3_bills" value="%%CUR3_BILLS%%"></label>
-<label>Max suma (0 = bez limitu)<input type="number" name="cur3_max" value="%%CUR3_MAX%%" min="0" step="1"></label>
-<label>Poplatok %<input type="number" name="cur3_charge" value="%%CUR3_CHARGE%%" step="0.01" min="0"></label>
+<label>Bill amounts, CSV<input type="text" name="cur3_bills" value="%%CUR3_BILLS%%"></label>
+<label>Max amount (0 = no limit)<input type="number" name="cur3_max" value="%%CUR3_MAX%%" min="0" step="1"></label>
+<label>Fee %<input type="number" name="cur3_charge" value="%%CUR3_CHARGE%%" step="0.01" min="0"></label>
 </div>
 
 <div class="card">
 <h2>ATM</h2>
-<label>Názov<input type="text" name="atm_title" value="%%ATM_TITLE%%"></label>
-<label>Podnadpis<input type="text" name="atm_subtitle" value="%%ATM_SUBTITLE%%"></label>
-<label>Popis<input type="text" name="atm_desc" value="%%ATM_DESC%%"></label>
-<label>Heslo pre AP a portál (meno: admin)<input type="password" name="ap_password" autocomplete="new-password" placeholder="ponechať nezmenené"></label>
-<p class="hint">Heslo pre WiFi sieť "LN ATM-xxx" a pre webový konfig portál. Prázdne = zachovať aktuálne.</p>
+<label>Title<input type="text" name="atm_title" value="%%ATM_TITLE%%"></label>
+<label>Subtitle<input type="text" name="atm_subtitle" value="%%ATM_SUBTITLE%%"></label>
+<label>Description<input type="text" name="atm_desc" value="%%ATM_DESC%%"></label>
+<label>Password for AP and portal (user: admin)<input type="password" name="ap_password" autocomplete="new-password" placeholder="leave unchanged"></label>
+<p class="hint">Password for the "LN ATM-xxx" WiFi network and the web config portal. Empty = keep current.</p>
 </div>
 
-<button type="submit">Uložiť a reštartovať</button>
+<button type="submit">Save and restart</button>
 </form>
 
 <div class="card">
-<h2>Aktualizácia firmvéru</h2>
-<p>Aktuálna verzia: <strong>%%FW_VERSION%%</strong></p>
-<p class="hint">Nahraj .bin súbor z telefónu — internetové pripojenie zariadenia nie je potrebné.</p>
+<h2>Firmware update</h2>
+<p>Current version: <strong>%%FW_VERSION%%</strong></p>
+<p class="hint">Upload a .bin file from your phone — the device does not need internet access.</p>
 <form method="POST" action="/setup/ota" enctype="multipart/form-data">
-  <label>Vyber .bin súbor<input type="file" name="firmware" accept=".bin,application/octet-stream" required></label>
-  <button type="submit" class="secondary">&#8593; Nahrať firmware</button>
+  <label>Choose .bin file<input type="file" name="firmware" accept=".bin,application/octet-stream" required></label>
+  <button type="submit" class="secondary">&#8593; Upload firmware</button>
 </form>
 </div>
 
@@ -149,8 +149,8 @@ button.secondary{background:#444;color:#eee;font-size:.95em;padding:10px;font-we
 function scanWifi(btn){
   var lst=document.getElementById('wifi-list');
   var orig=btn.textContent;
-  btn.disabled=true;btn.textContent='Hľadám…';
-  lst.innerHTML='<p class="hint">Skenujem 2.4GHz pásmo…</p>';
+  btn.disabled=true;btn.textContent='Scanning…';
+  lst.innerHTML='<p class="hint">Scanning the 2.4GHz band…</p>';
   var tries=0;
   function poll(){
     tries++;
@@ -160,7 +160,7 @@ function scanWifi(btn){
     }).then(function(res){
       // Async scan: {"scanning":true} means keep polling; an array = results.
       if(res&&res.scanning){
-        if(tries>12){throw new Error('vypršal čas skenu');}
+        if(tries>12){throw new Error('scan timed out');}
         setTimeout(poll,1500);return;
       }
       render(res);
@@ -168,12 +168,12 @@ function scanWifi(btn){
       // The scan briefly disrupts the AP; a dropped poll is expected - retry.
       if(tries<=12){setTimeout(poll,1500);return;}
       btn.disabled=false;btn.textContent=orig;
-      lst.innerHTML='<p class="hint">Chyba pri vyhľadávaní: '+e.message+'. Zadaj SSID ručne nižšie.</p>';
+      lst.innerHTML='<p class="hint">Scan failed: '+e.message+'. Enter the SSID manually below.</p>';
     });
   }
   function render(arr){
     btn.disabled=false;btn.textContent=orig;
-    if(!arr||!arr.length){lst.innerHTML='<p class="hint">Nenašli sa žiadne siete. Zadaj SSID ručne nižšie.</p>';return;}
+    if(!arr||!arr.length){lst.innerHTML='<p class="hint">No networks found. Enter the SSID manually below.</p>';return;}
     var h='';
     arr.forEach(function(n){
       var s=(n.ssid||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');

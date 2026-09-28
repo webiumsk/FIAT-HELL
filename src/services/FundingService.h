@@ -42,6 +42,21 @@ bool fetchGaloyBalance(DeviceState &ds, SessionState &ss,
                        const char *walletCurrency = "BTC");
 
 /**
+ * Query the scopes of the configured Galoy API key
+ * (query authorization { authorization { scopes } }). Fills scopesOut with a
+ * comma-separated list like "READ,RECEIVE,WRITE". A key without WRITE can
+ * read the balance but every payout fails with AuthorizationError.
+ */
+bool fetchGaloyAuthorization(const DeviceState &ds, char *scopesOut,
+                             size_t scopesLen);
+
+/**
+ * Reachability check for an LNbits funding wallet: GET /api/v1/wallet with
+ * the read key. balanceSatsOut receives the reported balance when non-null.
+ */
+bool checkLNbitsWallet(const DeviceState &ds, long *balanceSatsOut);
+
+/**
  * Pay a BOLT11 invoice via lnInvoicePaymentSend from the configured wallet.
  * Returns true only when the backend reports SUCCESS, PENDING (payment in
  * flight) or ALREADY_PAID — callers must treat false as a failed payout.
@@ -62,5 +77,17 @@ bool requestLnurlWithdraw(SessionState &ss, long amountSats);
  * Returns true and fills ss.boltInvoice once the wallet submitted one.
  */
 bool pollBoltInvoice(SessionState &ss);
+
+// Short text for the payment-failed screen. Empty until a payout fails.
+const char *payoutFailureReason();
+void setPayoutFailure(const char *reason);
+void clearPayoutFailure();
+
+// True when polling cannot succeed (the invoice will not fit). A normal
+// "not ready yet" poll leaves this false.
+bool payoutIsFatal();
+
+// Latest poll diagnostic, for the timeout screen.
+const char *lastPollNote();
 
 } // namespace FundingService

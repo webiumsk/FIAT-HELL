@@ -67,6 +67,10 @@ int main() {
   expect(!quoteMixedSats(legs, 0).ok, "empty leg list");
 
   int64_t sats = 0;
+  expect(bolt11AmountSats("lightning:lnbc9740n1qqqq", &sats) && sats == 974,
+         "lightning: prefix");
+  expect(bolt11AmountSats("  LIGHTNING:lnbc9740n1qqqq", &sats) && sats == 974,
+         "uppercase lightning prefix");
   expect(bolt11AmountSats("lnbc2500u1qqqq", &sats) && sats == 250000,
          "2500 uBTC");
   expect(bolt11AmountSats("LNBC20M1QQ", &sats) && sats == 2000000, "20 mBTC");

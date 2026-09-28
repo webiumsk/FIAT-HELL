@@ -731,6 +731,355 @@ static void logPortalHeartbeat() {
                 heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
 
+// ---------------------------------------------------------------------------
+// Boot self-check ("preflight"). The main screen stays unreachable until
+// every blocking check passes: complete config, network (mandatory for
+// Blink/Flash, warning-only offline mode for LNbits), a real BTC price for
+// every configured currency, a reachable funding service whose API key may
+// actually pay, and a bill acceptor answering on UART. On failure the screen
+// names the broken check and offers RETRY (re-run) and SETUP (reboot into
+// the config hotspot).
+// ---------------------------------------------------------------------------
+
+enum PreflightRow {
+  PF_CONFIG = 0,
+  PF_WIFI,
+  PF_PRICE,
+  PF_FUNDING,
+  PF_ACCEPTOR,
+  PF_ROWS
+};
+
+static lv_obj_t *preflightRowLabel[PF_ROWS] = {nullptr};
+static lv_obj_t *preflightDetailLabel = nullptr;
+static lv_obj_t *preflightRetryBtn = nullptr;
+static lv_obj_t *preflightSetupBtn = nullptr;
+static char preflightRowName[PF_ROWS][40];
+static volatile bool preflightRetryTapped = false;
+static volatile bool preflightSetupTapped = false;
+
+static void preflightRetryCb(lv_event_t *) { preflightRetryTapped = true; }
+static void preflightSetupCb(lv_event_t *) { preflightSetupTapped = true; }
+
+static void preflightSetRow(PreflightRow row, const char *status,
+                            lv_color_t color) {
+  if (preflightRowLabel[row] == nullptr) {
+    return;
+  }
+  char line[96];
+  snprintf(line, sizeof(line), "%s: %s", preflightRowName[row], status);
+  lv_label_set_text(preflightRowLabel[row], line);
+  lv_obj_set_style_text_color(preflightRowLabel[row], color, 0);
+  Serial.printf("preflight[%s]: %s\n", preflightRowName[row], status);
+  lv_task_handler();
+}
+
+static void createPreflightScreen() {
+  lv_obj_t *screen = lv_obj_create(NULL);
+
+  lv_obj_t *title = lv_label_create(screen);
+  lv_label_set_text(title, "STARTUP CHECK");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(title, LV_COLOR_PURPLE, 0);
+
+  strlcpy(preflightRowName[PF_CONFIG], "Configuration",
+          sizeof(preflightRowName[PF_CONFIG]));
+  strlcpy(preflightRowName[PF_WIFI], "WiFi network",
+          sizeof(preflightRowName[PF_WIFI]));
+  strlcpy(preflightRowName[PF_PRICE], "BTC price feed",
+          sizeof(preflightRowName[PF_PRICE]));
+  snprintf(preflightRowName[PF_FUNDING], sizeof(preflightRowName[PF_FUNDING]),
+           "Funding (%s)", deviceState.fundingSourceBuffer[0] != '\0'
+                               ? deviceState.fundingSourceBuffer
+                               : "not set");
+  strlcpy(preflightRowName[PF_ACCEPTOR], "Bill acceptor",
+          sizeof(preflightRowName[PF_ACCEPTOR]));
+
+  for (int i = 0; i < PF_ROWS; i++) {
+    preflightRowLabel[i] = lv_label_create(screen);
+    char line[64];
+    snprintf(line, sizeof(line), "%s: ...", preflightRowName[i]);
+    lv_label_set_text(preflightRowLabel[i], line);
+    lv_obj_align(preflightRowLabel[i], LV_ALIGN_TOP_LEFT, 60, 100 + i * 42);
+    lv_obj_set_style_text_font(preflightRowLabel[i], &lv_font_montserrat_20,
+                               0);
+  }
+
+  preflightDetailLabel = lv_label_create(screen);
+  lv_label_set_text(preflightDetailLabel, "");
+  lv_obj_set_width(preflightDetailLabel, 720);
+  lv_label_set_long_mode(preflightDetailLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(preflightDetailLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(preflightDetailLabel, LV_ALIGN_TOP_MID, 0, 330);
+  lv_obj_set_style_text_font(preflightDetailLabel, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(preflightDetailLabel, LV_COLOR_RED, 0);
+
+  preflightRetryBtn = lv_btn_create(screen);
+  lv_obj_set_size(preflightRetryBtn, 220, 64);
+  lv_obj_align(preflightRetryBtn, LV_ALIGN_BOTTOM_LEFT, 120, -30);
+  lv_obj_add_event_cb(preflightRetryBtn, preflightRetryCb, LV_EVENT_CLICKED,
+                      nullptr);
+  lv_obj_t *retryLabel = lv_label_create(preflightRetryBtn);
+  lv_label_set_text(retryLabel, "RETRY");
+  lv_obj_set_style_text_font(retryLabel, &lv_font_montserrat_20, 0);
+  lv_obj_center(retryLabel);
+
+  preflightSetupBtn = lv_btn_create(screen);
+  lv_obj_set_size(preflightSetupBtn, 220, 64);
+  lv_obj_align(preflightSetupBtn, LV_ALIGN_BOTTOM_RIGHT, -120, -30);
+  lv_obj_add_event_cb(preflightSetupBtn, preflightSetupCb, LV_EVENT_CLICKED,
+                      nullptr);
+  lv_obj_t *setupLabel = lv_label_create(preflightSetupBtn);
+  lv_label_set_text(setupLabel, "SETUP");
+  lv_obj_set_style_text_font(setupLabel, &lv_font_montserrat_20, 0);
+  lv_obj_center(setupLabel);
+
+  lv_obj_add_flag(preflightRetryBtn, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(preflightSetupBtn, LV_OBJ_FLAG_HIDDEN);
+
+  lv_scr_load(screen);
+  lv_task_handler();
+}
+
+// The NV10 echoes command bytes; an inhibit command is the safest probe
+// because it leaves the acceptor blocked regardless of the outcome.
+static bool probeBillAcceptor() {
+  while (billAcceptorRead() != -1) {
+  }
+  billAcceptorWrite(185);
+  const unsigned long start = millis();
+  while (millis() - start < 2500) {
+    if (billAcceptorRead() != -1) {
+      return true;
+    }
+    lv_task_handler();
+    delay(5);
+  }
+  return false;
+}
+
+// One pass over all checks. Every check runs even after a failure so the
+// operator sees everything that is broken at once. Returns false when any
+// blocking check failed; firstFailure then describes the first one.
+static bool runPreflightOnce(char *firstFailure, size_t firstFailureLen,
+                             bool *anyWarning) {
+  firstFailure[0] = '\0';
+  *anyWarning = false;
+  bool pass = true;
+  const lv_color_t orange = lv_color_hex(0xFFA500);
+  const lv_color_t gray = lv_color_hex(0x888888);
+  const char *funding = deviceState.fundingSourceBuffer;
+  const bool galoy = FundingService::isGaloy(funding);
+  const bool lnbits = strcmp(funding, "LNbits") == 0;
+
+  // 1. Configuration
+  const char *cfgProblem = nullptr;
+  if (!galoy && !lnbits) {
+    cfgProblem = "funding source not set";
+  } else if (galoy && blinkapikey[0] == '\0') {
+    cfgProblem = "Blink API key missing";
+  } else if (lnbits && (baseURLATM1[0] == '\0' || adminkey[0] == '\0' ||
+                        readkey[0] == '\0')) {
+    cfgProblem = "LNbits URL or keys missing";
+  } else if (currencyOne[0] == '\0') {
+    cfgProblem = "no currency configured";
+  } else if (billAmountIntOne.empty() && billAmountIntTwo.empty() &&
+             billAmountIntThree.empty()) {
+    cfgProblem = "no bill channels configured";
+  }
+  if (cfgProblem != nullptr) {
+    preflightSetRow(PF_CONFIG, cfgProblem, LV_COLOR_RED);
+    strlcpy(firstFailure, cfgProblem, firstFailureLen);
+    pass = false;
+  } else {
+    preflightSetRow(PF_CONFIG, "OK", LV_COLOR_GREEN);
+  }
+
+  // 2. WiFi. Blink/Flash cannot work offline; LNbits falls back to its
+  // locally encoded LNURL with a visible warning.
+  const bool wifi = wifiStatus();
+  if (wifi) {
+    preflightSetRow(PF_WIFI, "OK", LV_COLOR_GREEN);
+  } else if (galoy) {
+    preflightSetRow(PF_WIFI, "FAILED - Blink/Flash needs internet",
+                    LV_COLOR_RED);
+    if (firstFailure[0] == '\0') {
+      strlcpy(firstFailure, "WiFi not connected (required for Blink/Flash)",
+              firstFailureLen);
+    }
+    pass = false;
+  } else {
+    preflightSetRow(PF_WIFI, "offline mode", orange);
+    *anyWarning = true;
+  }
+
+  // 3. BTC price for every configured currency. Without a price no quote can
+  // succeed and the acceptor would stay dark, so this is blocking.
+  if (!wifi) {
+    preflightSetRow(PF_PRICE, "skipped (offline)", gray);
+  } else {
+    char priceProblem[80] = "";
+    if (originalSizeOne > 0) {
+      float v = 0.0f;
+      if (priceBalanceFetchPriceNow(currencyOne, deviceState.rateSourceBuffer,
+                                    &v)) {
+        sessionState.fiatValue1 = v;
+      } else {
+        snprintf(priceProblem, sizeof(priceProblem), "no BTC price for %s",
+                 currencyOne);
+      }
+    }
+    if (priceProblem[0] == '\0' && originalSizeTwo > 0) {
+      float v = 0.0f;
+      if (priceBalanceFetchPriceNow(currencyTwo, deviceState.rateSourceBuffer,
+                                    &v)) {
+        sessionState.fiatValue2 = v;
+      } else {
+        snprintf(priceProblem, sizeof(priceProblem), "no BTC price for %s",
+                 currencyTwo);
+      }
+    }
+    if (priceProblem[0] == '\0' && originalSizeThree > 0) {
+      float v = 0.0f;
+      if (priceBalanceFetchPriceNow(currencyThree,
+                                    deviceState.rateSourceBuffer, &v)) {
+        sessionState.fiatValue3 = v;
+      } else {
+        snprintf(priceProblem, sizeof(priceProblem), "no BTC price for %s",
+                 currencyThree);
+      }
+    }
+    if (priceProblem[0] != '\0') {
+      preflightSetRow(PF_PRICE, priceProblem, LV_COLOR_RED);
+      if (firstFailure[0] == '\0') {
+        strlcpy(firstFailure, priceProblem, firstFailureLen);
+      }
+      pass = false;
+    } else {
+      preflightSetRow(PF_PRICE, "OK", LV_COLOR_GREEN);
+      // Mirror the selected currency into fiatValue so the very first quote
+      // works before the background task's first refresh.
+      if (strcmp(currencySelected, currencyOne) == 0) {
+        fiatValue = sessionState.fiatValue1;
+      } else if (strcmp(currencySelected, currencyTwo) == 0) {
+        fiatValue = sessionState.fiatValue2;
+      } else if (strcmp(currencySelected, currencyThree) == 0) {
+        fiatValue = sessionState.fiatValue3;
+      }
+    }
+  }
+
+  // 4. Funding service: reachable, key may pay, wallet can pay.
+  if (!wifi) {
+    preflightSetRow(PF_FUNDING, "skipped (offline)", gray);
+  } else if (galoy) {
+    char fundProblem[120] = "";
+    if (!FundingService::fetchGaloyBalance(
+            deviceState, sessionState,
+            FundingService::galoyWalletCurrency(funding))) {
+      strlcpy(fundProblem, "unreachable or API key rejected",
+              sizeof(fundProblem));
+    } else if (balanceSats <= 0) {
+      strlcpy(fundProblem, "funding wallet is empty", sizeof(fundProblem));
+    } else {
+      char scopes[64] = "";
+      if (!FundingService::fetchGaloyAuthorization(deviceState, scopes,
+                                                   sizeof(scopes))) {
+        strlcpy(fundProblem, "cannot verify API key permissions",
+                sizeof(fundProblem));
+      } else if (strstr(scopes, "WRITE") == nullptr) {
+        snprintf(fundProblem, sizeof(fundProblem),
+                 "API key cannot pay (scopes: %s)",
+                 scopes[0] ? scopes : "none");
+      }
+    }
+    if (fundProblem[0] != '\0') {
+      preflightSetRow(PF_FUNDING, fundProblem, LV_COLOR_RED);
+      if (firstFailure[0] == '\0') {
+        strlcpy(firstFailure, fundProblem, firstFailureLen);
+      }
+      pass = false;
+    } else {
+      preflightSetRow(PF_FUNDING, "OK", LV_COLOR_GREEN);
+    }
+  } else {
+    long lnbitsBalance = 0;
+    if (FundingService::checkLNbitsWallet(deviceState, &lnbitsBalance)) {
+      balanceSats = lnbitsBalance;
+      preflightSetRow(PF_FUNDING, "OK", LV_COLOR_GREEN);
+    } else {
+      preflightSetRow(PF_FUNDING, "wallet unreachable or read key rejected",
+                      LV_COLOR_RED);
+      if (firstFailure[0] == '\0') {
+        strlcpy(firstFailure, "LNbits wallet unreachable",
+                firstFailureLen);
+      }
+      pass = false;
+    }
+  }
+
+  // 5. Bill acceptor hardware probe.
+#if BILL_ACCEPTOR_ENABLED
+  if (probeBillAcceptor()) {
+    preflightSetRow(PF_ACCEPTOR, "OK", LV_COLOR_GREEN);
+  } else {
+    preflightSetRow(PF_ACCEPTOR, "no answer on UART (GPIO17/18)",
+                    LV_COLOR_RED);
+    if (firstFailure[0] == '\0') {
+      strlcpy(firstFailure, "Bill acceptor not responding", firstFailureLen);
+    }
+    pass = false;
+  }
+#else
+  preflightSetRow(PF_ACCEPTOR, "disabled in build", gray);
+#endif
+
+  return pass;
+}
+
+static void preflightGate() {
+  createPreflightScreen();
+  char reason[160];
+  bool warned = false;
+  for (;;) {
+    if (runPreflightOnce(reason, sizeof(reason), &warned)) {
+      if (warned) {
+        lv_label_set_text(preflightDetailLabel,
+                          "Offline mode: payout uses the stored LNbits link.");
+        lv_obj_set_style_text_color(preflightDetailLabel,
+                                    lv_color_hex(0xFFA500), 0);
+        lv_task_handler();
+        delay(3000);
+      }
+      return;
+    }
+    Serial.printf("preflight FAILED: %s\n", reason);
+    lv_label_set_text(preflightDetailLabel, reason);
+    lv_obj_clear_flag(preflightRetryBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(preflightSetupBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_task_handler();
+    preflightRetryTapped = false;
+    preflightSetupTapped = false;
+    while (!preflightRetryTapped && !preflightSetupTapped) {
+      lv_task_handler();
+      delay(20);
+    }
+    if (preflightSetupTapped) {
+      File flag = FlashFS.open("/force-portal", "w");
+      if (flag) {
+        flag.print("1");
+        flag.close();
+      }
+      ESP.restart();
+    }
+    lv_obj_add_flag(preflightRetryBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(preflightSetupBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(preflightDetailLabel, "");
+    lv_task_handler();
+  }
+}
+
 void completeStartupAfterPortal() {
   if (appStartupCompleted) {
     return;
@@ -753,11 +1102,6 @@ void completeStartupAfterPortal() {
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
   }
-
-  Serial.println("Proceeding to main screen");
-  createMainScreen();
-  lv_task_handler();
-  bootStage(50, "main screen created");
 
   // Extract "https://your.lnbits.com" from baseURLATM
   // "https://your.lnbits.com/lnurldevice/api/v1/lnurl/<id>";
@@ -783,6 +1127,16 @@ void completeStartupAfterPortal() {
 
   Serial.print(F("lnbitsURL: "));
   Serial.println(lnbitsURL);
+
+  // Block here until config, network, price, funding service and the bill
+  // acceptor all check out (or the operator reboots into the setup hotspot).
+  preflightGate();
+
+  Serial.println("Proceeding to main screen");
+  createMainScreen();
+  lv_task_handler();
+  bootStage(50, "main screen created");
+
   Serial.print("ESP Free heap (Setup end): ");
   Serial.println(ESP.getFreeHeap());
 
@@ -1154,6 +1508,21 @@ void setup() {
   bootStage(19, "filesystem initialized");
   if (format == true) {
     SPIFFS.format();
+  }
+  if (SPIFFS.exists("/payout-error.txt")) {
+    File errFile = SPIFFS.open("/payout-error.txt", "r");
+    if (errFile) {
+      Serial.print("Last payout error: ");
+      Serial.println(errFile.readString());
+      errFile.close();
+    }
+  }
+  // The self-check's SETUP button asks for the portal via this flag because
+  // the logo tap window has already passed by the time the check fails.
+  if (FlashFS.exists("/force-portal")) {
+    FlashFS.remove("/force-portal");
+    triggerAp = true;
+    Serial.println("Self-check requested setup => starting config portal");
   }
 
   // Serial provisioning window for the web flasher (config upload + WiFi
@@ -2402,19 +2771,36 @@ void createThankYouScreen() {
  * inserted, so the customer must not walk away thinking they were paid.
  */
 void createPaymentErrorScreen() {
+  const char *reason = FundingService::payoutFailureReason();
+  if (reason == nullptr || reason[0] == '\0') {
+    reason = "Blink did not pay the invoice";
+  }
+  Serial.print("Payment error: ");
+  Serial.println(reason);
+  File errFile = SPIFFS.open("/payout-error.txt", "w");
+  if (errFile) {
+    errFile.println(reason);
+    errFile.close();
+  }
+
   lv_obj_t *screen_err = lv_obj_create(NULL); // Create a new screen
 
   lv_obj_t *errTitle = lv_label_create(screen_err);
   lv_label_set_text(errTitle, "PAYMENT FAILED!");
-  lv_obj_align(errTitle, LV_ALIGN_CENTER, 0, -20);
+  lv_obj_align(errTitle, LV_ALIGN_CENTER, 0, -40);
   lv_obj_set_style_text_font(errTitle, &lv_font_montserrat_48, 0);
   lv_obj_set_style_text_color(errTitle, LV_COLOR_RED, 0);
 
+  char body[240];
+  snprintf(body, sizeof(body),
+           "YOUR SATS WERE NOT SENT\n%s\nMAKE A PHOTO AND CONTACT SUPPORT",
+           reason);
   lv_obj_t *errDesc = lv_label_create(screen_err);
-  lv_label_set_text(errDesc,
-                    "YOUR SATS WERE NOT SENT\nMAKE A PHOTO AND CONTACT SUPPORT");
+  lv_label_set_text(errDesc, body);
+  lv_obj_set_width(errDesc, 740);
+  lv_label_set_long_mode(errDesc, LV_LABEL_LONG_WRAP);
   lv_obj_set_style_text_align(errDesc, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(errDesc, LV_ALIGN_CENTER, 0, 60);
+  lv_obj_align(errDesc, LV_ALIGN_CENTER, 0, 50);
   lv_obj_set_style_text_font(errDesc, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(errDesc, LV_COLOR_RED, 0);
 
@@ -2820,7 +3206,12 @@ static void armAcceptorIfQuoted() {
   if (acceptorArmed || !mainScreenShown) {
     return;
   }
-  if (!allCreditableQuotesReady()) {
+  // Offline LNbits pays out through the stored LNURL-device link, which
+  // encodes the fiat amount directly - no BTC price is needed, so the quote
+  // gate is skipped when the network is down.
+  const bool offlineLnbits =
+      strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 && !wifiStatus();
+  if (!offlineLnbits && !allCreditableQuotesReady()) {
     Serial.printf(
         "NV10 stays off: sizes %d/%d/%d prices %.2f/%.2f/%.2f\n",
         originalSizeOne, originalSizeTwo, originalSizeThree,
@@ -3457,11 +3848,14 @@ bool getBlinkLnURL(const char *invoice) {
     Serial.print((long)invoicedSats);
     Serial.print(" != quoted ");
     Serial.println(result);
+    char msg[80];
+    snprintf(msg, sizeof(msg), "Invoice %ld sats, quote %ld",
+             (long)invoicedSats, (long)result);
+    FundingService::setPayoutFailure(msg);
     return false;
   }
-  // Snapshot the wallet id under the background task's mutex — the task
-  // rewrites deviceState.blinkwalletid during periodic balance fetches and
-  // holds the mutex across its HTTP calls, so allow a generous wait.
+  // Snapshot the wallet id under the background task's mutex. The task
+  // publishes a new id when a balance fetch finishes.
   char walletId[128];
   const PriceBalanceWalletIdResult idResult =
       priceBalanceCopyWalletId(walletId, sizeof(walletId), 30000);
@@ -3472,9 +3866,16 @@ bool getBlinkLnURL(const char *invoice) {
     // Writer may be mid-update — paying with a possibly torn id risks a
     // payout from the wrong wallet. Fail; the UI shows the error screen.
     Serial.println("Payout aborted: wallet id snapshot timed out");
+    FundingService::setPayoutFailure("Blink wallet id was busy");
     return false;
   }
-  return FundingService::payInvoice(deviceState, invoice, walletId);
+  if (FundingService::payInvoice(deviceState, invoice, walletId)) {
+    return true;
+  }
+  if (FundingService::payoutFailureReason()[0] == '\0') {
+    FundingService::setPayoutFailure("Blink did not pay the invoice");
+  }
+  return false;
 }
 
 /**
@@ -4047,18 +4448,30 @@ void handleUiStateMachine() {
         if (paymentOk) {
           createThankYouScreen();
           currentUiState = UI_THANK_YOU;
+          stateEnterTime = millis();
+          isBlinkFlow = false;
         } else {
           createPaymentErrorScreen();
           currentUiState = UI_PAYMENT_ERROR;
+          stateEnterTime = millis();
+          isBlinkFlow = false;
         }
         lv_task_handler();
-        stateEnterTime = millis();
+      } else if (FundingService::payoutIsFatal()) {
+        Serial.println("Blink invoice unusable => payment error");
+        uiController.deleteQRCodeScreen();
+        enterPaymentError();
         isBlinkFlow = false;
       }
       // If no invoice yet, continue polling (will check again in 2 seconds)
     }
     // Optional: Add timeout (e.g., 5 minutes) to prevent infinite waiting
     if (currentTime - stateEnterTime >= 300000) { // 5 minutes timeout
+      char msg[160];
+      const char *note = FundingService::lastPollNote();
+      snprintf(msg, sizeof(msg), "No invoice from wallet (%.90s)",
+               (note && note[0]) ? note : "no reply");
+      FundingService::setPayoutFailure(msg);
       Serial.println("Blink invoice timeout => payment error");
       uiController.deleteQRCodeScreen();
       enterPaymentError();
@@ -4389,6 +4802,9 @@ void loop() {
         }
       }
       if (qrPayload == nullptr) {
+        if (FundingService::payoutFailureReason()[0] == '\0') {
+          FundingService::setPayoutFailure("Could not create the withdraw QR");
+        }
         Serial.println("Payout not created => payment error screen");
         enterPaymentError();
       } else {
