@@ -6,6 +6,7 @@
 
 #include "PriceBalanceTask.h"
 #include "services/FundingService.h"
+#include "services/HttpsClient.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -30,6 +31,7 @@ static SessionState *g_sessionState = nullptr;
 static QueueHandle_t g_requestQueue = nullptr;
 static SemaphoreHandle_t g_dataMutex = nullptr;
 static volatile bool g_dataReadyForUi = false;
+static BundleTlsClient g_taskTls;
 static HTTPClient g_taskHttp;
 
 static bool wifiConnected() { return WiFi.status() == WL_CONNECTED; }
@@ -44,7 +46,7 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
   if (strcmp(rateSourceBuffer, "CoinGecko") == 0) {
     String curr = String(currencySelected);
     curr.toLowerCase();
-    http.begin(String(coingeckoAPI) + curr);
+    beginNetwork(http, g_taskTls, String(coingeckoAPI) + curr);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -73,7 +75,7 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
     else if (curr == "CZK") pair = "XBTCZK";
     else if (curr == "GBP") pair = "XBTGBP";
     else pair = "XBT" + curr;
-    http.begin(String(krakenTickerAPI) + "?pair=" + pair);
+    beginNetwork(http, g_taskTls, String(krakenTickerAPI) + "?pair=" + pair);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -97,7 +99,7 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
     return;
   }
   if (strcmp(rateSourceBuffer, "ExchangeApi") == 0) {
-    http.begin(exchangeapiConversionAPI);
+    beginNetwork(http, g_taskTls, exchangeapiConversionAPI);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -117,7 +119,7 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
     }
     http.end();
   } else {
-    http.begin(String(coinyepConversionAPI) + targetCurrency);
+    beginNetwork(http, g_taskTls, String(coinyepConversionAPI) + targetCurrency);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -171,7 +173,7 @@ static void taskFetchBalance(HTTPClient &http, DeviceState &ds,
 
   if (strcmp(fundingSource, "LNbits") == 0) {
     String url = String(ds.lnbitsURL) + "/api/v1/wallet";
-    http.begin(url);
+    beginNetwork(http, g_taskTls, url);
     http.addHeader("X-Api-Key", ds.readkey);
     int code = http.GET();
     if (code == 200 || code == 201) {
@@ -195,7 +197,7 @@ static void taskFetchBalance(HTTPClient &http, DeviceState &ds,
     // Blink pays from the BTC wallet; Flash from the custodial USD wallet
     // (its BTC wallet is external/non-custodial - server can't spend it).
     const char *walletCur = FundingService::galoyWalletCurrency(fundingSource);
-    if (FundingService::fetchGaloyBalance(http, ds, ss, walletCur)) {
+    if (FundingService::fetchGaloyBalance(ds, ss, walletCur)) {
       if (strcmp(walletCur, "USD") == 0) {
         // Balance is in USD cents; convert to the operator's fiat via the
         // BTC/USD cross rate (usd_cents/100 * (fiat_per_btc / usd_per_btc)).

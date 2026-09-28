@@ -16,10 +16,15 @@ if ($path === '_catalog' || (isset($_GET['op']) && $_GET['op'] === 'list')) {
     header('Content-Type: application/json');
     $list = [];
     if (is_dir($BIN_DIR)) {
-        foreach (glob($BIN_DIR . '/*.bin') as $f) {
+        $files = array_merge(
+            glob($BIN_DIR . '/*.bin') ?: [],
+            glob($BIN_DIR . '/*.sig') ?: []
+        );
+        foreach ($files as $f) {
+            $name = basename($f);
             $list[] = [
-                'name' => basename($f),
-                'type' => 'bin',
+                'name' => $name,
+                'type' => substr($name, -4) === '.sig' ? 'sig' : 'bin',
                 'date' => date('Y-m-d', filemtime($f)),
                 'time' => date('H:i', filemtime($f)),
                 'size' => (int) filesize($f),
@@ -30,8 +35,8 @@ if ($path === '_catalog' || (isset($_GET['op']) && $_GET['op'] === 'list')) {
     exit;
 }
 
-// Binary download: /filename.bin
-if (preg_match('/^[a-zA-Z0-9_\-\.]+\.bin$/', $path)) {
+// Binary or signature download: /filename.bin or /filename.bin.sig
+if (preg_match('/^[a-zA-Z0-9_\-\.]+\.bin(\.sig)?$/', $path)) {
     $filePath = $BIN_DIR . '/' . basename($path);
     if (!is_file($filePath)) {
         header('HTTP/1.1 404 Not Found');
