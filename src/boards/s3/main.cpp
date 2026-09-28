@@ -4580,15 +4580,22 @@ void handleUiStateMachine() {
           isBlinkFlow = false;
         }
         lv_task_handler();
+        // currentTime was taken before the payment request. The result screen
+        // stamps stateEnterTime with a later millis(), and the unsigned
+        // subtraction below would then look like the 5-minute timeout and
+        // replace a successful payout with PAYMENT FAILED.
+        break;
       } else if (FundingService::payoutIsFatal()) {
         Serial.println("Blink invoice unusable => payment error");
         uiController.deleteQRCodeScreen();
         enterPaymentError();
         isBlinkFlow = false;
+        break;
       }
       // If no invoice yet, continue polling (will check again in 2 seconds)
     }
-    // Optional: Add timeout (e.g., 5 minutes) to prevent infinite waiting
+    // Still waiting for an invoice. Once a result screen is up, this case
+    // has already returned.
     if (currentTime - stateEnterTime >= 300000) { // 5 minutes timeout
       char msg[160];
       const char *note = FundingService::lastPollNote();

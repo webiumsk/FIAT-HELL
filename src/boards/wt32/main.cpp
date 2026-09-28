@@ -3081,10 +3081,13 @@ void handleUiStateMachine() {
         lv_task_handler();
         stateEnterTime = millis();
         isBlinkFlow = false;
+        // currentTime was taken before the payment request. Comparing it with
+        // the new stateEnterTime underflows and this timeout would replace a
+        // successful payout with the failure screen.
+        break;
       }
       // If no invoice yet, continue polling (will check again in 2 seconds)
     }
-    // Optional: Add timeout (e.g., 5 minutes) to prevent infinite waiting
     if (currentTime - stateEnterTime >= 300000) { // 5 minutes timeout
       Serial.println("Blink invoice timeout => payment error");
       uiController.deleteQRCodeScreen();
