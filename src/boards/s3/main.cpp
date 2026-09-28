@@ -50,10 +50,25 @@ static const lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_OR
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include "ota/FirmwareVersion.h"
+#include "ota/OtaImage.h"
+#include "payout/Bolt11.h"
+#include "payout/OfflineLnurl.h"
+#include "payout/Quote.h"
+#include "portal/PortalPolicy.h"
+#include "services/HttpsClient.h"
+#include "services/PortalAccess.h"
+#include <climits>
+#include <cmath>
 
 using WebServerClass = WebServer;
 fs::SPIFFSFS &FlashFS = SPIFFS;
 #define FORMAT_ON_FAIL true
+
+// Embedded firmware version marker. The OTA handler scans a downloaded image
+// for it, so a renamed file cannot bypass the downgrade check. setup() prints
+// it, which keeps the linker from discarding it.
+static const char kFirmwareVersionMarker[] = "FHFW:" FW_VERSION;
 
 static const char *resetReasonToString(esp_reset_reason_t reason) {
   switch (reason) {
@@ -86,7 +101,6 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
 
 #include <AutoConnect.h>
 #include <AutoConnectCredential.h>
-#include <HTTPUpdate.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include "PriceBalanceTask.h"
@@ -107,7 +121,6 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
 #include <vector>
 
 #include <cstring> // For memset
-char Buf[200];     // Buffer for the encrypted data
 
 #include "btcsmall.c"
 LV_IMG_DECLARE(btcSmallImg);
@@ -207,7 +220,6 @@ char totalStr[64] = {0};
 #define chargeSelected sessionState.chargeSelected
 #define fiatBalance sessionState.fiatBalance
 #define fiatValue sessionState.fiatValue
-#define tempCharge sessionState.tempCharge
 #define result sessionState.result
 #define isInsertingMoney sessionState.isInsertingMoney
 #define previousMillis sessionState.previousMillis
@@ -265,7 +277,7 @@ const char *cuexApiKey =
 const char *alternativeConversionAPI =
     "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=";
 
-WiFiClientSecure *secureClientPtr = nullptr;
+BundleTlsClient *secureClientPtr = nullptr;
 HTTPClient *httpPtr = nullptr;
 HardwareSerial *serialPort1Ptr = nullptr;
 HardwareSerial *serialPort2Ptr = nullptr;
@@ -513,7 +525,7 @@ void showQRCodeLVGL(const char *data);
 int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen,
                 uint8_t *nonce, size_t nonce_len, uint64_t pin,
                 uint64_t amount_in_cents);
-static long computeMixedTotalSats();
+static bool assignQuotedSats(bool mixed);
 static long computeMixedMaxSats();
 
 void checkNetworkAndDeviceStatus();
@@ -658,6 +670,9 @@ static bool portalRequiredForWifiRecovery = false;
 static bool portalNetworkStateLogged = false;
 static bool pendingConfigReload = false;
 static unsigned long pendingRestartAt = 0;
+// Random per-boot hotspot PSK, set only while the stored portal password
+// fails the policy. Shown on the portal screen so the operator can join.
+static String g_fallbackApPsk;
 
 // AutoConnect::isPortalAvailable() only reports its own DNSServer, which is
 // suppressed here, so the config portal counts as up while the softAP serves
@@ -731,6 +746,12 @@ void completeStartupAfterPortal() {
   if (wifiStatus() && MDNS.begin("fiathell")) {
     MDNS.addService("http", "tcp", 80);
     Serial.println("mDNS: http://fiathell.local");
+  }
+
+  if (wifiStatus() && (WiFi.getMode() & WIFI_AP)) {
+    Serial.println("WiFi up; turning the setup hotspot off");
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
   }
 
   Serial.println("Proceeding to main screen");
@@ -925,6 +946,46 @@ void to_upper(char *arr) {
   }
 }
 
+// Reads exactly len body bytes from an open response. Gives up after 20 s
+// without progress: a server that stalls without closing would otherwise hang
+// loop() forever. progressLabel, when set, shows the percentage every 32 KB.
+static size_t readResponseBytes(HTTPClient &response, uint8_t *dst, size_t len,
+                                lv_obj_t *progressLabel) {
+  WiFiClient *stream = response.getStreamPtr();
+  if (stream == nullptr) {
+    return 0;
+  }
+  size_t got = 0;
+  unsigned long lastDataAt = millis();
+  while (got < len && millis() - lastDataAt <= 20000) {
+    const int avail = stream->available();
+    if (avail <= 0) {
+      if (!response.connected()) {
+        break;
+      }
+      delay(1);
+      continue;
+    }
+    const size_t want = len - got;
+    const int n = stream->readBytes(
+        dst + got, (size_t)avail < want ? (size_t)avail : want);
+    if (n <= 0) {
+      delay(1);
+      continue;
+    }
+    got += (size_t)n;
+    lastDataAt = millis();
+    if (progressLabel != nullptr && got % 32768 < (size_t)n) {
+      char buf[32];
+      snprintf(buf, sizeof(buf), "Downloading... %u%%",
+               (unsigned)(100ULL * got / len));
+      lv_label_set_text(progressLabel, buf);
+      lv_task_handler();
+    }
+  }
+  return got;
+}
+
 // State shared between OTA upload handler and done handler.
 // Browser uploads .bin via multipart POST — no internet on device required.
 static bool otaUploadAborted = false;
@@ -937,6 +998,7 @@ void setup() {
   Serial.printf("Reset reason: %s (%d)\n", resetReasonToString(resetReason),
                 static_cast<int>(resetReason));
   Serial.println("Booting FIAT HELL on ESP32-8048S050...");
+  Serial.println(kFirmwareVersionMarker);
   bootStage(1, "serial ready");
 
   bootStage(2, "allocating runtime objects");
@@ -945,7 +1007,7 @@ void setup() {
   contentPtr = new String();
   serverPtr = new WebServerClass();
   portalPtr = new AutoConnect(server);
-  secureClientPtr = new WiFiClientSecure();
+  secureClientPtr = new BundleTlsClient();
   httpPtr = new HTTPClient();
   serialPort1Ptr = new HardwareSerial(1);
   serialPort2Ptr = new HardwareSerial(2);
@@ -1054,6 +1116,10 @@ void setup() {
   bootStage(13, "button initialized");
 
   billAcceptorBegin(); // Bill acceptor – leave running; turned off in createMainScreen()
+  // The NV10 keeps its enabled state across an ESP32 reset. Inhibit it until
+  // armAcceptorIfQuoted() has a usable price, so a bill inserted during boot
+  // cannot be taken before any quote can succeed.
+  billAcceptorWrite(185);
   if (TX2 >= 0) {
     SerialPort2.begin(4800, SERIAL_8N1, -1, TX2); // Coin mech
   }
@@ -1062,8 +1128,8 @@ void setup() {
   }
   bootStage(14, "serial peripherals initialized");
 
-  secureClient.setInsecure();
-  bootStage(15, "secure client configured");
+  initCertificateBundle();
+  bootStage(15, "certificate bundle loaded");
 
   // Start logo wait state (non-blocking)
   currentUiState = UI_LOGO_WAIT;
@@ -1154,19 +1220,17 @@ void setup() {
   }
   bootStage(21, "wifi.json applied");
 
-  // Returns true only when the request comes from a client on the AP subnet.
-  // Blocks portal access from the STA (public WiFi) interface.
-  auto isApClient = []() -> bool {
-    const IPAddress c = server.client().remoteIP();
-    return c[0] == 192 && c[1] == 168 && c[2] == 4;
-  };
+  // Config, OTA and /flashkey answer 403 to anyone not on the setup hotspot.
+  // Registered before every other route: WebServer uses the first handler
+  // that claims a request, and it owns (deletes) registered handlers.
+  server.addHandler(new ApOnlyConfigHandler(server));
 
-  server.on("/", [isApClient]() {
+  server.on("/", []() {
     const bool routeToConfigPortal =
         pendingPortalCompletion || portalRequestedByUser ||
         portalRequiredForMissingConfig || configPortalUp();
     if (routeToConfigPortal) {
-      if (!isApClient()) {
+      if (!clientOnSoftAp(server.client())) {
         server.send(403, "text/plain",
           "Portal accessible only via AP — hold BOOT button 3 s to enable");
         server.client().stop();
@@ -1191,23 +1255,21 @@ void setup() {
   // redirect that Android won't auto-open.
   server.on("/favicon.ico", []() { server.send(204, "text/plain", ""); });
 
-  // On-device Flash API key wizard (see pageflashkey.h). AP-only: it creates
-  // and reveals a spending API key, so restrict it to the local AP just like
-  // the other config routes.
-  server.on("/flashkey", HTTP_GET, [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "text/plain", "Wizard only via AP — hold BOOT 3 s to enable");
+  // On-device Flash API key wizard (see pageflashkey.h). It creates and
+  // reveals a spending API key: hotspot-only via ApOnlyConfigHandler, plus the
+  // portal's Basic credentials.
+  server.on("/flashkey", HTTP_GET, []() {
+    if (!portalBasicAuth(server, deviceState.password)) {
       return;
     }
     server.send(200, "text/html", flashKeyPageHtml(wifiStatus()));
   });
-  server.on("/flashkey/run", HTTP_POST, [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "text/plain", "Wizard only via AP — hold BOOT 3 s to enable");
+  server.on("/flashkey/run", HTTP_POST, []() {
+    if (!portalBasicAuth(server, deviceState.password)) {
       return;
     }
     server.send(200, "text/html",
-                flashKeyRunAndRender(http, deviceState, configService, FlashFS,
+                flashKeyRunAndRender(deviceState, configService, FlashFS,
                                      FIRST_FILE, server.arg("phone"),
                                      server.arg("code")));
   });
@@ -1399,6 +1461,13 @@ void setup() {
   // Save page one
   saveAux.load(FPSTR(PAGE_SAVE));
   saveAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    const AutoConnectElement *passwordEl = elementsAux.getElement("password");
+    if (passwordEl == nullptr ||
+        !portalPasswordAccepted(passwordEl->value.c_str())) {
+      aux["echo"].value =
+          "Password must be 8-63 characters and cannot be changeme.";
+      return String();
+    }
     aux["caption"].value = PARAM_FILE;
     File param = FlashFS.open(PARAM_FILE, "w");
     if (param) {
@@ -1499,12 +1568,18 @@ void setup() {
   if ((deviceState.currencyATM2[0] != '\0') || (currencyTwo[0] != '\0')) {
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntTwo.begin(),
                             billAmountIntTwo.end());
+  } else {
+    // Channel ranges and per-currency crediting count these slots; a
+    // currency that was not merged has none.
+    originalSizeTwo = 0;
   }
   // Check if currencyATM3 is not empty
   if ((deviceState.currencyATM3[0] != '\0') || (currencyThree[0] != '\0')) {
     // Then merge billAmountIntThree into the now-extended billAmountIntOne
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntThree.begin(),
                             billAmountIntThree.end());
+  } else {
+    originalSizeThree = 0;
   }
   bootStage(39, "bill vectors merged");
 
@@ -1521,7 +1596,16 @@ void setup() {
   acConfig.retainPortal = true;
   acConfig.autoRise = false; // set dynamically during startup based on mode
   acConfig.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  acConfig.psk = deviceState.password; // Password for AP
+  // A stored password that fails the policy must not leave the hotspot open
+  // or set to the known default. While it is invalid the AP uses a random
+  // per-boot PSK shown on the portal screen, so only someone standing at the
+  // machine can join.
+  const bool passwordRejected = !portalPasswordAccepted(deviceState.password);
+  if (passwordRejected) {
+    g_fallbackApPsk = makeFallbackApPsk();
+  }
+  acConfig.psk = passwordRejected ? g_fallbackApPsk
+                                  : String(deviceState.password); // Password for AP
   // AutoConnect 1.4.2 defaults apip to 172.217.28.1 (Google IP, surprising).
   // Force the standard 192.168.4.0/24 so the apClient subnet check works
   // and so users see a familiar AP IP in the browser URL bar.
@@ -1546,11 +1630,10 @@ void setup() {
   otaAux.load(FPSTR(PAGE_OTA));
   otaAux.on([](AutoConnectAux &aux, PageArgument &arg) {
     // Populate version select from catalog
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient catalogHttp;
+    HttpsSession catalog;
+    HTTPClient &catalogHttp = catalog.httpClient;
     catalogHttp.setTimeout(8000);
-    if (catalogHttp.begin(client, OTA_CATALOG_URL)) {
+    if (catalog.begin(OTA_CATALOG_URL)) {
       int code = catalogHttp.GET();
       if (code == 200) {
         String payload = catalogHttp.getString();
@@ -1562,7 +1645,8 @@ void setup() {
           versionSelect.empty(16);
           for (JsonObject item : doc.as<JsonArray>()) {
             const char *name = item["name"];
-            if (name && item["type"] == "bin") {
+            if (name && item["type"] == "bin" &&
+                !firmwareUpdateRejected(name, FW_VERSION)) {
               const char *date = item["date"] | "";
               size_t sizeVal = item["size"] | 0;
               String label = String(name);
@@ -1607,13 +1691,11 @@ void setup() {
       aux["result"].value = "No version selected.";
       return String();
     }
+    if (firmwareUpdateRejected(filename.c_str(), FW_VERSION)) {
+      aux["result"].value = "Refused: missing or older version.";
+      return String();
+    }
     String updateUrl = String(OTA_BASE_URL) + "/" + filename;
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPUpdate updater;
-    updater.setLedPin(-1); // Disable LED – GPIO2 is backlight on this display
-    updater.rebootOnUpdate(true);
-    // Show OTA overlay on display so user sees clear feedback (no blinking)
     static lv_obj_t *otaOverlay = nullptr;
     otaOverlay = lv_obj_create(lv_scr_act());
     lv_obj_set_size(otaOverlay, screenWidth, screenHeight);
@@ -1632,39 +1714,84 @@ void setup() {
       lv_task_handler();
       delay(30);
     }
-    updater.onStart([]() {
-      if (otaOverlay) {
-        lv_label_set_text(lv_obj_get_child(otaOverlay, 0),
-                          "Downloading firmware...");
-        lv_task_handler();
-      }
-    });
-    updater.onProgress([](int curBytes, int totalBytes) {
-      if (otaOverlay && totalBytes > 0) {
-        int pct = (int)((100ULL * curBytes) / totalBytes);
-        char buf[48];
-        snprintf(buf, sizeof(buf), "Downloading... %d%%", pct);
-        lv_label_set_text(lv_obj_get_child(otaOverlay, 0), buf);
-      }
-      lv_task_handler();
-      yield();
-    });
-    HTTPUpdateResult updateResult = updater.update(client, updateUrl);
-    if (otaOverlay) {
+    auto failUpdate = [&](const String &message) {
       lv_obj_del(otaOverlay);
       otaOverlay = nullptr;
       lv_task_handler();
-    }
-    if (updateResult == HTTP_UPDATE_OK) {
-      aux["result"].value = "Update OK. Rebooting...";
+      aux["result"].value = message;
+    };
+
+    // The OTA slot receives nothing until the signature over the whole
+    // image checks out, so the image is buffered in PSRAM laid out as
+    // signature(64) || image — the input crypto_sign_open expects.
+    HttpsSession bin;
+    bin.httpClient.setTimeout(20000);
+    if (!bin.begin(updateUrl) || bin.httpClient.GET() != 200) {
+      failUpdate("Update failed: firmware download");
       return String();
     }
-    if (updateResult == HTTP_UPDATE_NO_UPDATES) {
-      aux["result"].value = "No update available.";
+    const int imageLen = bin.httpClient.getSize();
+    if (imageLen <= 0) {
+      failUpdate("Update failed: server sent no content length");
       return String();
     }
-    aux["result"].value =
-        "Update failed: " + updater.getLastErrorString();
+    if ((size_t)imageLen > ESP.getFreeSketchSpace()) {
+      failUpdate("Update failed: image larger than the OTA slot");
+      return String();
+    }
+    uint8_t *signedImage =
+        (uint8_t *)heap_caps_malloc((size_t)imageLen + 64, MALLOC_CAP_SPIRAM);
+    if (signedImage == nullptr) {
+      failUpdate("Update failed: no memory");
+      return String();
+    }
+    const size_t written = readResponseBytes(
+        bin.httpClient, signedImage + 64, (size_t)imageLen,
+        lv_obj_get_child(otaOverlay, 0));
+    bin.httpClient.end();
+    if (written != (size_t)imageLen) {
+      free(signedImage);
+      failUpdate("Update failed: short download");
+      return String();
+    }
+
+    HttpsSession sig;
+    sig.httpClient.setTimeout(15000);
+    const bool sigFetched = sig.begin(updateUrl + ".sig") &&
+                            sig.httpClient.GET() == 200 &&
+                            sig.httpClient.getSize() == 64 &&
+                            readResponseBytes(sig.httpClient, signedImage, 64,
+                                              nullptr) == 64;
+    sig.httpClient.end();
+    if (!sigFetched || !otaSignatureOk(signedImage, written + 64)) {
+      free(signedImage);
+      failUpdate("Update failed: bad signature");
+      return String();
+    }
+    // Checked after the signature so only authenticated bytes are parsed.
+    // The marker is inside the image, so a renamed file cannot fake it.
+    if (firmwareImageDowngrade(signedImage + 64, written, FW_VERSION)) {
+      free(signedImage);
+      failUpdate("Update failed: older firmware");
+      return String();
+    }
+    lv_label_set_text(lv_obj_get_child(otaOverlay, 0), "Installing...");
+    lv_task_handler();
+    // Every Update failure path resets itself; errorString() must be read
+    // before anything else touches Update.
+    const bool installed = Update.begin(written) &&
+                           Update.write(signedImage + 64, written) == written &&
+                           Update.end(true);
+    free(signedImage);
+    if (!installed) {
+      failUpdate("Update failed: " + String(Update.errorString()));
+      return String();
+    }
+    lv_label_set_text(lv_obj_get_child(otaOverlay, 0), "Update OK. Rebooting...");
+    lv_task_handler();
+    aux["result"].value = "Update OK. Rebooting...";
+    // Defer the restart so the /ota_do response reaches the browser first.
+    pendingRestartAt = millis() + 1000;
     return String();
   }, AC_EXIT_AHEAD);
   portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
@@ -1738,12 +1865,12 @@ void setup() {
         blinkwalletid[0] == '\0') ||
        (currencyOne[0] == '\0'));
 
-  const bool showPortalScreenImmediately =
-      (userWantsPortal || apiDataMissing);
-
   portalRequestedByUser = userWantsPortal;
-  portalRequiredForMissingConfig = apiDataMissing;
+  portalRequiredForMissingConfig = apiDataMissing || passwordRejected;
   portalRequiredForWifiRecovery = (wifiRequired && !wifiStatus());
+
+  const bool showPortalScreenImmediately =
+      (userWantsPortal || portalRequiredForMissingConfig);
 
   // In config-first mode, keep the AP stable for phones instead of trying to
   // reconnect to a remembered WiFi in the background. Background STA scans in
@@ -1761,8 +1888,10 @@ void setup() {
   acConfig.preserveAPMode = portalActiveNow;
 
   // Decide portal behavior once, then call portal.begin() once.
-  acConfig.immediateStart = (userWantsPortal || apiDataMissing);
-  acConfig.autoRise = (userWantsPortal || apiDataMissing || wifiRequired);
+  acConfig.immediateStart =
+      (userWantsPortal || portalRequiredForMissingConfig);
+  acConfig.autoRise =
+      (userWantsPortal || portalRequiredForMissingConfig || wifiRequired);
   // Keep AutoConnect's DNSServer off port 53 (our apDns answers instead) and
   // skip its blocking captive loop; the portal is serviced from loop().
   portal.onDetect([](IPAddress &) { return false; });
@@ -1791,6 +1920,8 @@ void setup() {
 
   if (userWantsPortal) {
     Serial.println("User tap => start AP portal immediately");
+  } else if (passwordRejected) {
+    Serial.println("Default password => start AP portal immediately");
   } else if (apiDataMissing) {
     Serial.println("API data missing => start AP portal immediately");
   } else {
@@ -1822,7 +1953,9 @@ void setup() {
     Serial.println("WiFi connected! IP: " + WiFi.localIP().toString() +
                    " RSSI: " + String(WiFi.RSSI()) + " dBm ch " +
                    String(WiFi.channel()));
-    if (wifiRequired) {
+    const bool stayingInPortal =
+        userWantsPortal || portalRequiredForMissingConfig;
+    if (wifiRequired && !stayingInPortal) {
       // If you don't want to leave the AP on, switch to STA only
       WiFi.mode(WIFI_STA);
     }
@@ -1849,7 +1982,8 @@ void setup() {
   bootStage(48, "wifi or portal state evaluated");
 
   // If portal is required (tap / missing data / Blink no-wifi), stay in portal.
-  if (userWantsPortal || apiDataMissing || (wifiRequired && !wifiStatus())) {
+  if (userWantsPortal || portalRequiredForMissingConfig ||
+      (wifiRequired && !wifiStatus())) {
     pendingPortalCompletion = true;
     bootStage(49, "setup exits into portal mode");
     return;
@@ -1867,6 +2001,62 @@ void setup() {
  */
 int nonBlockingRead() {
   return billAcceptorRead();
+}
+
+// Credit a validated channel byte to the running totals. Returns false when
+// the channel is outside the single-currency filter. Screen and label
+// updates stay with the caller.
+static bool creditBillTotals(int channelIdx) {
+  const int amount = billAmountIntOne[channelIdx];
+  const bool mixed =
+      (sessionState.allowedChannelCount == (int)billAmountIntOne.size());
+  if (mixed) {
+    if (channelIdx < (int)originalSizeOne) {
+      sessionState.totalCurrency1 += (long)amount * 100;
+      strlcpy(sessionState.lastBillCurrency, currencyOne,
+              sizeof(sessionState.lastBillCurrency));
+    } else if (channelIdx < (int)(originalSizeOne + originalSizeTwo)) {
+      sessionState.totalCurrency2 += (long)amount * 100;
+      strlcpy(sessionState.lastBillCurrency, currencyTwo,
+              sizeof(sessionState.lastBillCurrency));
+    } else {
+      sessionState.totalCurrency3 += (long)amount * 100;
+      strlcpy(sessionState.lastBillCurrency, currencyThree,
+              sizeof(sessionState.lastBillCurrency));
+    }
+    sessionState.lastBillCents = (long)amount * 100;
+    return true;
+  }
+  if (channelIdx >= sessionState.allowedChannelStart &&
+      channelIdx <
+          sessionState.allowedChannelStart + sessionState.allowedChannelCount) {
+    bills = bills + amount;
+    total = (coins + bills);
+    return true;
+  }
+  return false;
+}
+
+// A note already past the NV10's inhibit point is still stacked and reports
+// its channel afterwards. Stop the acceptor, then give such a note time to
+// report so it is part of the payout instead of being taken uncredited.
+static const unsigned long BILL_SETTLE_MS = 2000;
+
+static void inhibitAndCollectPendingBills() {
+  billAcceptorWrite(185);
+  if (INHIBITMECH >= 0) {
+    digitalWrite(INHIBITMECH, LOW);
+  }
+  const unsigned long start = millis();
+  while (millis() - start < BILL_SETTLE_MS) {
+    const int pending = nonBlockingRead();
+    if (pending >= 1 && pending <= (int)billAmountIntOne.size()) {
+      creditBillTotals(pending - 1);
+    } else {
+      lv_task_handler();
+      delay(10);
+    }
+  }
 }
 
 // Create the logo screen
@@ -2040,6 +2230,15 @@ void createPortalScreen() {
   lv_obj_set_style_text_font(portaltextfour, &lv_font_montserrat_22,
                              0); // Use the large font
   lv_obj_set_style_text_color(portaltextfour, LV_COLOR_WHITE, 0);
+
+  if (g_fallbackApPsk.length() > 0) {
+    String pskLine = "Wi-Fi password: " + g_fallbackApPsk;
+    lv_obj_t *pskLabel = lv_label_create(screen_portal);
+    lv_label_set_text(pskLabel, pskLine.c_str());
+    lv_obj_align(pskLabel, LV_ALIGN_TOP_MID, 0, 302);
+    lv_obj_set_style_text_font(pskLabel, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(pskLabel, lv_color_hex(0xFF9900), 0);
+  }
 
   lv_scr_load(screen_portal);
   attachBatteryToCurrentScreen();
@@ -2362,7 +2561,7 @@ void checkPrice() {
 void checkPriceCoinGecko() {
   String targetCurrency = currencySelected;
   targetCurrency.toUpperCase();
-  http.begin(String(coinyepConversionAPI) + targetCurrency);
+  beginNetwork(http, secureClient, String(coinyepConversionAPI) + targetCurrency);
 
   int httpCode = http.GET(); // Send the request
 
@@ -2400,7 +2599,7 @@ void checkPriceCoinGecko() {
 }
 
 void checkPriceExchangeApi() {
-  http.begin(exchangeapiConversionAPI);
+  beginNetwork(http, secureClient, exchangeapiConversionAPI);
   int httpResponseCode = http.GET();
 
   if (httpResponseCode == 200 || httpResponseCode == 201) {
@@ -2445,7 +2644,7 @@ static const char *krakenTickerAPI = "https://api.kraken.com/0/public/Ticker";
 void checkPriceCoinGeckoApi() {
   String curr = String(currencySelected);
   curr.toLowerCase();
-  http.begin(String(coingeckoAPI) + curr);
+  beginNetwork(http, secureClient, String(coingeckoAPI) + curr);
   int code = http.GET();
   if (code == 200 || code == 201) {
     String payload = http.getString();
@@ -2477,7 +2676,7 @@ void checkPriceKraken() {
   else
     pair = "XBT" + curr;
 
-  http.begin(String(krakenTickerAPI) + "?pair=" + pair);
+  beginNetwork(http, secureClient, String(krakenTickerAPI) + "?pair=" + pair);
   int code = http.GET();
   if (code == 200 || code == 201) {
     String payload = http.getString();
@@ -2565,6 +2764,51 @@ void color_anim_cb(void *var, int32_t v) {
  * @note The labels must be created and initialized before calling this
  * function.
  */
+static bool acceptorArmed = false;
+// updateMainScreenLabel() also runs while the settings portal is up; the
+// acceptor must only open once the customer main screen exists.
+static bool mainScreenShown = false;
+
+static bool currencyQuoted(const char *currency, float price, float fee) {
+  return currency && currency[0] != '\0' && quoteSats(100, price, fee).ok;
+}
+
+// The main screen uninhibits every configured channel, so a bill of any
+// configured currency is credited. Every one of those currencies needs a
+// usable price before the acceptor may open — otherwise a bill whose currency
+// has no rate would be taken and the payout would fail with the cash inside.
+static bool allCreditableQuotesReady() {
+  if (originalSizeOne == 0) {
+    return false;
+  }
+  if (!currencyQuoted(currencyOne, sessionState.fiatValue1, charge1)) {
+    return false;
+  }
+  if (originalSizeTwo > 0 &&
+      !currencyQuoted(currencyTwo, sessionState.fiatValue2, charge2)) {
+    return false;
+  }
+  if (originalSizeThree > 0 &&
+      !currencyQuoted(currencyThree, sessionState.fiatValue3, charge3)) {
+    return false;
+  }
+  return true;
+}
+
+static void armAcceptorIfQuoted() {
+  if (acceptorArmed || !mainScreenShown || !allCreditableQuotesReady()) {
+    return;
+  }
+  // enableAcceptor() refuses Galoy without WiFi; check first so a refused
+  // attempt is not recorded as armed and is retried on the next price update.
+  if (paymentService.isGaloy(deviceState.fundingSourceBuffer) && !wifiStatus()) {
+    return;
+  }
+  uninhibitAllChannels();
+  enableAcceptor();
+  acceptorArmed = true;
+}
+
 void updateMainScreenLabel() {
   Serial.print("Free heap (updateMainScreenLabel Start): ");
   Serial.println(ESP.getFreeHeap());
@@ -2641,6 +2885,7 @@ void updateMainScreenLabel() {
 
   Serial.print("Free heap (updateMainScreenLabel End): ");
   Serial.println(ESP.getFreeHeap());
+  armAcceptorIfQuoted();
 }
 
 /**
@@ -2862,10 +3107,8 @@ void createMainScreen() {
   attachBatteryToCurrentScreen();
   Serial.println("createMainScreen: Screen loaded");
   // Mixed-currency mode: accept all bills, no single-currency filter
-#if BILL_ACCEPTOR_ENABLED
-  uninhibitAllChannels();
-  enableAcceptor();
-#endif
+  mainScreenShown = true;
+  armAcceptorIfQuoted();
   Serial.print("Free heap (createMainScreen End): ");
   Serial.println(ESP.getFreeHeap());
 }
@@ -2881,6 +3124,25 @@ void enableAcceptor() {
   if (INHIBITMECH >= 0) {
     digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
   }
+}
+
+static void discardInsertMoneyScreen() {
+  uiController.deleteInsertMoneyScreen();
+  labelLastInserted = nullptr;
+  labelTotalAmount = nullptr;
+  labelTotalCurrency1 = nullptr;
+  labelTotalCurrency2 = nullptr;
+  labelTotalCurrency3 = nullptr;
+  labelTotalSats = nullptr;
+  labelMaxAmount = nullptr;
+}
+
+// The acceptor is already inhibited on every path that gets here.
+static void enterPaymentError() {
+  createPaymentErrorScreen();
+  lv_task_handler();
+  currentUiState = UI_PAYMENT_ERROR;
+  stateEnterTime = millis();
 }
 
 /**
@@ -3147,7 +3409,7 @@ void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
  * @return true if invoice was successfully retrieved, false otherwise
  */
 bool checkBoltInvoice() {
-  return FundingService::pollBoltInvoice(http, sessionState);
+  return FundingService::pollBoltInvoice(sessionState);
 }
 
 /**
@@ -3159,6 +3421,14 @@ bool checkBoltInvoice() {
  * payload.
  */
 bool getBlinkLnURL(const char *invoice) {
+  int64_t invoicedSats = 0;
+  if (!bolt11AmountSats(invoice, &invoicedSats) || invoicedSats != (int64_t)result) {
+    Serial.print("Payout aborted: invoice sats ");
+    Serial.print((long)invoicedSats);
+    Serial.print(" != quoted ");
+    Serial.println(result);
+    return false;
+  }
   // Snapshot the wallet id under the background task's mutex — the task
   // rewrites deviceState.blinkwalletid during periodic balance fetches and
   // holds the mutex across its HTTP calls, so allow a generous wait.
@@ -3174,7 +3444,7 @@ bool getBlinkLnURL(const char *invoice) {
     Serial.println("Payout aborted: wallet id snapshot timed out");
     return false;
   }
-  return FundingService::payInvoice(http, deviceState, invoice, walletId);
+  return FundingService::payInvoice(deviceState, invoice, walletId);
 }
 
 /**
@@ -3196,20 +3466,13 @@ bool getBlinkLnURL(const char *invoice) {
  */
 bool createLNURLWithdraw() {
   const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 | sessionState.totalCurrency3) != 0;
-  if (mixed) {
-    result = computeMixedTotalSats();
-    tempCharge = 0.0f;
-    Serial.print("Mixed-currency result (sats): ");
-    Serial.println(result);
-  } else {
-    float temp = ((total / 100.0) / fiatValue * 1e8);
-    result = (long)round(temp * (100.0f - chargeSelected) / 100.0f);
-    tempCharge = temp - (float)result;
+  if (!assignQuotedSats(mixed)) {
+    return false;
   }
   Serial.print("Result (after fee, satoshis): ");
   Serial.println(result);
 
-  return FundingService::requestLnurlWithdraw(http, sessionState, result);
+  return FundingService::requestLnurlWithdraw(sessionState, result);
 }
 
 /** Max insert limit for mixed mode, in EUR equivalent. */
@@ -3248,23 +3511,29 @@ static float computeMixedTotalValueEUR() {
 }
 
 /**
- * @brief Compute total satoshis from mixed-currency totals (fee and rate per currency).
+ * @brief Quote the payout for the current session into `result`.
+ * Mixed sessions quote every funded currency with its own rate and fee.
+ * Returns false (and zeroes `result`) when the quote is refused.
  */
-static long computeMixedTotalSats() {
-  long totalSats = 0;
-  if (sessionState.totalCurrency1 > 0 && sessionState.fiatValue1 > 0) {
-    float afterFee = (sessionState.totalCurrency1 / 100.0f) * (100.0f - charge1) / 100.0f;
-    totalSats += (long)round(afterFee / sessionState.fiatValue1 * 1e8);
+static bool assignQuotedSats(bool mixed) {
+  Quote quote;
+  if (mixed) {
+    const MixedLeg legs[] = {
+        {sessionState.totalCurrency1, sessionState.fiatValue1, charge1},
+        {sessionState.totalCurrency2, sessionState.fiatValue2, charge2},
+        {sessionState.totalCurrency3, sessionState.fiatValue3, charge3},
+    };
+    quote = quoteMixedSats(legs, 3);
+  } else {
+    quote = quoteSats(llround(total), fiatValue, chargeSelected);
   }
-  if (sessionState.totalCurrency2 > 0 && sessionState.fiatValue2 > 0) {
-    float afterFee = (sessionState.totalCurrency2 / 100.0f) * (100.0f - charge2) / 100.0f;
-    totalSats += (long)round(afterFee / sessionState.fiatValue2 * 1e8);
+  if (!quote.ok || quote.sats > LONG_MAX) {
+    result = 0;
+    Serial.println("Quote refused: missing price, bad fee, or non-positive sats");
+    return false;
   }
-  if (sessionState.totalCurrency3 > 0 && sessionState.fiatValue3 > 0) {
-    float afterFee = (sessionState.totalCurrency3 / 100.0f) * (100.0f - charge3) / 100.0f;
-    totalSats += (long)round(afterFee / sessionState.fiatValue3 * 1e8);
-  }
-  return totalSats;
+  result = (long)quote.sats;
+  return true;
 }
 
 /**
@@ -3278,39 +3547,17 @@ static long computeMixedTotalSats() {
  * @note This function assumes that the necessary variables (total, fiatValue,
  * chargeSelected, lnbitsURL, adminkey) have been properly initialized.
  */
-void getLNURL() {
+bool getLNURL() {
   const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 | sessionState.totalCurrency3) != 0;
-  float temp = 0.0f;
-  if (mixed) {
-    result = computeMixedTotalSats();
-    temp = (float)result;
-    tempCharge = 0.0f;
-    Serial.print("Mixed-currency result (sats): ");
-    Serial.println(result);
-  } else {
-    Serial.print("Total (cents): ");
-    Serial.println(total);
-    Serial.print("EUR Value (price of 1 Bitcoin in euros): ");
-    Serial.println(fiatValue);
-    Serial.print("Charge: ");
-    Serial.println(chargeSelected);
-    temp = ((total / 100.0) / fiatValue * 1e8);
-    result = (long)round(temp * (100.0f - chargeSelected) / 100.0f);
-    tempCharge = temp - (float)result;
+  if (!assignQuotedSats(mixed)) {
+    return false;
   }
-
-  Serial.print("Temp (satoshis): ");
-  Serial.println(temp);
-  Serial.print("Charge %: ");
-  Serial.println(chargeSelected);
   Serial.print("Result (after fee, satoshis): ");
   Serial.println(result);
 
-  String resultStr = String(result);
-
   if (lnbitsURL[0] == '\0') {
     Serial.println("Error: lnbitsURL is empty in getLNURL");
-    return;
+    return false;
   }
 
   http.end(); // Ensure previous connection is closed
@@ -3318,11 +3565,13 @@ void getLNURL() {
   char requestUrl[512];
   snprintf(requestUrl, sizeof(requestUrl), "%s/withdraw/api/v1/links",
            lnbitsURL);
-  http.begin(requestUrl); // Specify request destination
-  http.addHeader("Content-Type",
-                 "application/json");    // Specify content-type header
-  http.addHeader("X-Api-Key", adminkey); // Specify API key header
+  if (!beginNetwork(http, secureClient, requestUrl)) {
+    return false;
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Api-Key", adminkey);
 
+  const String resultStr = String(result);
   String httpRequestData = "{\"title\": \"Fiat Hell ";
   httpRequestData += "\", \"min_withdrawable\": ";
   httpRequestData += resultStr;
@@ -3330,38 +3579,31 @@ void getLNURL() {
   httpRequestData += resultStr;
   httpRequestData += ", \"uses\": 1, \"wait_time\": 1, \"is_unique\": 1, "
                      "\"webhook_url\": \"\"}";
-  int httpCode = http.POST(httpRequestData);
+  const int httpCode = http.POST(httpRequestData);
+  const String responsePayload = http.getString();
+  http.end();
 
-  // int httpCode = http.POST("{\"title\": \"Fiat Hell\", \"min_withdrawable\":
-  // \" + result + \", \"max_withdrawable\": \" + result + \" , \"uses\": \"1\",
-  // \"wait_time\": \"1\", \"is_unique\": \"true\", \"webhook_url\": \"\"}"); //
-  // Send the request
-  String responsePayload = http.getString(); // Get the response payload
+  if (httpCode != 200 && httpCode != 201) {
+    Serial.print("getLNURL HTTP ");
+    Serial.println(httpCode);
+    lnURLgen[0] = '\0';
+    return false;
+  }
 
-  // Serial.println(httpCode);   // Print HTTP return code
-  Serial.print("Temp: ");
-  Serial.println(temp); // Print request response payload
-  Serial.print("Result: ");
-  Serial.println(result);
-  Serial.print("ResultSTR: ");
-  Serial.println(resultStr);
-  Serial.print("Payload: ");
-  Serial.println(responsePayload); // Print request response payload
-
-  // Parse JSON
   DynamicJsonDocument doc(1024);
-  deserializeJson(doc, responsePayload);
-
-  // Get balance from parsed JSON
+  if (deserializeJson(doc, responsePayload)) {
+    Serial.println("getLNURL JSON parse error");
+    lnURLgen[0] = '\0';
+    return false;
+  }
   strlcpy(lnURLgen, doc["lnurl"] | "", sizeof(lnURLgen));
-
-  Serial.print("LNURL: ");
-  Serial.println(lnURLgen);
+  if (lnURLgen[0] == '\0') {
+    Serial.println("getLNURL response has no lnurl");
+    return false;
+  }
   strlcpy(sessionState.modifiedLnURLgen, lnURLgen,
           sizeof(sessionState.modifiedLnURLgen));
-
-  http.end(); // Close connection
-  // lv_task_handler();
+  return true;
 }
 
 /*LNbits offline*/
@@ -3383,46 +3625,64 @@ void getLNURL() {
  *       - total: The total amount for the transaction.
  *       - qrData: The variable to store the bech32-encoded LNURL.
  */
-void makeLNURL() {
+bool makeLNURL() {
+  const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 |
+                      sessionState.totalCurrency3) != 0;
+  const OfflinePayout payout = offlineLnurlPayout(
+      paymentService.isGaloy(deviceState.fundingSourceBuffer) ? FundingKind::Galoy
+                                                             : FundingKind::Lnbits,
+      mixed, llround(total), chargeSelected);
+  if (!payout.allowed) {
+    Serial.println("Offline LNURL refused");
+    qrData[0] = '\0';
+    return false;
+  }
+
   int randomPin = random(1000, 9999);
   byte nonce[8];
   for (int i = 0; i < 8; i++) {
     nonce[i] = random(256);
   }
 
-  // Mixed: encode total sats; single currency: encode amount after fee (cents)
-  uint64_t amountToEncode;
-  const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 | sessionState.totalCurrency3) != 0;
-  if (mixed) {
-    result = computeMixedTotalSats();
-    amountToEncode = (uint64_t)result;
-  } else {
-    float amountAfterFeeCents = total * (100.0f - chargeSelected) / 100.0f;
-    amountToEncode = (uint64_t)round(amountAfterFeeCents);
-  }
-
-  byte payload[51]; // 51 bytes is max one can get with xor-encryption
-
+  byte payload[51];
   size_t payload_len = xor_encrypt(
       payload, sizeof(payload), (uint8_t *)secretATM, strlen(secretATM), nonce,
-      sizeof(nonce), randomPin, amountToEncode);
+      sizeof(nonce), randomPin, payout.centsAfterFee);
+  if (payload_len == 0) {
+    Serial.println("Offline LNURL encrypt failed");
+    return false;
+  }
   String preparedURL = String(baseURLATM) + "?atm=1&p=";
   preparedURL +=
       toBase64(payload, payload_len, BASE64_URLSAFE | BASE64_NOPADDING);
-
   Serial.println(preparedURL);
-  char Buf[200];
-  preparedURL.toCharArray(Buf, 200);
-  char *url = Buf;
-  byte *data = (byte *)calloc(strlen(url) * 2, sizeof(byte));
+
+  // A truncated URL or LNURL still encodes as a QR the wallet cannot redeem.
+  const size_t urlLen = preparedURL.length();
+  // 8-bit to 5-bit regrouping needs ceil(urlLen * 8 / 5) values; bech32 adds
+  // the "lnurl" prefix, the '1' separator, a 6-char checksum and the NUL.
+  const size_t groups = (urlLen * 8 + 4) / 5;
+  byte *data = (byte *)calloc(groups, sizeof(byte));
+  char *charLnurl = (char *)calloc(groups + 5 + 1 + 6 + 1, sizeof(char));
   size_t len = 0;
-  int res = convert_bits(data, &len, 5, (byte *)url, strlen(url), 8, 1);
-  char *charLnurl = (char *)calloc(strlen(url) * 2, sizeof(byte));
-  bech32_encode(charLnurl, "lnurl", data, len);
-  to_upper(charLnurl);
-  strlcpy(qrData, charLnurl, sizeof(qrData));
-  Serial.print("Buf: ");
-  Serial.println(Buf);
+  const bool encoded =
+      data != nullptr && charLnurl != nullptr &&
+      convert_bits(data, &len, 5, (const byte *)preparedURL.c_str(), urlLen, 8,
+                   1) &&
+      bech32_encode(charLnurl, "lnurl", data, len);
+  bool fits = false;
+  if (encoded) {
+    to_upper(charLnurl);
+    fits = strlcpy(qrData, charLnurl, sizeof(qrData)) < sizeof(qrData);
+  }
+  free(data);
+  free(charLnurl);
+  if (!fits) {
+    Serial.println("Offline LNURL does not fit the QR buffer");
+    qrData[0] = '\0';
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -3769,8 +4029,10 @@ void handleUiStateMachine() {
     }
     // Optional: Add timeout (e.g., 5 minutes) to prevent infinite waiting
     if (currentTime - stateEnterTime >= 300000) { // 5 minutes timeout
-      Serial.println("Blink invoice timeout => restarting");
-      ESP.restart();
+      Serial.println("Blink invoice timeout => payment error");
+      uiController.deleteQRCodeScreen();
+      enterPaymentError();
+      isBlinkFlow = false;
     }
     break;
 
@@ -3950,38 +4212,14 @@ void loop() {
 #endif
 
   if (x >= 1 && x <= (int)billAmountIntOne.size()) {
+    if (currentUiState != UI_IDLE && currentUiState != UI_INSERTING_MONEY) {
+      billAcceptorWrite(185);
+    } else {
     int channelIdx = x - 1;  // 0-based
     int amount = billAmountIntOne[channelIdx];
     const bool mixed = (sessionState.allowedChannelCount == (int)billAmountIntOne.size());
-    bool creditBill = false;
 
-    if (mixed) {
-      // Mixed-currency: accept all, add to per-currency totals
-      creditBill = true;
-      if (channelIdx < (int)originalSizeOne) {
-        sessionState.totalCurrency1 += (long)amount * 100;
-        strlcpy(sessionState.lastBillCurrency, currencyOne, sizeof(sessionState.lastBillCurrency));
-      } else if (channelIdx < (int)(originalSizeOne + originalSizeTwo)) {
-        sessionState.totalCurrency2 += (long)amount * 100;
-        strlcpy(sessionState.lastBillCurrency, currencyTwo, sizeof(sessionState.lastBillCurrency));
-      } else {
-        sessionState.totalCurrency3 += (long)amount * 100;
-        strlcpy(sessionState.lastBillCurrency, currencyThree, sizeof(sessionState.lastBillCurrency));
-      }
-      sessionState.lastBillCents = (long)amount * 100;
-    } else {
-      // Single-currency (user tapped a button): only credit if channel matches
-      if (channelIdx >= sessionState.allowedChannelStart &&
-          channelIdx < sessionState.allowedChannelStart + sessionState.allowedChannelCount) {
-        creditBill = true;
-      }
-    }
-
-    if (creditBill) {
-      if (!mixed) {
-        bills = bills + amount;
-        total = (coins + bills);
-      }
+    if (creditBillTotals(channelIdx)) {
       if (!isInsertingMoney) {
         createInsertMoneyScreen();
         lv_task_handler();
@@ -3993,48 +4231,34 @@ void loop() {
         char buf[128];
         snprintf(buf, sizeof(buf), "Last bill: %d %s", amount, sessionState.lastBillCurrency);
         lv_label_set_text(labelLastInserted, buf);
-        long totalSats = 0;
-        if (labelTotalCurrency1 && sessionState.totalCurrency1 > 0) {
-          long sats1 = 0;
-          if (sessionState.fiatValue1 > 0) {
-            float afterFee = (sessionState.totalCurrency1 / 100.0f) * (100.0f - charge1) / 100.0f;
-            sats1 = (long)round(afterFee / sessionState.fiatValue1 * 1e8);
-            totalSats += sats1;
+        // Same quote functions as the payout, so the screen shows what is paid.
+        const MixedLeg legs[] = {
+            {sessionState.totalCurrency1, sessionState.fiatValue1, charge1},
+            {sessionState.totalCurrency2, sessionState.fiatValue2, charge2},
+            {sessionState.totalCurrency3, sessionState.fiatValue3, charge3},
+        };
+        lv_obj_t *const legLabels[] = {labelTotalCurrency1, labelTotalCurrency2,
+                                       labelTotalCurrency3};
+        const char *const legCurrencies[] = {currencyOne, currencyTwo, currencyThree};
+        for (int leg = 0; leg < 3; leg++) {
+          if (legLabels[leg] == nullptr) {
+            continue;
           }
-          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%ld sats)", currencyOne,
-                  sessionState.totalCurrency1 / 100.0f, currencyOne, sats1);
-          lv_label_set_text(labelTotalCurrency1, buf);
-        } else if (labelTotalCurrency1) {
-          lv_label_set_text(labelTotalCurrency1, "");
-        }
-        if (labelTotalCurrency2 && sessionState.totalCurrency2 > 0) {
-          long sats2 = 0;
-          if (sessionState.fiatValue2 > 0) {
-            float afterFee = (sessionState.totalCurrency2 / 100.0f) * (100.0f - charge2) / 100.0f;
-            sats2 = (long)round(afterFee / sessionState.fiatValue2 * 1e8);
-            totalSats += sats2;
+          if (legs[leg].cents <= 0) {
+            lv_label_set_text(legLabels[leg], "");
+            continue;
           }
-          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%ld sats)", currencyTwo,
-                  sessionState.totalCurrency2 / 100.0f, currencyTwo, sats2);
-          lv_label_set_text(labelTotalCurrency2, buf);
-        } else if (labelTotalCurrency2) {
-          lv_label_set_text(labelTotalCurrency2, "");
-        }
-        if (labelTotalCurrency3 && sessionState.totalCurrency3 > 0) {
-          long sats3 = 0;
-          if (sessionState.fiatValue3 > 0) {
-            float afterFee = (sessionState.totalCurrency3 / 100.0f) * (100.0f - charge3) / 100.0f;
-            sats3 = (long)round(afterFee / sessionState.fiatValue3 * 1e8);
-            totalSats += sats3;
-          }
-          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%ld sats)", currencyThree,
-                  sessionState.totalCurrency3 / 100.0f, currencyThree, sats3);
-          lv_label_set_text(labelTotalCurrency3, buf);
-        } else if (labelTotalCurrency3) {
-          lv_label_set_text(labelTotalCurrency3, "");
+          const Quote legQuote =
+              quoteSats(legs[leg].cents, legs[leg].btcPrice, legs[leg].feePercent);
+          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%lld sats)",
+                   legCurrencies[leg], legs[leg].cents / 100.0,
+                   legCurrencies[leg], legQuote.ok ? (long long)legQuote.sats : 0LL);
+          lv_label_set_text(legLabels[leg], buf);
         }
         if (labelTotalSats) {
-          snprintf(buf, sizeof(buf), "Total: %ld sats", totalSats);
+          const Quote totalQuote = quoteMixedSats(legs, 3);
+          snprintf(buf, sizeof(buf), "Total: %lld sats",
+                   totalQuote.ok ? (long long)totalQuote.sats : 0LL);
           lv_label_set_text(labelTotalSats, buf);
         }
         lv_label_set_text(labelTotalAmount, "");
@@ -4067,6 +4291,7 @@ void loop() {
         if (labelTotalSats) lv_label_set_text(labelTotalSats, "");
       }
     }
+    }
   }
   // Check button release, touchscreen tap, or total (only if in INSERTING_MONEY state)
   const bool hasMixed = (sessionState.totalCurrency1 || sessionState.totalCurrency2 || sessionState.totalCurrency3) != 0;
@@ -4076,7 +4301,10 @@ void loop() {
     bool screenTapped = hasAmount && lcd.getTouch(&touchX, &touchY);
     if ((BTNA.wasPressed() && hasAmount) || screenTapped || mixedLimitExceededAutoProceed || (!hasMixed && total >= maxamountSelected)) {
       mixedLimitExceededAutoProceed = false;
-      if (hasMixed) {
+      inhibitAndCollectPendingBills();
+      const bool payMixed = (sessionState.totalCurrency1 || sessionState.totalCurrency2 ||
+                             sessionState.totalCurrency3) != 0;
+      if (payMixed) {
         // Mixed-currency: use first wallet for LNURL (undef macros to use struct members)
 #if defined(baseURLATM) && defined(secretATM) && defined(lnbitsURL)
 #undef baseURLATM
@@ -4113,95 +4341,33 @@ void loop() {
         Serial.println(total);
       }
 
+      discardInsertMoneyScreen();
+      const char *qrPayload = nullptr;
+      bool blinkFlow = false;
       if (!wifiStatus()) {
-        uiController.deleteInsertMoneyScreen();
-        Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
-        makeLNURL();
-        printHeapStatus();
-        Serial.println("makeLNURL() - LNbits offline: ");
-        showQRCodeLVGL(qrData);
-        Serial.print("showQRCodeLVGL() - LNbits offline: ");
-        Serial.println(qrData);
-        // Turn off machines
-        billAcceptorWrite(185);
-        if (INHIBITMECH >= 0) {
-          digitalWrite(INHIBITMECH, LOW);
+        qrPayload = makeLNURL() ? qrData : nullptr;
+      } else if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
+        // Without an LNURL and callback a QR would trap the customer in a
+        // polling loop that can never succeed.
+        qrPayload = createLNURLWithdraw() ? lnURLgen : nullptr;
+        blinkFlow = true;
+      } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+        if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
+          qrPayload = getLNURL() ? lnURLgen : nullptr;
+        } else {
+          qrPayload = makeLNURL() ? qrData : nullptr;
         }
-        Serial.print("Free heap (makeLNURL): ");
-        Serial.println(ESP.getFreeHeap());
+      }
+      if (qrPayload == nullptr) {
+        Serial.println("Payout not created => payment error screen");
+        enterPaymentError();
+      } else {
+        showQRCodeLVGL(qrPayload);
         lv_task_handler();
-        Serial.println("lv_task_handler() - LNbits offline");
         currentUiState = UI_SHOWING_QR;
         stateEnterTime = millis();
         qrDebounceDone = false;
-      } else {
-        if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
-          uiController.deleteInsertMoneyScreen();
-          Serial.println("deleteInsertMoneyScreen() - Blink online");
-          const bool withdrawOk = createLNURLWithdraw();
-          Serial.println("createLNURLWithdraw() - Blink online");
-          // Turn off machines in both outcomes - cash is already inside
-          billAcceptorWrite(185);
-          if (INHIBITMECH >= 0) {
-            digitalWrite(INHIBITMECH, LOW);
-          }
-          if (withdrawOk) {
-            // Display the QR code for online
-            showQRCodeLVGL(lnURLgen);
-            Serial.println("showQRCodeLVGL() - Blink online");
-            lv_task_handler();
-            Serial.println("lv_task_handler() - Blink online");
-            currentUiState = UI_SHOWING_QR;
-            stateEnterTime = millis();
-            qrDebounceDone = false;
-            isBlinkFlow = true; // Mark that we're in Blink flow
-          } else {
-            // No LNURL/callback - showing a QR would trap the customer in a
-            // polling loop that can never succeed.
-            Serial.println("LNURL withdraw failed => payment error screen");
-            createPaymentErrorScreen();
-            lv_task_handler();
-            currentUiState = UI_PAYMENT_ERROR;
-            stateEnterTime = millis();
-          }
-        }
-        if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-          if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
-            uiController.deleteInsertMoneyScreen();
-            Serial.println("deleteInsertMoneyScreen() - LNbits online");
-            getLNURL();
-            Serial.println("getLNURL()");
-            // Display the QR code for online
-            showQRCodeLVGL(lnURLgen);
-            Serial.println("showQRCodeLVGL() - LNbits online");
-            lv_task_handler();
-            Serial.println("lv_task_handler() - LNbits online");
-            // Turn off machines
-            billAcceptorWrite(185);
-            if (INHIBITMECH >= 0) {
-              digitalWrite(INHIBITMECH, LOW);
-            }
-            currentUiState = UI_SHOWING_QR;
-            stateEnterTime = millis();
-            qrDebounceDone = false;
-          } else {
-            uiController.deleteInsertMoneyScreen();
-            Serial.println(
-                "deleteInsertMoneyScreen() - LNbits offline fallback");
-            makeLNURL();
-            showQRCodeLVGL(qrData);
-            lv_task_handler();
-            billAcceptorWrite(185);
-            if (INHIBITMECH >= 0) {
-              digitalWrite(INHIBITMECH, LOW);
-            }
-            currentUiState = UI_SHOWING_QR;
-            stateEnterTime = millis();
-            qrDebounceDone = false;
-          }
-        }
-        Serial.print("Free heap (showQRCodeLVGL): ");
-        Serial.println(ESP.getFreeHeap());
+        isBlinkFlow = blinkFlow;
       }
     }
 

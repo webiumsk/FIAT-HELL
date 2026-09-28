@@ -1,5 +1,6 @@
 #include "services/FlashAuthService.h"
 #include "services/FundingService.h"
+#include "services/HttpsClient.h"
 
 #include <ArduinoJson.h>
 
@@ -10,9 +11,13 @@ static const char *flashEndpoint() {
 }
 
 // POST a GraphQL request; returns HTTP code and fills responseOut.
-static int postGraphql(HTTPClient &http, const String &requestBody,
-                       const String &bearerToken, String &responseOut) {
-  http.begin(flashEndpoint());
+static int postGraphql(const String &requestBody, const String &bearerToken,
+                       String &responseOut) {
+  HttpsSession session;
+  HTTPClient &http = session.httpClient;
+  if (!session.begin(flashEndpoint())) {
+    return -1;
+  }
   http.addHeader("Content-Type", "application/json");
   if (bearerToken.length() > 0) {
     http.addHeader("Authorization", "Bearer " + bearerToken);
@@ -24,8 +29,8 @@ static int postGraphql(HTTPClient &http, const String &requestBody,
   return code;
 }
 
-bool userLogin(HTTPClient &http, const String &phone, const String &code,
-               String &authTokenOut, String &errOut) {
+bool userLogin(const String &phone, const String &code, String &authTokenOut,
+               String &errOut) {
   DynamicJsonDocument doc(1024);
   doc["query"] =
       "mutation($input: UserLoginInput!) { userLogin(input: $input) { "
@@ -36,7 +41,7 @@ bool userLogin(HTTPClient &http, const String &phone, const String &code,
   serializeJson(doc, body);
 
   String response;
-  const int httpCode = postGraphql(http, body, "", response);
+  const int httpCode = postGraphql(body, "", response);
   Serial.printf("flashkey userLogin: HTTP %d\n", httpCode);
   if (httpCode != 200) {
     errOut = "HTTP " + String(httpCode) + " - skontroluj internet zariadenia";
@@ -66,8 +71,7 @@ bool userLogin(HTTPClient &http, const String &phone, const String &code,
   return true;
 }
 
-bool apiKeyCreate(HTTPClient &http, const String &authToken,
-                  String &apiKeyOut, String &errOut) {
+bool apiKeyCreate(const String &authToken, String &apiKeyOut, String &errOut) {
   DynamicJsonDocument doc(1024);
   doc["query"] =
       "mutation($input: ApiKeyCreateInput!) { apiKeyCreate(input: $input) { "
@@ -85,7 +89,7 @@ bool apiKeyCreate(HTTPClient &http, const String &authToken,
   serializeJson(doc, body);
 
   String response;
-  const int httpCode = postGraphql(http, body, authToken, response);
+  const int httpCode = postGraphql(body, authToken, response);
   Serial.printf("flashkey apiKeyCreate: HTTP %d\n", httpCode);
   if (httpCode != 200) {
     errOut = "HTTP " + String(httpCode) + " pri vytvarani kluca";

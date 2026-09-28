@@ -96,7 +96,6 @@ struct SessionState {
   char payload[1024] = {0};
 
   // Temporary calculation values
-  float tempCharge = 0.0f;
   long result = 0;
 
   // Periodic update timing
@@ -116,7 +115,6 @@ struct SessionState {
     totalCurrency3 = 0;
     lastBillCents = 0;
     memset(lastBillCurrency, 0, sizeof(lastBillCurrency));
-    tempCharge = 0.0f;
     result = 0;
   }
 

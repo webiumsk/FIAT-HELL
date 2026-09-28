@@ -12,7 +12,6 @@
 #include "services/FlashAuthService.h"
 #include <Arduino.h>
 #include <FS.h>
-#include <HTTPClient.h>
 
 static const char FLASHKEY_STYLE[] PROGMEM = R"(<style>
 body{background:#111;color:#eee;font-family:Arial,sans-serif;margin:0;padding:16px;max-width:520px;margin:auto}
@@ -122,7 +121,7 @@ inline String flashKeyResultHtml(bool ok, const String &detail,
  * Execute the wizard: login with phone+code, create the API key, persist it
  * into /first.json and DeviceState. Returns the result page HTML.
  */
-inline String flashKeyRunAndRender(HTTPClient &http, DeviceState &ds,
+inline String flashKeyRunAndRender(DeviceState &ds,
                                    ConfigService &configService, fs::FS &fs,
                                    const char *firstFile, String phone,
                                    String code) {
@@ -137,10 +136,10 @@ inline String flashKeyRunAndRender(HTTPClient &http, DeviceState &ds,
   }
 
   String authToken, apiKey, err;
-  if (!FlashAuthService::userLogin(http, phone, code, authToken, err)) {
+  if (!FlashAuthService::userLogin(phone, code, authToken, err)) {
     return flashKeyResultHtml(false, "prihlasenie zlyhalo: " + err);
   }
-  if (!FlashAuthService::apiKeyCreate(http, authToken, apiKey, err)) {
+  if (!FlashAuthService::apiKeyCreate(authToken, apiKey, err)) {
     return flashKeyResultHtml(false, "vytvorenie kluca zlyhalo: " + err);
   }
 

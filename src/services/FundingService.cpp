@@ -1,4 +1,5 @@
 #include "services/FundingService.h"
+#include "services/HttpsClient.h"
 
 #include <ArduinoJson.h>
 
@@ -37,9 +38,13 @@ static void addFlashCapabilityHeader(HTTPClient &http,
   }
 }
 
-bool fetchGaloyBalance(HTTPClient &http, DeviceState &ds, SessionState &ss,
+bool fetchGaloyBalance(DeviceState &ds, SessionState &ss,
                        const char *walletCurrency) {
-  http.begin(galoyEndpoint(ds.fundingSourceBuffer));
+  HttpsSession session;
+  HTTPClient &http = session.httpClient;
+  if (!session.begin(galoyEndpoint(ds.fundingSourceBuffer))) {
+    return false;
+  }
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", String(ds.blinkapikey));
   addFlashCapabilityHeader(http, ds.fundingSourceBuffer);
@@ -126,14 +131,17 @@ bool fetchGaloyBalance(HTTPClient &http, DeviceState &ds, SessionState &ss,
   return false;
 }
 
-bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice,
+bool payInvoice(const DeviceState &ds, const char *invoice,
                 const char *walletIdOverride) {
-  http.begin(galoyEndpoint(ds.fundingSourceBuffer));
+  HttpsSession session;
+  HTTPClient &http = session.httpClient;
+  if (!session.begin(galoyEndpoint(ds.fundingSourceBuffer))) {
+    return false;
+  }
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-KEY", ds.blinkapikey);
   addFlashCapabilityHeader(http, ds.fundingSourceBuffer);
-  // Lightning routing can legitimately take a while and the shared HTTPClient
-  // may carry pollBoltInvoice's short 5 s timeout — give the payout headroom.
+  // Lightning routing can legitimately take a while.
   http.setTimeout(30000);
 
   String graphqlQuery = R"(
@@ -208,8 +216,7 @@ bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice,
   return false;
 }
 
-bool requestLnurlWithdraw(HTTPClient &http, SessionState &ss,
-                          long amountSats) {
+bool requestLnurlWithdraw(SessionState &ss, long amountSats) {
   // Clear previous withdraw state up front so a failed request can't leave a
   // stale QR/callback from an earlier transaction behind.
   ss.lnURLgen[0] = '\0';
@@ -225,14 +232,20 @@ bool requestLnurlWithdraw(HTTPClient &http, SessionState &ss,
   Serial.print("LNURL-withdraw requestBody: ");
   Serial.println(requestBody);
 
-  http.begin(primaryProxyEndpoint);
+  HttpsSession session;
+  HTTPClient &http = session.httpClient;
+  if (!session.begin(primaryProxyEndpoint)) {
+    return false;
+  }
   http.addHeader("Content-Type", "application/json");
   int httpCode = http.POST(requestBody);
   if (httpCode != 200 && httpCode != 201) {
     Serial.println("Primary proxy failed with code: " + String(httpCode));
     Serial.println("Attempting to connect to secondary proxy...");
     http.end();
-    http.begin(secondaryProxyEndpoint);
+    if (!session.begin(secondaryProxyEndpoint)) {
+      return false;
+    }
     http.addHeader("Content-Type", "application/json");
     httpCode = http.POST(requestBody);
   }
@@ -270,13 +283,17 @@ bool requestLnurlWithdraw(HTTPClient &http, SessionState &ss,
   return ok;
 }
 
-bool pollBoltInvoice(HTTPClient &http, SessionState &ss) {
+bool pollBoltInvoice(SessionState &ss) {
   if (ss.callback[0] == '\0') {
     Serial.println("Error: callback URL is empty");
     return false;
   }
 
-  http.begin(ss.callback);
+  HttpsSession session;
+  HTTPClient &http = session.httpClient;
+  if (!session.begin(ss.callback)) {
+    return false;
+  }
   http.addHeader("Content-Type", "application/json");
   http.setTimeout(5000);
 
