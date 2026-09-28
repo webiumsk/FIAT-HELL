@@ -217,7 +217,9 @@ bool ConfigService::loadFirst(fs::FS &fs, const char *path, FirstConfig &out) {
   out.charge = String(doc8["value"] | "").toFloat();
 
   out.valid = out.currencyLabel[0] != '\0';
-  return out.valid;
+  // A blank currency must not discard the API key and wallet id that share
+  // this file. Callers copy every field; the startup check reports the blank.
+  return true;
 }
 
 bool ConfigService::updateFirstBlinkApiKey(fs::FS &fs, const char *path,
