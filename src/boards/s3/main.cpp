@@ -663,6 +663,10 @@ static void processApDns() {
   }
 }
 static bool pendingPortalCompletion = false;
+// The startup TLS checks must not run inside setup(): that frame plus the
+// handshake overflows the loop task and the ATM reboot-loops, so fiathell.local
+// never answers. loop() runs them after setup() has returned.
+static bool pendingPreflight = false;
 static bool appStartupCompleted = false;
 static bool portalRequestedByUser = false;
 static bool portalRequiredForMissingConfig = false;
@@ -1061,9 +1065,13 @@ static void preflightGate() {
     lv_task_handler();
     preflightRetryTapped = false;
     preflightSetupTapped = false;
+    // This screen used to spin here without serving HTTP, so fiathell.local
+    // sat until the browser gave up. Keep the portal alive while the
+    // operator reads the failure.
     while (!preflightRetryTapped && !preflightSetupTapped) {
+      portal.handleClient();
       lv_task_handler();
-      delay(20);
+      delay(5);
     }
     if (preflightSetupTapped) {
       File flag = FlashFS.open("/force-portal", "w");
@@ -1080,8 +1088,71 @@ static void preflightGate() {
   }
 }
 
+// fiathell.local must advertise only the address clients can actually use.
+// Announcing the hotspot and the home LAN together makes browsers try the
+// unreachable one first and the page sits for several seconds.
+static bool g_mdnsUp = false;
+
+static void startFiathellMdns() {
+  // Advertise a link-local IPv6 address. Without an AAAA answer, macOS and
+  // phones wait out the IPv6 query (~5 s) before using IPv4, which is the
+  // "slow then fast" page load. The address is only used for the name lookup.
+  if (WiFi.getMode() & WIFI_STA) {
+    WiFi.enableIpV6();
+  }
+  if (WiFi.getMode() & WIFI_AP) {
+    WiFi.softAPenableIpV6();
+  }
+  if (g_mdnsUp) {
+    MDNS.end();
+    g_mdnsUp = false;
+  }
+  if (!MDNS.begin("fiathell")) {
+    Serial.println("mDNS: fiathell.local failed");
+    return;
+  }
+  MDNS.addService("http", "tcp", 80);
+  g_mdnsUp = true;
+  Serial.println("mDNS: http://fiathell.local");
+}
+
+// Settings are served on the hotspot. Leave station mode joined as well and
+// fiathell.local answers with both IPs; a phone on the hotspot then waits on
+// the home-LAN address. One radio mode, one address.
+static void settleSetupHotspot() {
+  stopApDns();
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str(), acConfig.channel);
+  WiFi.setSleep(false);
+  acConfig.autoReconnect = false;
+  acConfig.reconnectInterval = 0;
+  acConfig.preserveAPMode = true;
+  portal.config(acConfig);
+  ensureApDns();
+  startFiathellMdns();
+  Serial.println("Setup hotspot only: http://192.168.4.1 and http://fiathell.local");
+}
+
+static void finishStartupAfterPreflight() {
+  Serial.println("Proceeding to main screen");
+  createMainScreen();
+  lv_task_handler();
+  bootStage(50, "main screen created");
+
+  Serial.print("ESP Free heap (Setup end): ");
+  Serial.println(ESP.getFreeHeap());
+
+  startPriceBalanceTask(deviceStatePtr, sessionStatePtr);
+  triggerPriceBalanceFetch(PBR_PERIODIC);
+
+  appStartupCompleted = true;
+  pendingPortalCompletion = false;
+}
+
 void completeStartupAfterPortal() {
-  if (appStartupCompleted) {
+  if (appStartupCompleted || pendingPreflight) {
     return;
   }
 
@@ -1092,15 +1163,16 @@ void completeStartupAfterPortal() {
   portal.config(acConfig);
   WiFi.setAutoReconnect(true);
 
-  if (wifiStatus() && MDNS.begin("fiathell")) {
-    MDNS.addService("http", "tcp", 80);
-    Serial.println("mDNS: http://fiathell.local");
-  }
-
   if (wifiStatus() && (WiFi.getMode() & WIFI_AP)) {
     Serial.println("WiFi up; turning the setup hotspot off");
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
+  }
+  // A fresh STA start applies modem sleep from the core default unless this
+  // is repeated, and mDNS has to be published after the hotspot is gone.
+  WiFi.setSleep(false);
+  if (wifiStatus()) {
+    startFiathellMdns();
   }
 
   // Extract "https://your.lnbits.com" from baseURLATM
@@ -1128,23 +1200,8 @@ void completeStartupAfterPortal() {
   Serial.print(F("lnbitsURL: "));
   Serial.println(lnbitsURL);
 
-  // Block here until config, network, price, funding service and the bill
-  // acceptor all check out (or the operator reboots into the setup hotspot).
-  preflightGate();
-
-  Serial.println("Proceeding to main screen");
-  createMainScreen();
-  lv_task_handler();
-  bootStage(50, "main screen created");
-
-  Serial.print("ESP Free heap (Setup end): ");
-  Serial.println(ESP.getFreeHeap());
-
-  startPriceBalanceTask(deviceStatePtr, sessionStatePtr);
-  triggerPriceBalanceFetch(PBR_PERIODIC);
-
-  appStartupCompleted = true;
-  pendingPortalCompletion = false;
+  // Run from loop(), once setup()'s frame is gone. See pendingPreflight.
+  pendingPreflight = true;
 }
 
 void reloadRuntimeConfigFromFlash() {
@@ -2246,13 +2303,16 @@ void setup() {
   // AP+STA mode make the SoftAP hop channels, so phones drop the connection
   // ("connects and disconnects") - so we also stop retries when the portal is
   // up because WiFi failed (the recovery case), not just on explicit entry.
-  // reconnectInterval=0 is what stops those background scans; autoReconnect
-  // must stay on so begin() still tries the saved credentials (incl.
-  // /wifi.json from the web flasher) once before falling back to the AP.
+  // reconnectInterval=0 is what stops those background scans. An explicit
+  // setup hotspot does not join the saved network: AP+STA makes
+  // fiathell.local advertise two addresses and the page load waits on the
+  // one the phone cannot reach. Normal boot still tries the saved network.
   const bool portalActiveNow = portalRequestedByUser ||
                                portalRequiredForMissingConfig ||
                                portalRequiredForWifiRecovery;
-  acConfig.autoReconnect = true;
+  const bool explicitPortal =
+      userWantsPortal || portalRequiredForMissingConfig;
+  acConfig.autoReconnect = !explicitPortal;
   acConfig.reconnectInterval = portalActiveNow ? 0 : 1;
   acConfig.preserveAPMode = portalActiveNow;
 
@@ -2341,12 +2401,15 @@ void setup() {
       Serial.println("Portal available. AP Name: " + acConfig.apid);
       Serial.println("Portal AP IP: " + WiFi.softAPIP().toString());
       ensureApDns();
-      if (MDNS.begin("fiathell")) {
-        MDNS.addService("http", "tcp", 80);
-        Serial.println("mDNS: http://fiathell.local (config AP)");
-      }
       digitalWrite(11, LOW);
     }
+  }
+  // After begin() the radio may still be AP+STA. Collapse an explicit setup
+  // session to the hotspot alone, then publish fiathell.local for that one IP.
+  if (explicitPortal) {
+    settleSetupHotspot();
+  } else if (!wifiStatus() && acConfig.autoRise) {
+    startFiathellMdns();
   }
   bootStage(48, "wifi or portal state evaluated");
 
@@ -2573,7 +2636,7 @@ void createPortalScreen() {
   lv_obj_set_style_text_font(portaltext2b, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(portaltext2b, LV_COLOR_WHITE, 0);*/
 
-  String LVGL_PORTAL_URL = "http://fiathell.local  alebo  http://192.168.4.1";
+  String LVGL_PORTAL_URL = "http://192.168.4.1   or   http://fiathell.local";
   lv_obj_t *portalurl = lv_label_create(screen_portal);
   lv_label_set_text(portalurl, LVGL_PORTAL_URL.c_str());
   lv_obj_align(portalurl, LV_ALIGN_TOP_MID, 0, 198);
@@ -4530,6 +4593,12 @@ void handleUiStateMachine() {
  * includes a delay of 5 milliseconds at the end of each iteration.
  */
 void loop() {
+  if (pendingPreflight) {
+    pendingPreflight = false;
+    preflightGate();
+    finishStartupAfterPreflight();
+  }
+
   // Deferred restart (after /setup/save or /setup/ota response has been sent)
   if (pendingRestartAt && millis() > pendingRestartAt) {
     pendingRestartAt = 0;
