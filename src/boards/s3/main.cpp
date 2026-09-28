@@ -326,6 +326,7 @@ static lv_obj_t *battery_cells[4] = {nullptr};
 static lv_obj_t *battery_label = nullptr;
 static unsigned long lastBatteryUpdate = 0;
 static const unsigned long BATTERY_UPDATE_INTERVAL_MS = 4000;
+static int lastBatteryPct = -2; // -2 = never measured, -1 = no battery
 
 void checkStackUsage() {
   UBaseType_t highWaterMark = uxTaskGetStackHighWaterMark(NULL);
@@ -338,7 +339,14 @@ void checkStackUsage() {
  * Returns -1 if ADC invalid or voltage out of sane range.
  */
 static int readBatteryPercent() {
-  int raw = analogRead(BATTERY_ADC_GPIO);
+  // Average several samples; with no battery connected the divider input is
+  // open, the pin floats, and a single read jumps all over the range.
+  uint32_t sum = 0;
+  for (int i = 0; i < 8; i++) {
+    sum += analogRead(BATTERY_ADC_GPIO);
+    delay(1);
+  }
+  int raw = sum / 8;
   float vAdc = (raw / 4095.0f) * 3.3f;
   float vBatt = vAdc * BATTERY_DIVIDER_RATIO;
   if (vBatt < 8.0f || vBatt > 14.0f) {
@@ -394,7 +402,13 @@ void attachBatteryToCurrentScreen() {
 #if (BATTERY_ADC_GPIO < 0)
   lv_obj_add_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
 #else
-  lv_obj_clear_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+  // Without a battery the divider holds the ADC near 0 V; keep the indicator
+  // hidden until a battery is actually present.
+  if (lastBatteryPct < 0) {
+    lv_obj_add_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+  }
 #endif
 }
 
@@ -408,29 +422,53 @@ void updateBatteryIndicator() {
   return;
 #endif
   int pct = readBatteryPercent();
+  // A floating pin (no battery, divider input open) wanders between reads;
+  // a real battery barely moves. Believe the reading only after a few
+  // consecutive samples that hold still, so the indicator cannot flicker.
+  static int prevPct = -2;
+  static int stableStreak = 0;
+  if (pct >= 0 && prevPct >= 0 && abs(pct - prevPct) <= 3) {
+    stableStreak++;
+  } else {
+    stableStreak = 0;
+  }
+  prevPct = pct;
+  const bool present = (pct >= 0) && (stableStreak >= 2);
+  if (!present) {
+    if (lastBatteryPct != -1) {
+      lastBatteryPct = -1;
+      lv_obj_add_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+      Serial.println("battery: no battery detected, indicator hidden");
+    }
+    return;
+  }
+  // Every label/style write invalidates the area and the resulting flush can
+  // make the panel twitch; repaint only when the reading actually changed.
+  if (pct == lastBatteryPct) {
+    return;
+  }
+  if (lastBatteryPct < 0) {
+    Serial.printf("battery: detected, %d%%\n", pct);
+  }
+  lastBatteryPct = pct;
+  lv_obj_clear_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%d%%", pct);
+  lv_label_set_text(battery_label, buf);
   int filled;
   lv_color_t color;
-  if (pct < 0) {
-    filled = 0;
-    color = lv_color_hex(0x808080);
-    lv_label_set_text(battery_label, "---");
+  if (pct >= 75) {
+    filled = 4;
+    color = LV_COLOR_GREEN;
+  } else if (pct >= 50) {
+    filled = 3;
+    color = LV_COLOR_GREEN;
+  } else if (pct >= 25) {
+    filled = 2;
+    color = LV_COLOR_ORANGE;
   } else {
-    char buf[12];
-    snprintf(buf, sizeof(buf), "%d%%", pct);
-    lv_label_set_text(battery_label, buf);
-    if (pct >= 75) {
-      filled = 4;
-      color = LV_COLOR_GREEN;
-    } else if (pct >= 50) {
-      filled = 3;
-      color = LV_COLOR_GREEN;
-    } else if (pct >= 25) {
-      filled = 2;
-      color = LV_COLOR_ORANGE;
-    } else {
-      filled = 1;
-      color = LV_COLOR_RED;
-    }
+    filled = 1;
+    color = LV_COLOR_RED;
   }
   for (int i = 0; i < 4; i++) {
     lv_obj_set_style_bg_color(battery_cells[i],
@@ -1178,7 +1216,9 @@ static void finishStartupAfterPreflight() {
   Serial.println(ESP.getFreeHeap());
 
   startPriceBalanceTask(deviceStatePtr, sessionStatePtr);
-  triggerPriceBalanceFetch(PBR_PERIODIC);
+  // No immediate fetch: the startup check fetched price and balance seconds
+  // ago, and a TLS burst right as the main screen appears makes the panel
+  // glitch. The 30 s cadence in loop() refreshes soon enough.
 
   appStartupCompleted = true;
   pendingPortalCompletion = false;
@@ -1895,8 +1935,44 @@ void setup() {
   }
   bootStage(31, "gui config loaded");
 
+  // The saved /gui.json carries the radio option lists from the firmware
+  // that wrote it, and loadElement() restores them over the page definition -
+  // a file written by an older build hides options added since (e.g. Yadio).
+  // Rebuild the options from the firmware list and keep the selection.
+  static const char *const kFundingSources[] = {"Blink", "LNbits", "Flash"};
+  static const char *const kRateSources[] = {"CoinGecko", "ExchangeApi",
+                                             "CoinYEP", "Kraken", "Yadio"};
+  static const char *const kAnimatedOptions[] = {"No", "Yes"};
+  auto ensureRadioOptions = [](AutoConnectAux &aux, const char *name,
+                               const char *const *options, size_t count) {
+    AutoConnectElement *elm = aux.getElement(name);
+    if (!elm || elm->typeOf() != AC_Radio) {
+      return;
+    }
+    AutoConnectRadio *radio = static_cast<AutoConnectRadio *>(elm);
+    bool same = radio->size() == count;
+    for (size_t i = 0; same && i < count; i++) {
+      same = radio->at(i).equals(options[i]);
+    }
+    if (same) {
+      return;
+    }
+    String selected;
+    if (radio->checked >= 1 && radio->checked <= radio->size()) {
+      selected = radio->at(radio->checked - 1);
+    }
+    radio->empty(count);
+    for (size_t i = 0; i < count; i++) {
+      radio->add(options[i]);
+    }
+    radio->checked = 1;
+    if (selected.length() > 0) {
+      radio->check(selected);
+    }
+  };
+
   guiAux.load(FPSTR(PAGE_GUI));
-  guiAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+  guiAux.on([ensureRadioOptions](AutoConnectAux &aux, PageArgument &arg) {
     File paramGui = FlashFS.open(GUI_FILE, "r");
     if (paramGui) {
       aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
@@ -1910,6 +1986,12 @@ void setup() {
         paramGui.close();
       }
     }
+    ensureRadioOptions(aux, "fundingsource", kFundingSources,
+                       sizeof(kFundingSources) / sizeof(kFundingSources[0]));
+    ensureRadioOptions(aux, "ratesource", kRateSources,
+                       sizeof(kRateSources) / sizeof(kRateSources[0]));
+    ensureRadioOptions(aux, "animated", kAnimatedOptions,
+                       sizeof(kAnimatedOptions) / sizeof(kAnimatedOptions[0]));
     return String();
   });
   bootStage(32, "gui aux configured");
@@ -3253,8 +3335,17 @@ void color_anim_cb(void *var, int32_t v) {
   int idx =
       (v * num_colors) /
       256; // This will convert v (0 to 255) to an index in the colors array.
-  lv_color_t color = colors[idx];
 
+  // Repainting the title on every animation step kept the CPU flushing the
+  // framebuffer nonstop, which starved the panel DMA and made the picture
+  // twitch. Repaint only when the color actually changes.
+  static int lastIdx = -1;
+  if (idx == lastIdx) {
+    return;
+  }
+  lastIdx = idx;
+
+  lv_color_t color = colors[idx];
   lv_obj_set_style_text_color(obj, color, 0);
 }
 
@@ -3326,6 +3417,29 @@ static bool allCreditableQuotesReady() {
   return true;
 }
 
+// lv_label_set_text() and style writes invalidate and redraw even when the
+// content is already on screen, and every redraw is a framebuffer flush that
+// can tear against the panel scanout. Skip writes that change nothing.
+static void setLabelTextIfChanged(lv_obj_t *label, const char *text) {
+  if (label == nullptr) {
+    return;
+  }
+  const char *current = lv_label_get_text(label);
+  if (current != nullptr && strcmp(current, text) == 0) {
+    return;
+  }
+  lv_label_set_text(label, text);
+}
+
+static void setLabelColorIfChanged(lv_obj_t *label, lv_color_t color) {
+  if (label == nullptr) {
+    return;
+  }
+  if (lv_obj_get_style_text_color(label, LV_PART_MAIN).full != color.full) {
+    lv_obj_set_style_text_color(label, color, 0);
+  }
+}
+
 // Largest configured note, in the same whole-currency units the screen shows
 // ("5000" for a 5000 PYG note).
 static int largestConfiguredNote() {
@@ -3363,14 +3477,17 @@ static void armAcceptorIfQuoted() {
         } else {
           snprintf(hold, sizeof(hold), "Waiting for price and balance");
         }
-        lv_label_set_text(mainScreenHoldLabel, hold);
-        lv_obj_clear_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
+        setLabelTextIfChanged(mainScreenHoldLabel, hold);
+        if (lv_obj_has_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN)) {
+          lv_obj_clear_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
+        }
       }
       Serial.printf("NV10 stays off: balance %.0f %s, largest note %d\n",
                     (double)fiatBalance, currencySelected, largestNote);
       return;
     }
-    if (mainScreenHoldLabel != nullptr) {
+    if (mainScreenHoldLabel != nullptr &&
+        !lv_obj_has_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN)) {
       lv_obj_add_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
     }
   }
@@ -3403,34 +3520,33 @@ void updateMainScreenLabel() {
   Serial.println(ESP.getFreeHeap());
   if (balanceValueLabel) { // Ensure the label has been created
     if (!wifiStatus()) {
-      lv_label_set_text(balanceValueLabel, "OFFLINE");
+      setLabelTextIfChanged(balanceValueLabel, "OFFLINE");
     } else {
       char buffer[32];
       snprintf(buffer, sizeof(buffer), "%.2f %s", fiatBalance,
                currencySelected);
-      lv_label_set_text(balanceValueLabel, buffer);
-      lv_obj_set_style_text_color(balanceValueLabel, LV_COLOR_WHITE, 0);
-      if (fiatBalance < maxamountSelected) {
-        lv_obj_set_style_text_color(balanceValueLabel, LV_COLOR_RED, 0);
-      }
+      setLabelTextIfChanged(balanceValueLabel, buffer);
+      setLabelColorIfChanged(balanceValueLabel,
+                             fiatBalance < maxamountSelected ? LV_COLOR_RED
+                                                             : LV_COLOR_WHITE);
     }
   }
   if (fiatValueLabel) { // Check if it has been initialized
     if (!wifiStatus()) {
-      lv_label_set_text(fiatValueLabel, "OFFLINE");
-      lv_obj_set_style_text_color(fiatValueLabel, LV_COLOR_RED, 0);
+      setLabelTextIfChanged(fiatValueLabel, "OFFLINE");
+      setLabelColorIfChanged(fiatValueLabel, LV_COLOR_RED);
     } else {
       char buffer[32];
       snprintf(buffer, sizeof(buffer), "%ld %s", (long)fiatValue,
                currencySelected);
-      lv_label_set_text(fiatValueLabel, buffer);
-      lv_obj_set_style_text_color(fiatValueLabel, LV_COLOR_GREEN, 0);
+      setLabelTextIfChanged(fiatValueLabel, buffer);
+      setLabelColorIfChanged(fiatValueLabel, LV_COLOR_GREEN);
     }
   }
   if (chargeValueLabel) { // Check if it has been initialized
     char buffer[32];
     snprintf(buffer, sizeof(buffer), "%.1f %%", (double)chargeSelected);
-    lv_label_set_text(chargeValueLabel, buffer);
+    setLabelTextIfChanged(chargeValueLabel, buffer);
   }
   if (mainScreenCurrency1RateLabel) {
     char buf[32];
@@ -3438,12 +3554,12 @@ void updateMainScreenLabel() {
       snprintf(buf, sizeof(buf), "%ld", (long)sessionState.fiatValue1);
     else
       snprintf(buf, sizeof(buf), "-");
-    lv_label_set_text(mainScreenCurrency1RateLabel, buf);
+    setLabelTextIfChanged(mainScreenCurrency1RateLabel, buf);
   }
   if (mainScreenCurrency1FeeLabel) {
     char feeBuf[24];
     snprintf(feeBuf, sizeof(feeBuf), "Fee: %.1f%%", (double)charge1);
-    lv_label_set_text(mainScreenCurrency1FeeLabel, feeBuf);
+    setLabelTextIfChanged(mainScreenCurrency1FeeLabel, feeBuf);
   }
   if (mainScreenCurrency2RateLabel) {
     char buf[32];
@@ -3451,12 +3567,12 @@ void updateMainScreenLabel() {
       snprintf(buf, sizeof(buf), "%ld", (long)sessionState.fiatValue2);
     else
       snprintf(buf, sizeof(buf), "-");
-    lv_label_set_text(mainScreenCurrency2RateLabel, buf);
+    setLabelTextIfChanged(mainScreenCurrency2RateLabel, buf);
   }
   if (mainScreenCurrency2FeeLabel) {
     char feeBuf[24];
     snprintf(feeBuf, sizeof(feeBuf), "Fee: %.1f%%", (double)charge2);
-    lv_label_set_text(mainScreenCurrency2FeeLabel, feeBuf);
+    setLabelTextIfChanged(mainScreenCurrency2FeeLabel, feeBuf);
   }
   if (mainScreenCurrency3RateLabel) {
     char buf[32];
@@ -3464,12 +3580,12 @@ void updateMainScreenLabel() {
       snprintf(buf, sizeof(buf), "%ld", (long)sessionState.fiatValue3);
     else
       snprintf(buf, sizeof(buf), "-");
-    lv_label_set_text(mainScreenCurrency3RateLabel, buf);
+    setLabelTextIfChanged(mainScreenCurrency3RateLabel, buf);
   }
   if (mainScreenCurrency3FeeLabel) {
     char feeBuf[24];
     snprintf(feeBuf, sizeof(feeBuf), "Fee: %.1f%%", (double)charge3);
-    lv_label_set_text(mainScreenCurrency3FeeLabel, feeBuf);
+    setLabelTextIfChanged(mainScreenCurrency3FeeLabel, feeBuf);
   }
 
   Serial.print("Free heap (updateMainScreenLabel End): ");
@@ -3564,7 +3680,10 @@ void createMainScreen() {
     lv_anim_set_var(&a, fiathell);
     lv_anim_set_values(&a, 0, 255);
     lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_time(&a, 500); // duration of one color change cycle
+    lv_anim_set_time(&a, 500); // one sweep through the palette
+    // ...and the same time back, so the color pulses instead of snapping
+    // from the last color to the first twice per second.
+    lv_anim_set_playback_time(&a, 500);
     lv_anim_set_exec_cb(&a, color_anim_cb);
     lv_anim_start(&a);
     Serial.println("createMainScreen: Animation started");
@@ -4872,8 +4991,9 @@ void loop() {
   }
 
   if (initialCheck) {
-    previousMillis =
-        millis() - interval; // So that it gets executed immediately after setup
+    // Start the refresh cadence from now instead of firing immediately - the
+    // startup check already fetched a fresh price and balance.
+    previousMillis = millis();
     initialCheck = false;
   }
 
