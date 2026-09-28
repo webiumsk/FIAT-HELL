@@ -4475,6 +4475,34 @@ void triggerRuntimeConfigMode() {
   Serial.println("Config mode active: " + acConfig.apid + " -> 192.168.4.1  (5 min)");
 }
 
+// Drop the finished sale and show the screen the next customer already
+// expects. Wi-Fi, prices, and the startup check stay up; a reboot here made
+// every payout wait through the whole boot again.
+static void returnToMainScreen() {
+  sessionState.resetTransaction();
+  sessionState.resetPaymentFlow();
+  qrDebounceDone = false;
+  mixedLimitExceededAutoProceed = false;
+  FundingService::clearPayoutFailure();
+  // The payout inhibited the acceptor while this flag still said it was open.
+  acceptorArmed = false;
+  billAcceptorWrite(185);
+  if (screen_main == nullptr) {
+    createMainScreen();
+  } else {
+    mainScreenShown = true;
+    updateMainScreenLabel();
+    lv_scr_load(screen_main);
+    attachBatteryToCurrentScreen();
+  }
+  uiController.deleteThankYouScreen();
+  uiController.deleteQRCodeScreen();
+  discardInsertMoneyScreen();
+  currentUiState = UI_IDLE;
+  stateEnterTime = millis();
+  Serial.println("Transaction cleared => main screen");
+}
+
 void handleUiStateMachine() {
   unsigned long currentTime = millis();
   BTNA.read();
@@ -4614,13 +4642,8 @@ void handleUiStateMachine() {
     uint16_t qrTouchX, qrTouchY;
     if (BTNA.wasPressed() || lcd.getTouch(&qrTouchX, &qrTouchY)) {
       // Reset for the next transaction
-      coins = 0;
-      bills = 0;
-      total = 0;
-      isInsertingMoney = false;
-      currentUiState = UI_IDLE;
-      Serial.println("Tap detected => resetting and restarting");
-      ESP.restart();
+      Serial.println("Tap detected => back to main screen");
+      returnToMainScreen();
     }
     break;
   }
@@ -4630,8 +4653,8 @@ void handleUiStateMachine() {
     uint16_t thxTouchX, thxTouchY;
     bool thxTap = lcd.getTouch(&thxTouchX, &thxTouchY) || BTNA.wasPressed();
     if (thxTap || (currentTime - stateEnterTime >= 5000)) {
-      Serial.println("Thank you => restarting");
-      ESP.restart();
+      Serial.println("Thank you => back to main screen");
+      returnToMainScreen();
     }
     break;
   }
