@@ -242,11 +242,12 @@ lv_obj_t *mainScreenCurrency2RateLabel = nullptr;
 lv_obj_t *mainScreenCurrency2FeeLabel = nullptr;
 lv_obj_t *mainScreenCurrency3RateLabel = nullptr;
 lv_obj_t *mainScreenCurrency3FeeLabel = nullptr;
+lv_obj_t *mainScreenHoldLabel = nullptr;
 
 // Temporary buffers
 char buffer[32];
 
-const long interval = 300000; // 5 minutes in milliseconds
+const long interval = 30000; // price and balance refresh, 30 seconds
 
 // UI State Machine - now defined in SessionState.h
 #define currentUiState sessionState.currentUiState
@@ -1136,8 +1137,39 @@ static void settleSetupHotspot() {
   Serial.println("Setup hotspot only: http://192.168.4.1 and http://fiathell.local");
 }
 
+// The startup check already fetched the price and the wallet balance. Copy
+// them into the fields the main screen reads, so the first paint is not a
+// row of zeros waiting on the background task. The center rate uses
+// fiatValue1 directly; the bottom price uses fiatValue, which used to stay
+// 0 until that later refresh.
+static void applyDisplayedQuotes() {
+  if (currencyOne[0] != '\0') {
+    strlcpy(currencySelected, currencyOne, sizeof(currencySelected));
+    if (sessionState.fiatValue1 > 0.0f) {
+      fiatValue = sessionState.fiatValue1;
+    }
+    chargeSelected = charge1;
+    maxamountSelected = maxamount;
+  }
+  if (balanceSats <= 0 || fiatValue <= 0.0f) {
+    return;
+  }
+  const char *walletCur =
+      FundingService::galoyWalletCurrency(deviceState.fundingSourceBuffer);
+  if (FundingService::isGaloy(deviceState.fundingSourceBuffer) &&
+      strcmp(walletCur, "USD") == 0 && sessionState.btcUsdValue > 0.0f) {
+    fiatBalance =
+        ((double)balanceSats / 100.0) * (fiatValue / sessionState.btcUsdValue);
+  } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+    fiatBalance = ((double)balanceSats * fiatValue) / 100000000000.0;
+  } else {
+    fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
+  }
+}
+
 static void finishStartupAfterPreflight() {
   Serial.println("Proceeding to main screen");
+  applyDisplayedQuotes();
   createMainScreen();
   lv_task_handler();
   bootStage(50, "main screen created");
@@ -3294,15 +3326,60 @@ static bool allCreditableQuotesReady() {
   return true;
 }
 
+// Largest configured note, in the same whole-currency units the screen shows
+// ("5000" for a 5000 PYG note).
+static int largestConfiguredNote() {
+  int largestNote = 0;
+  for (int amount : billAmountIntOne) {
+    if (amount > largestNote) largestNote = amount;
+  }
+  return largestNote;
+}
+
 static void armAcceptorIfQuoted() {
-  if (acceptorArmed || !mainScreenShown) {
+  if (!mainScreenShown) {
+    return;
+  }
+  // A note that clears the sensor is always stacked and credited - the NV10
+  // in this mode cannot hand a valid note back. Open the acceptor only when
+  // the balance shown on screen covers the largest configured note, and close
+  // it again as soon as a refresh says it does not.
+  const bool offlineLnbits =
+      strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 && !wifiStatus();
+  if (!offlineLnbits) {
+    const int largestNote = largestConfiguredNote();
+    const bool known = balanceSats > 0 && fiatBalance > 0.0f && largestNote > 0;
+    const bool covers = known && fiatBalance >= (double)largestNote;
+    if (!covers) {
+      if (acceptorArmed) {
+        billAcceptorWrite(185);
+        acceptorArmed = false;
+      }
+      if (mainScreenHoldLabel != nullptr) {
+        char hold[96];
+        if (known) {
+          snprintf(hold, sizeof(hold), "Balance too low for a %d %s note",
+                   largestNote, currencySelected);
+        } else {
+          snprintf(hold, sizeof(hold), "Waiting for price and balance");
+        }
+        lv_label_set_text(mainScreenHoldLabel, hold);
+        lv_obj_clear_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
+      }
+      Serial.printf("NV10 stays off: balance %.0f %s, largest note %d\n",
+                    (double)fiatBalance, currencySelected, largestNote);
+      return;
+    }
+    if (mainScreenHoldLabel != nullptr) {
+      lv_obj_add_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+  if (acceptorArmed) {
     return;
   }
   // Offline LNbits pays out through the stored LNURL-device link, which
   // encodes the fiat amount directly - no BTC price is needed, so the quote
   // gate is skipped when the network is down.
-  const bool offlineLnbits =
-      strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 && !wifiStatus();
   if (!offlineLnbits && !allCreditableQuotesReady()) {
     Serial.printf(
         "NV10 stays off: sizes %d/%d/%d prices %.2f/%.2f/%.2f\n",
@@ -3616,6 +3693,16 @@ void createMainScreen() {
     lv_obj_set_style_text_color(flashLabel, lv_color_hex(0xFF9900), 0);
     lv_obj_align(flashLabel, LV_ALIGN_TOP_RIGHT, -10, 35);
   }
+
+  mainScreenHoldLabel = lv_label_create(screen_main);
+  lv_label_set_text(mainScreenHoldLabel, "");
+  lv_obj_set_width(mainScreenHoldLabel, 720);
+  lv_label_set_long_mode(mainScreenHoldLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(mainScreenHoldLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(mainScreenHoldLabel, LV_ALIGN_CENTER, 0, 20);
+  lv_obj_set_style_text_font(mainScreenHoldLabel, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_color(mainScreenHoldLabel, LV_COLOR_RED, 0);
+  lv_obj_add_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
 
   // Fill the labels before the screen is shown, so the panel draws once.
   // updateMainScreenLabel() arms the acceptor, which needs mainScreenShown.
@@ -4490,6 +4577,9 @@ static void returnToMainScreen() {
   if (screen_main == nullptr) {
     createMainScreen();
   } else {
+    // The balance dropped by the paid amount; show the cached value now and
+    // let the background task refresh it without blocking the next customer.
+    triggerPriceBalanceFetch(PBR_PERIODIC);
     mainScreenShown = true;
     updateMainScreenLabel();
     lv_scr_load(screen_main);
@@ -4902,6 +4992,27 @@ void loop() {
   const bool hasMixed = (sessionState.totalCurrency1 || sessionState.totalCurrency2 || sessionState.totalCurrency3) != 0;
   const bool hasAmount = (total != 0) || hasMixed;
   if (currentUiState == UI_INSERTING_MONEY) {
+    // The sale is settled when the customer taps, so the balance check must
+    // not end it. A note that pushes the quote past the spendable balance is
+    // refused instead, so cash is never stacked without the sats to pay it.
+    if (hasAmount && balanceSats > 0) {
+      const MixedLeg balanceLegs[] = {
+          {sessionState.totalCurrency1, sessionState.fiatValue1, charge1},
+          {sessionState.totalCurrency2, sessionState.fiatValue2, charge2},
+          {sessionState.totalCurrency3, sessionState.fiatValue3, charge3},
+      };
+      const Quote balanceQuote = hasMixed
+          ? quoteMixedSats(balanceLegs, 3)
+          : quoteSats(llround(total * 100.0), fiatValue, chargeSelected);
+      if (balanceQuote.ok && balanceQuote.sats > balanceSats) {
+        Serial.println("Quote exceeds balance => refuse further notes");
+        billAcceptorWrite(185);
+        if (labelMaxAmount) {
+          lv_label_set_text(labelMaxAmount, "Balance limit reached - tap to finish");
+        }
+      }
+    }
+
     uint16_t touchX, touchY;
     bool screenTapped = hasAmount && lcd.getTouch(&touchX, &touchY);
     if ((BTNA.wasPressed() && hasAmount) || screenTapped || mixedLimitExceededAutoProceed || (!hasMixed && total >= maxamountSelected)) {

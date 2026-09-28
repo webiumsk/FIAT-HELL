@@ -29,9 +29,10 @@ static const char PAGE_GUI[] PROGMEM = R"(
         "CoinGecko",
         "ExchangeApi",
         "CoinYEP",
-        "Kraken"
+        "Kraken",
+        "Yadio"
       ],
-      "label": "Rate source: CoinGecko (universal), ExchangeApi, CoinYEP, Kraken",
+      "label": "Rate source: CoinGecko (universal), ExchangeApi, CoinYEP, Kraken, Yadio",
       "arrange": "horizontal",
       "checked": 1
     },
