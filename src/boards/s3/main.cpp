@@ -2769,8 +2769,26 @@ static bool acceptorArmed = false;
 // acceptor must only open once the customer main screen exists.
 static bool mainScreenShown = false;
 
-static bool currencyQuoted(const char *currency, float price, float fee) {
-  return currency && currency[0] != '\0' && quoteSats(100, price, fee).ok;
+// One unit of a currency such as PYG is worth a fraction of a sat, so a fixed
+// 100-cent probe never succeeds and the acceptor stays dark. Probe the
+// smallest configured note instead; that is what a customer can actually insert.
+static bool currencyQuoted(const char *currency, int channelStart, int channelCount,
+                           float price, float fee) {
+  if (currency == nullptr || currency[0] == '\0' || channelCount <= 0) {
+    return false;
+  }
+  int64_t smallestCents = 0;
+  for (int i = 0; i < channelCount; i++) {
+    const int amount = billAmountIntOne[channelStart + i];
+    if (amount <= 0) {
+      continue;
+    }
+    const int64_t cents = (int64_t)amount * 100;
+    if (smallestCents == 0 || cents < smallestCents) {
+      smallestCents = cents;
+    }
+  }
+  return smallestCents > 0 && quoteSats(smallestCents, price, fee).ok;
 }
 
 // The main screen uninhibits every configured channel, so a bill of any
@@ -2781,22 +2799,33 @@ static bool allCreditableQuotesReady() {
   if (originalSizeOne == 0) {
     return false;
   }
-  if (!currencyQuoted(currencyOne, sessionState.fiatValue1, charge1)) {
+  if (!currencyQuoted(currencyOne, 0, originalSizeOne, sessionState.fiatValue1,
+                      charge1)) {
     return false;
   }
   if (originalSizeTwo > 0 &&
-      !currencyQuoted(currencyTwo, sessionState.fiatValue2, charge2)) {
+      !currencyQuoted(currencyTwo, originalSizeOne, originalSizeTwo,
+                      sessionState.fiatValue2, charge2)) {
     return false;
   }
   if (originalSizeThree > 0 &&
-      !currencyQuoted(currencyThree, sessionState.fiatValue3, charge3)) {
+      !currencyQuoted(currencyThree, originalSizeOne + originalSizeTwo,
+                      originalSizeThree, sessionState.fiatValue3, charge3)) {
     return false;
   }
   return true;
 }
 
 static void armAcceptorIfQuoted() {
-  if (acceptorArmed || !mainScreenShown || !allCreditableQuotesReady()) {
+  if (acceptorArmed || !mainScreenShown) {
+    return;
+  }
+  if (!allCreditableQuotesReady()) {
+    Serial.printf(
+        "NV10 stays off: sizes %d/%d/%d prices %.2f/%.2f/%.2f\n",
+        originalSizeOne, originalSizeTwo, originalSizeThree,
+        sessionState.fiatValue1, sessionState.fiatValue2,
+        sessionState.fiatValue3);
     return;
   }
   // enableAcceptor() refuses Galoy without WiFi; check first so a refused
@@ -3121,6 +3150,7 @@ void enableAcceptor() {
     return;
   }
   billAcceptorWrite(184);  // Enable acceptor (channels already set by setCurrency)
+  Serial.println("NV10: master enable 184");
   if (INHIBITMECH >= 0) {
     digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
   }

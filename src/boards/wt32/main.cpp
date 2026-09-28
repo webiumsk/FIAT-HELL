@@ -2246,7 +2246,31 @@ void createCurrencyScreen(const char *currency, float rate, float balance,
 }
 
 void enableAcceptor() {
-  if (!quoteSats(100, fiatValue, chargeSelected).ok) {
+  int startChannel = 0;
+  int currencySize = 0;
+  if (strcmp(currencySelected, currencyOne) == 0) {
+    currencySize = originalSizeOne;
+  } else if (strcmp(currencySelected, currencyTwo) == 0) {
+    startChannel = originalSizeOne;
+    currencySize = originalSizeTwo;
+  } else if (strcmp(currencySelected, currencyThree) == 0) {
+    startChannel = originalSizeOne + originalSizeTwo;
+    currencySize = originalSizeThree;
+  }
+  int64_t smallestCents = 0;
+  for (int i = 0; i < currencySize; i++) {
+    const int amount = billAmountIntOne[startChannel + i];
+    if (amount <= 0) {
+      continue;
+    }
+    const int64_t cents = (int64_t)amount * 100;
+    if (smallestCents == 0 || cents < smallestCents) {
+      smallestCents = cents;
+    }
+  }
+  // One unit of PYG (and similar currencies) rounds to 0 sats. The probe is
+  // the smallest note this currency can take.
+  if (!quoteSats(smallestCents, fiatValue, chargeSelected).ok) {
     Serial.println("Acceptor stays inhibited until a price quote succeeds");
     return;
   }

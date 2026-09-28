@@ -43,6 +43,9 @@ int main() {
   expect(!quoteSats(10000, 50000.0, 100.0).ok, "fee of 100 yields no sats");
   expect(!quoteSats(1, 100000000.0, 0.0).ok, "sub-sat amount is not payable");
   expect(quoteSats(10000, 50000.0, 0.0).ok, "zero fee is allowed");
+  // 1.00 PYG at a realistic BTC price is under one sat. A real note is not.
+  expect(!quoteSats(100, 800000000.0, 0.0).ok, "one PYG rounds to zero sats");
+  expect(quoteSats(200000, 800000000.0, 0.0).sats == 250, "2000 PYG quotes");
 
   const MixedLeg legs[] = {
       {10000, 50000.0, 0.0},
