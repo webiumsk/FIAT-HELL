@@ -44,6 +44,7 @@ static const lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_OR
                        LV_COLOR_YELLOW, LV_COLOR_GREEN, LV_COLOR_BLUE};
 
 #include <FS.h>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <SPIFFS.h>
 #include <WebServer.h>
@@ -567,19 +568,14 @@ static int billAcceptorRead() {
   return -1;
 }
 
-static bool exitCaptivePortalLoopOnce = false;
 static bool suspendTouchPolling = false;
 
-// Own captive-portal DNS. AutoConnect only starts its DNS from handleClient
-// when its whileCaptivePortal callback returns true, and it isn't involved at
-// all when we bring up the AP manually - so the config AP had no DNS and
-// phones showed "connected, no internet" instead of the sign-in prompt.
-//
-// We answer every query with the softAP IP. The Arduino DNSServer mangles
-// EDNS0 queries (modern phones send them) into malformed replies, so this is
-// a minimal hand-rolled responder that drops the additional/OPT section and
-// returns a valid A answer. AutoConnect is told to keep off port 53 via the
-// whileCaptivePortal callback below.
+// Own captive-portal DNS: the only resolver on UDP 53 while the AP is up.
+// We answer every query with the softAP IP. The Arduino DNSServer that
+// AutoConnect would otherwise start mangles EDNS0 queries (modern phones send
+// them) into malformed replies, so this is a minimal hand-rolled responder
+// that drops the additional/OPT section and returns a valid A answer.
+// AutoConnect's own DNSServer is suppressed via portal.onDetect() in setup().
 static WiFiUDP apDnsUdp;
 static bool apDnsRunning = false;
 
@@ -663,22 +659,74 @@ static bool portalNetworkStateLogged = false;
 static bool pendingConfigReload = false;
 static unsigned long pendingRestartAt = 0;
 
-static bool allowSetupToContinueWhilePortalStaysAlive() {
-  // When our own captive DNS owns port 53, returning false here keeps
-  // AutoConnect from starting a second DNS server on the same port.
-  if (apDnsRunning) return false;
-  if (exitCaptivePortalLoopOnce) {
-    exitCaptivePortalLoopOnce = false;
-    Serial.println("Leaving blocking captive portal loop; keeping portal alive");
-    return false;
+// AutoConnect::isPortalAvailable() only reports its own DNSServer, which is
+// suppressed here, so the config portal counts as up while the softAP serves
+// clients and the station link is down.
+static bool configPortalUp() {
+  return (WiFi.getMode() & WIFI_AP) && !wifiStatus();
+}
+
+static void onWifiDiagEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+  case ARDUINO_EVENT_WIFI_AP_START:
+    Serial.println("[WIFI] AP started");
+    break;
+  case ARDUINO_EVENT_WIFI_AP_STOP:
+    Serial.println("[WIFI] AP stopped");
+    break;
+  case ARDUINO_EVENT_WIFI_AP_STACONNECTED: {
+    const uint8_t *m = info.wifi_ap_staconnected.mac;
+    Serial.printf("[WIFI] AP client joined %02x:%02x:%02x:%02x:%02x:%02x aid=%u\n",
+                  m[0], m[1], m[2], m[3], m[4], m[5],
+                  info.wifi_ap_staconnected.aid);
+    break;
   }
-  return true;
+  case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED: {
+    const uint8_t *m = info.wifi_ap_stadisconnected.mac;
+    Serial.printf("[WIFI] AP client left %02x:%02x:%02x:%02x:%02x:%02x aid=%u\n",
+                  m[0], m[1], m[2], m[3], m[4], m[5],
+                  info.wifi_ap_stadisconnected.aid);
+    break;
+  }
+  case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+    Serial.println("[WIFI] STA connected");
+    break;
+  case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+    Serial.printf("[WIFI] STA disconnected reason=%u\n",
+                  info.wifi_sta_disconnected.reason);
+    break;
+  default:
+    break;
+  }
+}
+
+// Periodic radio/heap snapshot while the config portal is up, so AP drops
+// can be told apart from client-side (phone) disconnects in the serial log.
+// Counter reads only: heap_caps_get_largest_free_block() walks the heap with
+// interrupts off and trips the Interrupt WDT here (see printHeapStatus()).
+static void logPortalHeartbeat() {
+  static unsigned long lastLog = 0;
+  if (millis() - lastLog < 10000UL) return;
+  lastLog = millis();
+  Serial.printf("[AP] clients=%u ch=%d mode=%d heapInt=%u minInt=%u psram=%u\n",
+                WiFi.softAPgetStationNum(), WiFi.channel(),
+                static_cast<int>(WiFi.getMode()),
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
 
 void completeStartupAfterPortal() {
   if (appStartupCompleted) {
     return;
   }
+
+  // Portal mode turns reconnects off to keep the AP on one channel; in normal
+  // operation the ATM has to recover from router outages by itself.
+  acConfig.autoReconnect = true;
+  acConfig.reconnectInterval = 1;
+  portal.config(acConfig);
+  WiFi.setAutoReconnect(true);
 
   if (wifiStatus() && MDNS.begin("fiathell")) {
     MDNS.addService("http", "tcp", 80);
@@ -1116,7 +1164,7 @@ void setup() {
   server.on("/", [isApClient]() {
     const bool routeToConfigPortal =
         pendingPortalCompletion || portalRequestedByUser ||
-        portalRequiredForMissingConfig || portal.isPortalAvailable();
+        portalRequiredForMissingConfig || configPortalUp();
     if (routeToConfigPortal) {
       if (!isApClient()) {
         server.send(403, "text/plain",
@@ -1465,7 +1513,9 @@ void setup() {
   /*********************************************************/
   acConfig.auth = AC_AUTH_BASIC;
   acConfig.authScope = AC_AUTHSCOPE_PORTAL;
-  acConfig.ticker = true;
+  // No status LED on this board: the ticker's default pin (LED_BUILTIN) maps
+  // to GPIO48 via RMT, which is the RGB panel's DATA_R1 line.
+  acConfig.ticker = false;
   acConfig.autoReset = false;
   acConfig.autoReconnect = true;
   acConfig.retainPortal = true;
@@ -1688,8 +1738,6 @@ void setup() {
         blinkwalletid[0] == '\0') ||
        (currencyOne[0] == '\0'));
 
-  const bool shouldOpenPortalNow =
-      (userWantsPortal || apiDataMissing || (wifiRequired && !wifiStatus()));
   const bool showPortalScreenImmediately =
       (userWantsPortal || apiDataMissing);
 
@@ -1702,18 +1750,27 @@ void setup() {
   // AP+STA mode make the SoftAP hop channels, so phones drop the connection
   // ("connects and disconnects") - so we also stop retries when the portal is
   // up because WiFi failed (the recovery case), not just on explicit entry.
+  // reconnectInterval=0 is what stops those background scans; autoReconnect
+  // must stay on so begin() still tries the saved credentials (incl.
+  // /wifi.json from the web flasher) once before falling back to the AP.
   const bool portalActiveNow = portalRequestedByUser ||
                                portalRequiredForMissingConfig ||
                                portalRequiredForWifiRecovery;
-  acConfig.autoReconnect = !portalActiveNow;
+  acConfig.autoReconnect = true;
   acConfig.reconnectInterval = portalActiveNow ? 0 : 1;
   acConfig.preserveAPMode = portalActiveNow;
 
   // Decide portal behavior once, then call portal.begin() once.
   acConfig.immediateStart = (userWantsPortal || apiDataMissing);
   acConfig.autoRise = (userWantsPortal || apiDataMissing || wifiRequired);
-  exitCaptivePortalLoopOnce = shouldOpenPortalNow;
-  portal.whileCaptivePortal(allowSetupToContinueWhilePortalStaysAlive);
+  // Keep AutoConnect's DNSServer off port 53 (our apDns answers instead) and
+  // skip its blocking captive loop; the portal is serviced from loop().
+  portal.onDetect([](IPAddress &) { return false; });
+  WiFi.onEvent(onWifiDiagEvent);
+  // The S3 core defaults to modem sleep, which holds every incoming packet
+  // until the next beacon wake-up (0.1-1.3 s ping measured): portal pages and
+  // every Blink/LNbits HTTPS round trip crawl. Must be set before STA starts.
+  WiFi.setSleep(false);
 
   if (portalActiveNow) {
     Serial.println("Config portal active: stopping STA retries to keep captive AP stable");
@@ -1762,7 +1819,9 @@ void setup() {
   // host-header based) so phones auto-open the sign-in page.
 
   if (wifiStatus()) {
-    Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
+    Serial.println("WiFi connected! IP: " + WiFi.localIP().toString() +
+                   " RSSI: " + String(WiFi.RSSI()) + " dBm ch " +
+                   String(WiFi.channel()));
     if (wifiRequired) {
       // If you don't want to leave the AP on, switch to STA only
       WiFi.mode(WIFI_STA);
@@ -3798,14 +3857,25 @@ void loop() {
     stopApDns();
   }
 
-  portal.handleClient(); // Already non‑blocking
+  // Not truly non-blocking: a response write waits up to 10 s per chunk when
+  // the client stops ACKing (WiFiClient::write retries), freezing loop().
+  const unsigned long handleStart = millis();
+  portal.handleClient();
+  const unsigned long handleMs = millis() - handleStart;
+  if (handleMs > 500) {
+    Serial.printf("[HTTP] loop blocked %lu ms in handleClient (last uri %s)\n",
+                  handleMs, server.uri().c_str());
+  }
 
   if (pendingConfigReload) {
     reloadRuntimeConfigFromFlash();
   }
 
-  const bool portalActive = portal.isPortalAvailable();
+  const bool portalActive = configPortalUp();
   suspendTouchPolling = portalActive;
+  if (portalActive) {
+    logPortalHeartbeat();
+  }
 
   if (pendingPortalCompletion && wifiStatus()) {
     if (portalRequestedByUser || portalRequiredForMissingConfig) {
