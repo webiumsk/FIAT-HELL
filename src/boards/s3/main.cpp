@@ -842,8 +842,9 @@ static void createPreflightScreen() {
   lv_obj_add_flag(preflightRetryBtn, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(preflightSetupBtn, LV_OBJ_FLAG_HIDDEN);
 
+  // The rows are filled in by preflightSetRow() before the first draw, so the
+  // screen is loaded once, not empty and then again with the results.
   lv_scr_load(screen);
-  lv_task_handler();
 }
 
 // The NV10 echoes command bytes; an inhibit command is the safest probe
@@ -2292,7 +2293,10 @@ void setup() {
        (currencyOne[0] == '\0'));
 
   portalRequestedByUser = userWantsPortal;
-  portalRequiredForMissingConfig = apiDataMissing || passwordRejected;
+  // A missing key or currency used to open this screen on every boot. The
+  // startup check already names what is missing, and SETUP there (or a tap on
+  // the logo) is how the operator asks for the hotspot.
+  portalRequiredForMissingConfig = passwordRejected;
   portalRequiredForWifiRecovery = (wifiRequired && !wifiStatus());
 
   const bool showPortalScreenImmediately =
@@ -2351,10 +2355,11 @@ void setup() {
     Serial.println("User tap => start AP portal immediately");
   } else if (passwordRejected) {
     Serial.println("Default password => start AP portal immediately");
-  } else if (apiDataMissing) {
-    Serial.println("API data missing => start AP portal immediately");
   } else {
     Serial.println("No tap => try STA first");
+    if (apiDataMissing) {
+      Serial.println("Settings incomplete; startup check will report them");
+    }
   }
   bootStage(44, "portal mode decision made");
 
@@ -2557,6 +2562,7 @@ void createLogoScreen() {
   lv_obj_align(img1, LV_ALIGN_CENTER, 0,
                0); // Align the image to the center of the screen
 
+  // The arc animation starts before the screen is shown; load it once.
   lv_scr_load(screen_logo);
   createBatteryIndicator();
   attachBatteryToCurrentScreen();
@@ -2575,6 +2581,14 @@ void createLogoScreen() {
  * @note The font styles for the labels are set using predefined font objects.
  * @note The screen_portal object is loaded as the active screen.
  */
+static void portalRestartCb(lv_event_t *e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+    return;
+  }
+  Serial.println("Portal RESTART tapped");
+  pendingRestartAt = millis() + 400;
+}
+
 void createPortalScreen() {
   screen_portal = lv_obj_create(NULL); // Create a new screen
   lv_obj_set_style_bg_color(screen_portal, lv_color_black(), 0);
@@ -2672,6 +2686,18 @@ void createPortalScreen() {
     lv_obj_set_style_text_color(pskLabel, lv_color_hex(0xFF9900), 0);
   }
 
+  lv_obj_clear_flag(screen_portal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *restartBtn = lv_btn_create(screen_portal);
+  lv_obj_set_size(restartBtn, 240, 64);
+  lv_obj_align(restartBtn, LV_ALIGN_BOTTOM_MID, 0, -24);
+  lv_obj_clear_flag(restartBtn, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(restartBtn, portalRestartCb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *restartLabel = lv_label_create(restartBtn);
+  lv_label_set_text(restartLabel, "RESTART");
+  lv_obj_set_style_text_font(restartLabel, &lv_font_montserrat_20, 0);
+  lv_obj_center(restartLabel);
+
+  // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_portal);
   attachBatteryToCurrentScreen();
 }
@@ -2747,6 +2773,7 @@ void createAPIScreen() {
   lv_obj_set_style_text_font(portaltextfour, &lv_font_montserrat_22,
                              0); // Use the large font
 
+  // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_api);
   attachBatteryToCurrentScreen();
 }
@@ -2823,6 +2850,7 @@ void createThankYouScreen() {
                              0); // Use the large font
   lv_obj_set_style_text_color(thxDesc, LV_COLOR_GREEN, 0);
 
+  // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_thx);
   attachBatteryToCurrentScreen();
 }
@@ -2867,6 +2895,7 @@ void createPaymentErrorScreen() {
   lv_obj_set_style_text_font(errDesc, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(errDesc, LV_COLOR_RED, 0);
 
+  // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_err);
   attachBatteryToCurrentScreen();
 }
@@ -3394,6 +3423,8 @@ void createMainScreen() {
   Serial.print("Free heap (createMainScreen Start): ");
   Serial.println(ESP.getFreeHeap());
 
+  // Build the screen off-screen and load it once. Loading it empty and then
+  // filling the labels draws the panel twice, which shows as a flicker.
   screen_main = lv_obj_create(NULL); // Create a new screen
   Serial.println("createMainScreen: Screen created");
 
@@ -3586,12 +3617,13 @@ void createMainScreen() {
     lv_obj_align(flashLabel, LV_ALIGN_TOP_RIGHT, -10, 35);
   }
 
+  // Fill the labels before the screen is shown, so the panel draws once.
+  // updateMainScreenLabel() arms the acceptor, which needs mainScreenShown.
+  mainScreenShown = true;
+  updateMainScreenLabel();
   lv_scr_load(screen_main);
   attachBatteryToCurrentScreen();
   Serial.println("createMainScreen: Screen loaded");
-  // Mixed-currency mode: accept all bills, no single-currency filter
-  mainScreenShown = true;
-  armAcceptorIfQuoted();
   Serial.print("Free heap (createMainScreen End): ");
   Serial.println(ESP.getFreeHeap());
 }
@@ -3722,7 +3754,7 @@ void createInsertMoneyScreen() {
     Serial.println("Failed to create labelMaxAmount!");
   }
 
-  // Load the new screen
+  // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_insert_money);
   attachBatteryToCurrentScreen();
 }
@@ -3855,9 +3887,20 @@ void display_flush(lv_disp_drv_t *disp, const lv_area_t *area,
 
 /*** Touchpad callback to read the touchpad ***/
 void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
+  // The setup hotspot used to drop every tap, so RESTART on that screen could
+  // never fire. Sample the controller slowly instead: a press still becomes a
+  // click, and the portal is not doing an I2C read on every GUI tick.
+  static unsigned long lastPortalTouchMs = 0;
+  static lv_indev_state_t heldState = LV_INDEV_STATE_REL;
+  static lv_point_t heldPoint = {0, 0};
   if (suspendTouchPolling) {
-    data->state = LV_INDEV_STATE_REL;
-    return;
+    const unsigned long now = millis();
+    if (now - lastPortalTouchMs < 80) {
+      data->state = heldState;
+      data->point = heldPoint;
+      return;
+    }
+    lastPortalTouchMs = now;
   }
 
   uint16_t touchX, touchY;
@@ -3873,6 +3916,11 @@ void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
     data->point.y = touchY;
 
     // Serial.printf("Touch (x,y): (%03d,%03d)\n",touchX,touchY );
+  }
+
+  if (suspendTouchPolling) {
+    heldState = data->state;
+    heldPoint = data->point;
   }
 }
 
@@ -4312,7 +4360,7 @@ void showQRCodeLVGL(const char *data) {
   lv_obj_set_style_text_color(label, lv_color_hex(0xFF9900), 0);
   lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 10);
 
-  // Load the screen
+  // QR and labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_qr);
   attachBatteryToCurrentScreen();
 
@@ -4414,19 +4462,15 @@ volatile bool isLoopReading = false;
  * and user input. It replaces blocking while/delay loops with non-blocking
  * state checks.
  */
-// Kept for forward compatibility but no longer called from runtime.
-// Portal mode is now triggered exclusively at boot (logo-tap or auto-detect).
+// Armed by a 3-second BOOT press on the main screen. Closed again from loop().
 static unsigned long configModeActiveUntil = 0;
 
 void triggerRuntimeConfigMode() {
   if (configModeActiveUntil) return; // already active
-  portalRequestedByUser   = true;
-  acConfig.preserveAPMode = true;
-  acConfig.autoReconnect  = false;
-  portal.config(acConfig);
-  if (!(WiFi.getMode() & WIFI_AP)) WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str(), acConfig.channel);
-  ensureApDns();
+  portalRequestedByUser = true;
+  // Hotspot alone, same as a boot-time setup session. AP+STA would publish
+  // two addresses for fiathell.local and the page would stall again.
+  settleSetupHotspot();
   configModeActiveUntil = millis() + 5UL * 60UL * 1000UL;
   Serial.println("Config mode active: " + acConfig.apid + " -> 192.168.4.1  (5 min)");
 }
@@ -4435,6 +4479,22 @@ void handleUiStateMachine() {
   unsigned long currentTime = millis();
   BTNA.read();
 
+  // Long-press BOOT on the main screen opens the setup hotspot for a few
+  // minutes, so the operator does not have to reboot to change settings.
+  if (currentUiState == UI_IDLE && appStartupCompleted) {
+    static unsigned long bootPressStart = 0;
+    if (BTNA.isPressed()) {
+      if (bootPressStart == 0) {
+        bootPressStart = currentTime;
+      } else if (currentTime - bootPressStart >= 3000) {
+        bootPressStart = 0;
+        Serial.println("BOOT long-press => config hotspot");
+        triggerRuntimeConfigMode();
+      }
+    } else {
+      bootPressStart = 0;
+    }
+  }
 
   switch (currentUiState) {
   case UI_LOGO_WAIT: {
@@ -4615,6 +4675,9 @@ void loop() {
     portal.config(acConfig);
     stopApDns();
     if (WiFi.getMode() & WIFI_AP) WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.setAutoReconnect(true);
+    if (wifiStatus()) startFiathellMdns();
     Serial.println("Config mode timed out — AP closed");
   }
 
