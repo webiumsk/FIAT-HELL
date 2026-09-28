@@ -10,6 +10,32 @@ static char lowerChar(char c) {
   return c;
 }
 
+static const char *skipLightningPrefix(const char *invoice) {
+  while (*invoice == ' ' || *invoice == '\t' || *invoice == '\r' ||
+         *invoice == '\n') {
+    invoice++;
+  }
+  const char prefix[] = "lightning:";
+  size_t i = 0;
+  for (; prefix[i] != '\0'; i++) {
+    if (lowerChar(invoice[i]) != prefix[i]) {
+      return invoice;
+    }
+  }
+  invoice += i;
+  while (*invoice == ' ' || *invoice == '\t') {
+    invoice++;
+  }
+  return invoice;
+}
+
+const char *bolt11PaymentRequest(const char *invoice) {
+  if (invoice == nullptr) {
+    return nullptr;
+  }
+  return skipLightningPrefix(invoice);
+}
+
 bool bolt11AmountSats(const char *invoice, int64_t *satsOut) {
   if (satsOut != nullptr) {
     *satsOut = 0;
@@ -17,6 +43,7 @@ bool bolt11AmountSats(const char *invoice, int64_t *satsOut) {
   if (invoice == nullptr || satsOut == nullptr) {
     return false;
   }
+  invoice = bolt11PaymentRequest(invoice);
 
   const char *separator = strrchr(invoice, '1');
   if (separator == nullptr || separator == invoice) {

@@ -36,8 +36,9 @@ static HTTPClient g_taskHttp;
 
 static bool wifiConnected() { return WiFi.status() == WL_CONNECTED; }
 
-static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
-                          const char *rateSourceBuffer, float *outFiatValue) {
+static void taskFetchPrice(HTTPClient &http, BundleTlsClient &tls,
+                           const char *currencySelected,
+                           const char *rateSourceBuffer, float *outFiatValue) {
   if (!outFiatValue)
     return;
   String targetCurrency = String(currencySelected);
@@ -46,7 +47,7 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
   if (strcmp(rateSourceBuffer, "CoinGecko") == 0) {
     String curr = String(currencySelected);
     curr.toLowerCase();
-    beginNetwork(http, g_taskTls, String(coingeckoAPI) + curr);
+    beginNetwork(http, tls, String(coingeckoAPI) + curr);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -75,7 +76,7 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
     else if (curr == "CZK") pair = "XBTCZK";
     else if (curr == "GBP") pair = "XBTGBP";
     else pair = "XBT" + curr;
-    beginNetwork(http, g_taskTls, String(krakenTickerAPI) + "?pair=" + pair);
+    beginNetwork(http, tls, String(krakenTickerAPI) + "?pair=" + pair);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -99,7 +100,7 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
     return;
   }
   if (strcmp(rateSourceBuffer, "ExchangeApi") == 0) {
-    beginNetwork(http, g_taskTls, exchangeapiConversionAPI);
+    beginNetwork(http, tls, exchangeapiConversionAPI);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -119,7 +120,7 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
     }
     http.end();
   } else {
-    beginNetwork(http, g_taskTls, String(coinyepConversionAPI) + targetCurrency);
+    beginNetwork(http, tls, String(coinyepConversionAPI) + targetCurrency);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -227,19 +228,19 @@ static void priceBalanceTaskFunc(void *param) {
       continue;
 
     float fiatValue = 0.0f;
-    taskFetchPrice(g_taskHttp, g_sessionState->currencySelected,
+    taskFetchPrice(g_taskHttp, g_taskTls, g_sessionState->currencySelected,
                   g_deviceState->rateSourceBuffer, &fiatValue);
 
     // Fetch rates for all 3 currencies (for mixed-currency insert)
     float fv1 = 0.0f, fv2 = 0.0f, fv3 = 0.0f;
     if (g_deviceState->currencyOne[0] != '\0')
-      taskFetchPrice(g_taskHttp, g_deviceState->currencyOne,
+      taskFetchPrice(g_taskHttp, g_taskTls, g_deviceState->currencyOne,
                     g_deviceState->rateSourceBuffer, &fv1);
     if (g_deviceState->currencyTwo[0] != '\0')
-      taskFetchPrice(g_taskHttp, g_deviceState->currencyTwo,
+      taskFetchPrice(g_taskHttp, g_taskTls, g_deviceState->currencyTwo,
                     g_deviceState->rateSourceBuffer, &fv2);
     if (g_deviceState->currencyThree[0] != '\0')
-      taskFetchPrice(g_taskHttp, g_deviceState->currencyThree,
+      taskFetchPrice(g_taskHttp, g_taskTls, g_deviceState->currencyThree,
                     g_deviceState->rateSourceBuffer, &fv3);
 
     // Flash pays from the USD wallet - fetch the BTC/USD cross rate for
@@ -249,7 +250,7 @@ static void priceBalanceTaskFunc(void *param) {
                    g_deviceState->fundingSourceBuffer),
                "USD") == 0 &&
         FundingService::isGaloy(g_deviceState->fundingSourceBuffer)) {
-      taskFetchPrice(g_taskHttp, "USD", g_deviceState->rateSourceBuffer,
+      taskFetchPrice(g_taskHttp, g_taskTls, "USD", g_deviceState->rateSourceBuffer,
                      &fvUsd);
     }
 
@@ -262,11 +263,16 @@ static void priceBalanceTaskFunc(void *param) {
       if (fv2 > 0.0f)       g_sessionState->fiatValue2 = fv2;
       if (fv3 > 0.0f)       g_sessionState->fiatValue3 = fv3;
       if (fvUsd > 0.0f)     g_sessionState->btcUsdValue = fvUsd;
-      // Use the freshest available price for balance conversion
-      const float priceForBalance =
-          (fiatValue > 0.0f) ? fiatValue : g_sessionState->fiatValue;
-      taskFetchBalance(g_taskHttp, *g_deviceState, *g_sessionState,
-                       priceForBalance);
+      xSemaphoreGive(g_dataMutex);
+    }
+    // Balance HTTPS must stay outside the mutex. The payout copies the Blink
+    // wallet id under that same lock, and a fetch that holds it for the whole
+    // request makes the payment give up.
+    const float priceForBalance =
+        (fiatValue > 0.0f) ? fiatValue : g_sessionState->fiatValue;
+    taskFetchBalance(g_taskHttp, *g_deviceState, *g_sessionState,
+                     priceForBalance);
+    if (xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
       g_dataReadyForUi = true;
       xSemaphoreGive(g_dataMutex);
     }
@@ -294,6 +300,23 @@ void triggerPriceBalanceFetch(PriceBalanceRequest req) {
     xQueueSend(g_requestQueue, &req, 0);
 }
 
+void priceBalancePublishWallet(DeviceState &ds, SessionState &ss,
+                               const char *walletId, long balanceSats) {
+  if (g_dataMutex != nullptr &&
+      xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    if (walletId != nullptr) {
+      strlcpy(ds.blinkwalletid, walletId, sizeof(ds.blinkwalletid));
+    }
+    ss.balanceSats = balanceSats;
+    xSemaphoreGive(g_dataMutex);
+    return;
+  }
+  if (walletId != nullptr) {
+    strlcpy(ds.blinkwalletid, walletId, sizeof(ds.blinkwalletid));
+  }
+  ss.balanceSats = balanceSats;
+}
+
 PriceBalanceWalletIdResult priceBalanceCopyWalletId(char *dst, size_t dstSize,
                                                     uint32_t timeoutMs) {
   if (!g_deviceState || !g_dataMutex)
@@ -303,6 +326,21 @@ PriceBalanceWalletIdResult priceBalanceCopyWalletId(char *dst, size_t dstSize,
   strlcpy(dst, g_deviceState->blinkwalletid, dstSize);
   xSemaphoreGive(g_dataMutex);
   return PB_WALLETID_OK;
+}
+
+bool priceBalanceFetchPriceNow(const char *currency, const char *rateSource,
+                               float *outFiat) {
+  if (outFiat == nullptr) {
+    return false;
+  }
+  *outFiat = 0.0f;
+  if (!wifiConnected()) {
+    return false;
+  }
+  HttpsSession session;
+  taskFetchPrice(session.httpClient, session.tls, currency, rateSource,
+                 outFiat);
+  return *outFiat > 0.0f;
 }
 
 bool isPriceBalanceDataReady() { return g_dataReadyForUi; }
