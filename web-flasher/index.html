@@ -137,6 +137,13 @@
             <div class="hint">CoinYEP – odporúčané. ExchangeApi – pre exotické meny (HNL, …).</div>
           </div>
           <div class="full">
+            <label for="proxy_endpoints">LNURL proxy servery</label>
+            <input type="text" id="proxy_endpoints" autocomplete="off" spellcheck="false"
+                   placeholder="https://api.lnbc.sk/v1/lnurl, https://api2.lnbc.sk/v1/lnurl">
+            <div class="hint">Iba https://, oddelené čiarkou, skúšajú sa v poradí (max. 4). Prázdne = predvolené
+              api.lnbc.sk → api2.lnbc.sk. Staršie firmvéry toto nastavenie ignorujú.</div>
+          </div>
+          <div class="full">
             <label>Animácia nadpisu</label>
             <div class="toggle-group">
               <input type="radio" name="animated" id="anim_no" value="No" checked>

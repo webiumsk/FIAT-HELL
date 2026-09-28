@@ -62,6 +62,14 @@ struct DeviceState {
   char lnurl2[1024] = {0};
   char lnurl3[1024] = {0};
 
+  // LNURL-withdraw proxy endpoints (/proxy.json), tried in order. Filled by
+  // ConfigService::loadProxyConfig; falls back to the built-in defaults when
+  // the file is missing or lists nothing usable (proxyFromFile = false).
+  static const size_t kMaxProxyEndpoints = 4;
+  char proxyEndpoints[kMaxProxyEndpoints][128] = {{0}};
+  size_t proxyEndpointCount = 0;
+  bool proxyFromFile = false;
+
   // Limits and charges (3 currencies)
   float maxamount = 100.0f;
   float maxamount2 = 0.0f;
@@ -108,6 +116,9 @@ struct DeviceState {
     memset(lnurl, 0, sizeof(lnurl));
     memset(lnurl2, 0, sizeof(lnurl2));
     memset(lnurl3, 0, sizeof(lnurl3));
+    memset(proxyEndpoints, 0, sizeof(proxyEndpoints));
+    proxyEndpointCount = 0;
+    proxyFromFile = false;
     maxamount = 100.0f;
     maxamount2 = 0.0f;
     maxamount3 = 0.0f;

@@ -13,7 +13,8 @@
  * two is selected.
  *
  * Proxy half: the LNURL-withdraw QR shown to the customer is produced by the
- * lnbc.sk proxy (lnurlproxy.me fallback); the wallet backend only pays the
+ * LNURL proxy list from /proxy.json (DeviceState::proxyEndpoints, tried in
+ * order; lnbc.sk by default); the wallet backend only pays the
  * resulting BOLT11 invoice.
  *
  * The HTTPClient is passed in by the caller: the S3 board calls this from a
@@ -54,9 +55,11 @@ bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice,
 
 /**
  * Ask the LNURL-withdraw proxy for a withdraw QR worth amountSats.
- * On success fills ss.lnURLgen, ss.modifiedLnURLgen and ss.callback.
+ * Proxies from ds.proxyEndpoints are tried in order until one answers
+ * 200/201. On success fills ss.lnURLgen, ss.modifiedLnURLgen and ss.callback.
  */
-bool requestLnurlWithdraw(HTTPClient &http, SessionState &ss, long amountSats);
+bool requestLnurlWithdraw(HTTPClient &http, const DeviceState &ds,
+                          SessionState &ss, long amountSats);
 
 /**
  * Poll the proxy callback URL for the customer's BOLT11 invoice.

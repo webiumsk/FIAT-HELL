@@ -7,9 +7,6 @@ namespace FundingService {
 static const char *const blinkGraphqlEndpoint = "https://api.blink.sv/graphql";
 static const char *const flashGraphqlEndpoint =
     "https://api.flashapp.me/graphql";
-static const char *const primaryProxyEndpoint = "https://api.lnbc.sk/v1/lnurl";
-static const char *const secondaryProxyEndpoint =
-    "https://api.lnurlproxy.me/v1/lnurl";
 
 bool isGaloy(const char *fundingSource) {
   return fundingSource && (strcmp(fundingSource, "Blink") == 0 ||
@@ -208,8 +205,8 @@ bool payInvoice(HTTPClient &http, const DeviceState &ds, const char *invoice,
   return false;
 }
 
-bool requestLnurlWithdraw(HTTPClient &http, SessionState &ss,
-                          long amountSats) {
+bool requestLnurlWithdraw(HTTPClient &http, const DeviceState &ds,
+                          SessionState &ss, long amountSats) {
   // Clear previous withdraw state up front so a failed request can't leave a
   // stale QR/callback from an earlier transaction behind.
   ss.lnURLgen[0] = '\0';
@@ -225,48 +222,55 @@ bool requestLnurlWithdraw(HTTPClient &http, SessionState &ss,
   Serial.print("LNURL-withdraw requestBody: ");
   Serial.println(requestBody);
 
-  http.begin(primaryProxyEndpoint);
-  http.addHeader("Content-Type", "application/json");
-  int httpCode = http.POST(requestBody);
-  if (httpCode != 200 && httpCode != 201) {
-    Serial.println("Primary proxy failed with code: " + String(httpCode));
-    Serial.println("Attempting to connect to secondary proxy...");
-    http.end();
-    http.begin(secondaryProxyEndpoint);
-    http.addHeader("Content-Type", "application/json");
-    httpCode = http.POST(requestBody);
-  }
-
+  // Try the configured proxies in order; the first one that returns a
+  // usable lnurl + callback wins. A 2xx with a broken body also falls
+  // through to the next proxy.
   bool ok = false;
-  if (httpCode == 200 || httpCode == 201) {
-    String responsePayload = http.getString();
-    Serial.print("Proxy payload: ");
-    Serial.println(responsePayload);
+  for (size_t i = 0; i < ds.proxyEndpointCount && !ok; i++) {
+    Serial.print("LNURL proxy: ");
+    Serial.println(ds.proxyEndpoints[i]);
+    http.begin(ds.proxyEndpoints[i]);
+    http.addHeader("Content-Type", "application/json");
+    const int httpCode = http.POST(requestBody);
 
-    DynamicJsonDocument respDoc(1024);
-    DeserializationError parseErr = deserializeJson(respDoc, responsePayload);
-    if (parseErr) {
-      Serial.print("LNURL proxy response parse error: ");
-      Serial.println(parseErr.c_str());
+    if (httpCode == 200 || httpCode == 201) {
+      String responsePayload = http.getString();
+      Serial.print("Proxy payload: ");
+      Serial.println(responsePayload);
+
+      DynamicJsonDocument respDoc(1024);
+      DeserializationError parseErr =
+          deserializeJson(respDoc, responsePayload);
+      if (parseErr) {
+        Serial.print("LNURL proxy response parse error: ");
+        Serial.println(parseErr.c_str());
+      } else {
+        strlcpy(ss.lnURLgen, respDoc["lnurl"] | "", sizeof(ss.lnURLgen));
+        if (strlen(ss.lnURLgen) > 10) {
+          strlcpy(ss.modifiedLnURLgen, ss.lnURLgen + 10,
+                  sizeof(ss.modifiedLnURLgen));
+        }
+        strlcpy(ss.callback, respDoc["callback"] | "", sizeof(ss.callback));
+        // Both are required downstream: the QR shows lnURLgen and the
+        // invoice polling loop GETs callback — without it polling would
+        // just time out.
+        ok = ss.lnURLgen[0] != '\0' && ss.callback[0] != '\0';
+        if (!ok) {
+          Serial.println("LNURL proxy response missing lnurl/callback");
+          ss.lnURLgen[0] = '\0';
+          ss.modifiedLnURLgen[0] = '\0';
+          ss.callback[0] = '\0';
+        }
+      }
     } else {
-      strlcpy(ss.lnURLgen, respDoc["lnurl"] | "", sizeof(ss.lnURLgen));
-      if (strlen(ss.lnURLgen) > 10) {
-        strlcpy(ss.modifiedLnURLgen, ss.lnURLgen + 10,
-                sizeof(ss.modifiedLnURLgen));
-      }
-      strlcpy(ss.callback, respDoc["callback"] | "", sizeof(ss.callback));
-      // Both are required downstream: the QR shows lnURLgen and the invoice
-      // polling loop GETs callback — without it polling would just time out.
-      ok = ss.lnURLgen[0] != '\0' && ss.callback[0] != '\0';
-      if (!ok) {
-        Serial.println("LNURL proxy response missing lnurl/callback");
-      }
+      Serial.println("LNURL proxy failed with code: " + String(httpCode));
     }
-  } else {
-    Serial.println("Failed to generate LNURL: " + String(httpCode));
+    http.end();
   }
 
-  http.end();
+  if (!ok) {
+    Serial.println("Failed to generate LNURL: no proxy succeeded");
+  }
   return ok;
 }
 

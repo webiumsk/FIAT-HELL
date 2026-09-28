@@ -143,6 +143,7 @@ static SessionState *sessionStatePtr = nullptr;
 #define SECOND_FILE "/second.json"
 #define THIRD_FILE "/third.json"
 #define GUI_FILE "/gui.json"
+#define PROXY_FILE "/proxy.json"
 
 // Convenience macros for compatibility (point to deviceState/sessionState)
 #define qrData sessionState.qrData
@@ -648,6 +649,8 @@ void reloadRuntimeConfigFromFlash() {
     charge3 = thirdCfg.charge;
   }
 
+  configService.loadProxyConfig(FlashFS, PROXY_FILE, deviceState);
+
   if (configService.loadGuiConfig(FlashFS, GUI_FILE, guiConfig)) {
     if (guiConfig.fundingSource[0] != '\0') {
       strlcpy(deviceState.fundingSourceBuffer, guiConfig.fundingSource,
@@ -1031,6 +1034,10 @@ void setup() {
     SPIFFS.format();
   }
 
+  configService.loadProxyConfig(FlashFS, PROXY_FILE, deviceState);
+  Serial.print("LNURL proxies: ");
+  Serial.println(deviceState.proxyEndpointCount);
+
   // Gui page start - use ConfigService to load persisted GUI settings
   if (configService.loadGuiConfig(FlashFS, GUI_FILE, guiConfig)) {
     if (guiConfig.fundingSource[0] != '\0') {
@@ -1164,6 +1171,23 @@ void setup() {
     html.replace(F("%%CUR3_BILLS%%"),        billsCsvFromVec(billAmountIntThree, billAmountIntThree.size()));
     html.replace(F("%%CUR3_MAX%%"),          String(maxamount3, 0));
     html.replace(F("%%CUR3_CHARGE%%"),       String(charge3, 2));
+
+    {
+      // Bez /proxy.json nechať pole prázdne, aby uloženie nezafixovalo
+      // vstavané defaulty do súboru.
+      String proxies;
+      for (size_t i = 0; deviceStatePtr->proxyFromFile &&
+                         i < deviceStatePtr->proxyEndpointCount; i++) {
+        if (i) proxies += '\n';
+        proxies += deviceStatePtr->proxyEndpoints[i];
+      }
+      html.replace(F("%%PROXY_ENDPOINTS%%"), esc(proxies.c_str()));
+    }
+    html.replace(F("%%PROXY_DEFAULT%%"),
+                 esc(ConfigService::defaultProxyEndpoints("\n").c_str()));
+    html.replace(F("%%PROXY_DEFAULT_INLINE%%"),
+                 esc(ConfigService::defaultProxyEndpoints(", ").c_str()));
+    html.replace(F("%%PROXY_MAX%%"), String(DeviceState::kMaxProxyEndpoints));
 
     html.replace(F("%%FW_VERSION%%"), F(FW_VERSION));
 
@@ -1338,6 +1362,12 @@ void setup() {
       File f = FlashFS.open(path, "w");
       if (f) { serializeJson(doc, f); f.close(); }
     };
+    // proxy.json — prázdny zoznam = súbor zmazať, platí vstavaný default
+    if (server.hasArg("proxy_endpoints")) {
+      configService.saveProxyConfig(FlashFS, PROXY_FILE,
+                                    server.arg("proxy_endpoints"));
+    }
+
     saveExtraCurrency(SECOND_FILE, "cur2_", "currencyTwo",   "lnurl2", "billmech2", "maxamount2", "charge2");
     saveExtraCurrency(THIRD_FILE,  "cur3_", "currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3");
 
@@ -3003,13 +3033,9 @@ bool getBlinkLnURL(const char *invoice) {
  *
  * This function calculates the withdrawal amount in satoshis based on the total
  * amount and fiat value. If a charge percentage is specified, it deducts the
- * charge from the withdrawal amount. Then, it sends a POST request to the
- * primary API endpoint. If the request fails, it tries the secondary endpoint.
- * If the request is successful, it parses the response JSON and extracts the
- * LNURL and callback URL.
- *
- * @note This function requires the `http` library and the `primaryApiEndpoint`
- * and `secondaryApiEndpoint` variables to be defined.
+ * charge from the withdrawal amount. Then it asks the LNURL proxies from
+ * /proxy.json (deviceState.proxyEndpoints) in order and extracts the LNURL
+ * and callback URL from the first usable response.
  *
  * @return true when the proxy returned both the LNURL and the callback URL;
  *         false when no QR should be shown (caller must handle the failure).
@@ -3029,7 +3055,8 @@ bool createLNURLWithdraw() {
   Serial.print("Result (after fee, satoshis): ");
   Serial.println(result);
 
-  return FundingService::requestLnurlWithdraw(http, sessionState, result);
+  return FundingService::requestLnurlWithdraw(http, deviceState, sessionState,
+                                              result);
 }
 
 /** Max insert limit for mixed mode, in EUR equivalent. */

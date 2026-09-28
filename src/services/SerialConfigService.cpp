@@ -126,7 +126,8 @@ static void redactSecrets(const String &path, JsonDocument &doc) {
 
 static const char *const kConfigFiles[] = {"/elements.json", "/gui.json",
                                            "/first.json",    "/second.json",
-                                           "/third.json",    "/wifi.json"};
+                                           "/third.json",    "/wifi.json",
+                                           "/proxy.json"};
 
 static bool isAllowedConfigPath(const String &path) {
   for (auto p : kConfigFiles) {
