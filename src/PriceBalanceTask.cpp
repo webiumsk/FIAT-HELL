@@ -25,6 +25,7 @@ static const char *krakenTickerAPI =
 static const char *exchangeapiConversionAPI =
     "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/"
     "currencies/btc.json";
+static const char *yadioExratesAPI = "https://api.yadio.io/exrates/BTC";
 
 static DeviceState *g_deviceState = nullptr;
 static SessionState *g_sessionState = nullptr;
@@ -35,6 +36,72 @@ static BundleTlsClient g_taskTls;
 static HTTPClient g_taskHttp;
 
 static bool wifiConnected() { return WiFi.status() == WL_CONNECTED; }
+
+// CoinGecko's free simple-price call answers HTTP 200 with {"bitcoin":{}}
+// for PYG and other currencies it no longer serves. This file still has them.
+static bool fetchExchangeApiPrice(HTTPClient &http, BundleTlsClient &tls,
+                                  const char *currency, float *outFiatValue) {
+  beginNetwork(http, tls, exchangeapiConversionAPI);
+  const int code = http.GET();
+  bool ok = false;
+  if (code == 200 || code == 201) {
+    String payload = http.getString();
+    String tempCurrency = String(currency);
+    tempCurrency.toLowerCase();
+    // The file lists every currency. Keep only this one so the document
+    // does not have to hold the whole list.
+    DynamicJsonDocument filter(64);
+    filter["btc"][tempCurrency] = true;
+    DynamicJsonDocument doc(256);
+    if (deserializeJson(doc, payload, DeserializationOption::Filter(filter)) ==
+        DeserializationError::Ok) {
+      const float price = doc["btc"][tempCurrency].as<float>();
+      if (price > 0.0f) {
+        *outFiatValue = price;
+        ok = true;
+      }
+    } else {
+      Serial.printf("price[ExchangeApi/%s]: JSON parse failed\n", currency);
+    }
+  } else {
+    Serial.printf("price[ExchangeApi/%s]: HTTP %d (%s)\n", currency, code,
+                  HTTPClient::errorToString(code).c_str());
+  }
+  http.end();
+  return ok;
+}
+
+// Yadio lists every currency under one "BTC" object. Keep only the one we
+// need so the whole list does not have to fit in memory.
+static bool fetchYadioPrice(HTTPClient &http, BundleTlsClient &tls,
+                            const char *currency, float *outFiatValue) {
+  beginNetwork(http, tls, yadioExratesAPI);
+  const int code = http.GET();
+  bool ok = false;
+  if (code == 200 || code == 201) {
+    String payload = http.getString();
+    String cur = String(currency);
+    cur.toUpperCase();
+    DynamicJsonDocument filter(64);
+    filter["BTC"][cur] = true;
+    DynamicJsonDocument doc(256);
+    if (deserializeJson(doc, payload, DeserializationOption::Filter(filter)) ==
+        DeserializationError::Ok) {
+      const float price = doc["BTC"][cur].as<float>();
+      if (price > 0.0f) {
+        *outFiatValue = price;
+        ok = true;
+      }
+    } else {
+      Serial.printf("price[Yadio/%s]: JSON parse failed\n", currency);
+    }
+  } else {
+    Serial.printf("price[Yadio/%s]: HTTP %d (%s)\n", currency, code,
+                  HTTPClient::errorToString(code).c_str());
+  }
+  http.end();
+  return ok;
+}
 
 static void taskFetchPrice(HTTPClient &http, BundleTlsClient &tls,
                            const char *currencySelected,
@@ -65,6 +132,12 @@ static void taskFetchPrice(HTTPClient &http, BundleTlsClient &tls,
                     HTTPClient::errorToString(code).c_str());
     }
     http.end();
+    if (*outFiatValue > 0.0f) {
+      return;
+    }
+    Serial.printf("price[CoinGecko/%s]: no rate, trying ExchangeApi\n",
+                  targetCurrency.c_str());
+    fetchExchangeApiPrice(http, tls, currencySelected, outFiatValue);
     return;
   }
   if (strcmp(rateSourceBuffer, "Kraken") == 0) {
@@ -100,26 +173,14 @@ static void taskFetchPrice(HTTPClient &http, BundleTlsClient &tls,
     return;
   }
   if (strcmp(rateSourceBuffer, "ExchangeApi") == 0) {
-    beginNetwork(http, tls, exchangeapiConversionAPI);
-    int code = http.GET();
-    if (code == 200 || code == 201) {
-      String payload = http.getString();
-      DynamicJsonDocument doc(16384);
-      if (deserializeJson(doc, payload) == DeserializationError::Ok) {
-        String tempCurrency = String(currencySelected);
-        tempCurrency.toLowerCase();
-        *outFiatValue = doc["btc"][tempCurrency].as<float>();
-      } else {
-        Serial.printf("price[ExchangeApi/%s]: JSON parse failed\n",
-                      targetCurrency.c_str());
-      }
-    } else {
-      Serial.printf("price[ExchangeApi/%s]: HTTP %d (%s)\n",
-                    targetCurrency.c_str(), code,
-                    HTTPClient::errorToString(code).c_str());
-    }
-    http.end();
-  } else {
+    fetchExchangeApiPrice(http, tls, currencySelected, outFiatValue);
+    return;
+  }
+  if (strcmp(rateSourceBuffer, "Yadio") == 0) {
+    fetchYadioPrice(http, tls, currencySelected, outFiatValue);
+    return;
+  }
+  {
     beginNetwork(http, tls, String(coinyepConversionAPI) + targetCurrency);
     int code = http.GET();
     if (code == 200 || code == 201) {

@@ -66,12 +66,15 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   valuesRateSource.add("ExchangeApi");
   valuesRateSource.add("CoinYEP");
   valuesRateSource.add("Kraken");
+  valuesRateSource.add("Yadio");
   if (in.rateSource && (strcmp(in.rateSource, "ExchangeApi") == 0))
     docGui1["checked"] = 2;
   else if (in.rateSource && strcmp(in.rateSource, "CoinYEP") == 0)
     docGui1["checked"] = 3;
   else if (in.rateSource && strcmp(in.rateSource, "Kraken") == 0)
     docGui1["checked"] = 4;
+  else if (in.rateSource && strcmp(in.rateSource, "Yadio") == 0)
+    docGui1["checked"] = 5;
   else
     docGui1["checked"] = 1;  // CoinGecko is default for unknown/empty
 
