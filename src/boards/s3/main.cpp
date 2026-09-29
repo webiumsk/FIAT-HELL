@@ -5730,7 +5730,21 @@ void loop() {
           lv_label_set_text(labelTotalSats, buf);
         }
         lv_label_set_text(labelTotalAmount, "");
-        if (labelMaxAmount) {
+        if (labelMaxAmount && getEurRateForLimit() <= 0.0f) {
+          // No EUR among the configured currencies, so the 100 EUR cap does
+          // not apply (it used to print "Max: 100 EUR (~999999999 sats)").
+          // What limits the sale is the wallet: show what it can still pay.
+          int64_t walletSats = 0;
+          const Quote soFar = quoteMixedSats(legs, 3);
+          if (currentWalletSats(&walletSats)) {
+            int64_t left = walletSats - (soFar.ok ? soFar.sats : 0);
+            if (left < 0) left = 0;
+            snprintf(buf, sizeof(buf), "Max: ~%lld sats left", (long long)left);
+          } else {
+            buf[0] = '\0';
+          }
+          setLabelTextIfChanged(labelMaxAmount, buf);
+        } else if (labelMaxAmount) {
           long maxSats = computeMixedMaxSats();
           float totalEUR = computeMixedTotalValueEUR();
           if (totalEUR >= MAX_MIXED_EUR) {
