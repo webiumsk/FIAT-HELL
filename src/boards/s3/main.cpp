@@ -847,17 +847,6 @@ static void styleWaitSpinner(lv_obj_t *spinner) {
   lv_obj_set_style_arc_width(spinner, 10, LV_PART_MAIN);
 }
 
-static void styleBootBar(lv_obj_t *bar) {
-  const lv_color_t accent = lv_color_hex(kActionColor);
-  lv_obj_set_style_bg_color(bar, lv_color_hex(0x3D2A10), LV_PART_MAIN);
-  lv_obj_set_style_bg_color(bar, accent, LV_PART_INDICATOR);
-  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
-  lv_obj_set_style_radius(bar, 6, LV_PART_MAIN);
-  lv_obj_set_style_radius(bar, 6, LV_PART_INDICATOR);
-  lv_obj_set_style_pad_all(bar, 3, LV_PART_MAIN);
-}
-
 static void preflightSetRow(PreflightRow row, const char *status,
                             lv_color_t color) {
   if (preflightRowLabel[row] == nullptr) {
@@ -2795,38 +2784,29 @@ static void inhibitAndCollectPendingBills() {
  */
 static lv_obj_t *logoArc = nullptr;
 static lv_obj_t *logoBtcImg = nullptr;
-static lv_obj_t *logoBootBar = nullptr;
 
 static void set_angle(void *obj, int32_t v) {
   lv_arc_set_value((lv_obj_t *)obj, v);
 }
 
-static void set_boot_bar(void *obj, int32_t v) {
-  lv_bar_set_value((lv_obj_t *)obj, v, LV_ANIM_OFF);
-}
-
-// Tap on the boot ring asks for settings. Drop the circle and the Bitcoin
-// icon and show a horizontal bar while setup comes up.
+// Tap on the boot logo asks for settings. Hide the Bitcoin icon and replace
+// the one-shot fill with the same endless spinner used for payouts.
 static void showLogoSettingsProgress() {
   if (logoBtcImg != nullptr) {
     lv_obj_add_flag(logoBtcImg, LV_OBJ_FLAG_HIDDEN);
   }
   if (logoArc != nullptr) {
+    const lv_coord_t w = lv_obj_get_width(logoArc);
+    const lv_coord_t h = lv_obj_get_height(logoArc);
     lv_anim_del(logoArc, set_angle);
-    lv_obj_add_flag(logoArc, LV_OBJ_FLAG_HIDDEN);
-  }
-  if (logoBootBar != nullptr) {
-    lv_obj_clear_flag(logoBootBar, LV_OBJ_FLAG_HIDDEN);
-    lv_anim_del(logoBootBar, set_boot_bar);
-    lv_bar_set_value(logoBootBar, 0, LV_ANIM_OFF);
-    lv_anim_t barAnim;
-    lv_anim_init(&barAnim);
-    lv_anim_set_var(&barAnim, logoBootBar);
-    lv_anim_set_exec_cb(&barAnim, set_boot_bar);
-    lv_anim_set_time(&barAnim, 1600);
-    lv_anim_set_repeat_count(&barAnim, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_values(&barAnim, 0, 100);
-    lv_anim_start(&barAnim);
+    lv_obj_del(logoArc);
+    logoArc = nullptr;
+    lv_obj_t *spinner = lv_spinner_create(screen_logo, 1000, 70);
+    if (w > 0 && h > 0) {
+      lv_obj_set_size(spinner, w, h);
+    }
+    lv_obj_center(spinner);
+    styleWaitSpinner(spinner);
   }
   lv_refr_now(NULL);
 }
@@ -2879,14 +2859,6 @@ void createLogoScreen() {
   lv_anim_set_repeat_delay(&a, 500);
   lv_anim_set_values(&a, 0, 100);
   lv_anim_start(&a);
-
-  logoBootBar = lv_bar_create(screen_logo);
-  lv_obj_set_size(logoBootBar, 460, 22);
-  lv_obj_center(logoBootBar);
-  lv_bar_set_range(logoBootBar, 0, 100);
-  lv_bar_set_value(logoBootBar, 0, LV_ANIM_OFF);
-  styleBootBar(logoBootBar);
-  lv_obj_add_flag(logoBootBar, LV_OBJ_FLAG_HIDDEN);
 
   logoBtcImg = lv_img_create(screen_logo); // Create an image object
   lv_img_set_src(
@@ -3706,6 +3678,12 @@ static void applyFittingNotes(long room) {
 
 static void armAcceptorIfQuoted() {
   if (!mainScreenShown) {
+    return;
+  }
+  // Inserting owns its own channel mask. A sale (QR, paying, thank-you,
+  // error) must not take another note; the price refresh used to reopen
+  // the acceptor behind those screens. It opens again on the main screen.
+  if (currentUiState != UI_IDLE) {
     return;
   }
   // A note that clears the sensor is stacked. Notes larger than the offset
@@ -5251,8 +5229,11 @@ static void returnToMainScreen() {
   mixedLimitExceededAutoProceed = false;
   FundingService::clearPayoutFailure();
   // The payout inhibited the acceptor while this flag still said it was open.
+  // Mark idle before the screen update so that update reopens the acceptor;
+  // any earlier state (QR, paying, thank-you, error) keeps it shut.
   acceptorArmed = false;
   billAcceptorWrite(185);
+  currentUiState = UI_IDLE;
   if (screen_main == nullptr) {
     createMainScreen();
   } else {
@@ -5271,7 +5252,6 @@ static void returnToMainScreen() {
     lv_obj_del(screen_payment_error);
     screen_payment_error = nullptr;
   }
-  currentUiState = UI_IDLE;
   stateEnterTime = millis();
   Serial.println("Transaction cleared => main screen");
 }
