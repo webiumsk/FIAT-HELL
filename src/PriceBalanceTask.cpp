@@ -6,6 +6,7 @@
 
 #include "PriceBalanceTask.h"
 #include "services/FundingService.h"
+#include "services/HttpsClient.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -24,18 +25,87 @@ static const char *krakenTickerAPI =
 static const char *exchangeapiConversionAPI =
     "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/"
     "currencies/btc.json";
+static const char *yadioExratesAPI = "https://api.yadio.io/exrates/BTC";
 
 static DeviceState *g_deviceState = nullptr;
 static SessionState *g_sessionState = nullptr;
 static QueueHandle_t g_requestQueue = nullptr;
 static SemaphoreHandle_t g_dataMutex = nullptr;
 static volatile bool g_dataReadyForUi = false;
+static BundleTlsClient g_taskTls;
 static HTTPClient g_taskHttp;
 
 static bool wifiConnected() { return WiFi.status() == WL_CONNECTED; }
 
-static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
-                          const char *rateSourceBuffer, float *outFiatValue) {
+// CoinGecko's free simple-price call answers HTTP 200 with {"bitcoin":{}}
+// for PYG and other currencies it no longer serves. This file still has them.
+static bool fetchExchangeApiPrice(HTTPClient &http, BundleTlsClient &tls,
+                                  const char *currency, float *outFiatValue) {
+  beginNetwork(http, tls, exchangeapiConversionAPI);
+  const int code = http.GET();
+  bool ok = false;
+  if (code == 200 || code == 201) {
+    String payload = http.getString();
+    String tempCurrency = String(currency);
+    tempCurrency.toLowerCase();
+    // The file lists every currency. Keep only this one so the document
+    // does not have to hold the whole list.
+    DynamicJsonDocument filter(64);
+    filter["btc"][tempCurrency] = true;
+    DynamicJsonDocument doc(256);
+    if (deserializeJson(doc, payload, DeserializationOption::Filter(filter)) ==
+        DeserializationError::Ok) {
+      const float price = doc["btc"][tempCurrency].as<float>();
+      if (price > 0.0f) {
+        *outFiatValue = price;
+        ok = true;
+      }
+    } else {
+      Serial.printf("price[ExchangeApi/%s]: JSON parse failed\n", currency);
+    }
+  } else {
+    Serial.printf("price[ExchangeApi/%s]: HTTP %d (%s)\n", currency, code,
+                  HTTPClient::errorToString(code).c_str());
+  }
+  http.end();
+  return ok;
+}
+
+// Yadio lists every currency under one "BTC" object. Keep only the one we
+// need so the whole list does not have to fit in memory.
+static bool fetchYadioPrice(HTTPClient &http, BundleTlsClient &tls,
+                            const char *currency, float *outFiatValue) {
+  beginNetwork(http, tls, yadioExratesAPI);
+  const int code = http.GET();
+  bool ok = false;
+  if (code == 200 || code == 201) {
+    String payload = http.getString();
+    String cur = String(currency);
+    cur.toUpperCase();
+    DynamicJsonDocument filter(64);
+    filter["BTC"][cur] = true;
+    DynamicJsonDocument doc(256);
+    if (deserializeJson(doc, payload, DeserializationOption::Filter(filter)) ==
+        DeserializationError::Ok) {
+      const float price = doc["BTC"][cur].as<float>();
+      if (price > 0.0f) {
+        *outFiatValue = price;
+        ok = true;
+      }
+    } else {
+      Serial.printf("price[Yadio/%s]: JSON parse failed\n", currency);
+    }
+  } else {
+    Serial.printf("price[Yadio/%s]: HTTP %d (%s)\n", currency, code,
+                  HTTPClient::errorToString(code).c_str());
+  }
+  http.end();
+  return ok;
+}
+
+static void taskFetchPrice(HTTPClient &http, BundleTlsClient &tls,
+                           const char *currencySelected,
+                           const char *rateSourceBuffer, float *outFiatValue) {
   if (!outFiatValue)
     return;
   String targetCurrency = String(currencySelected);
@@ -44,7 +114,7 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
   if (strcmp(rateSourceBuffer, "CoinGecko") == 0) {
     String curr = String(currencySelected);
     curr.toLowerCase();
-    http.begin(String(coingeckoAPI) + curr);
+    beginNetwork(http, tls, String(coingeckoAPI) + curr);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -62,6 +132,12 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
                     HTTPClient::errorToString(code).c_str());
     }
     http.end();
+    if (*outFiatValue > 0.0f) {
+      return;
+    }
+    Serial.printf("price[CoinGecko/%s]: no rate, trying ExchangeApi\n",
+                  targetCurrency.c_str());
+    fetchExchangeApiPrice(http, tls, currencySelected, outFiatValue);
     return;
   }
   if (strcmp(rateSourceBuffer, "Kraken") == 0) {
@@ -73,7 +149,7 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
     else if (curr == "CZK") pair = "XBTCZK";
     else if (curr == "GBP") pair = "XBTGBP";
     else pair = "XBT" + curr;
-    http.begin(String(krakenTickerAPI) + "?pair=" + pair);
+    beginNetwork(http, tls, String(krakenTickerAPI) + "?pair=" + pair);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -97,27 +173,15 @@ static void taskFetchPrice(HTTPClient &http, const char *currencySelected,
     return;
   }
   if (strcmp(rateSourceBuffer, "ExchangeApi") == 0) {
-    http.begin(exchangeapiConversionAPI);
-    int code = http.GET();
-    if (code == 200 || code == 201) {
-      String payload = http.getString();
-      DynamicJsonDocument doc(16384);
-      if (deserializeJson(doc, payload) == DeserializationError::Ok) {
-        String tempCurrency = String(currencySelected);
-        tempCurrency.toLowerCase();
-        *outFiatValue = doc["btc"][tempCurrency].as<float>();
-      } else {
-        Serial.printf("price[ExchangeApi/%s]: JSON parse failed\n",
-                      targetCurrency.c_str());
-      }
-    } else {
-      Serial.printf("price[ExchangeApi/%s]: HTTP %d (%s)\n",
-                    targetCurrency.c_str(), code,
-                    HTTPClient::errorToString(code).c_str());
-    }
-    http.end();
-  } else {
-    http.begin(String(coinyepConversionAPI) + targetCurrency);
+    fetchExchangeApiPrice(http, tls, currencySelected, outFiatValue);
+    return;
+  }
+  if (strcmp(rateSourceBuffer, "Yadio") == 0) {
+    fetchYadioPrice(http, tls, currencySelected, outFiatValue);
+    return;
+  }
+  {
+    beginNetwork(http, tls, String(coinyepConversionAPI) + targetCurrency);
     int code = http.GET();
     if (code == 200 || code == 201) {
       String payload = http.getString();
@@ -171,7 +235,7 @@ static void taskFetchBalance(HTTPClient &http, DeviceState &ds,
 
   if (strcmp(fundingSource, "LNbits") == 0) {
     String url = String(ds.lnbitsURL) + "/api/v1/wallet";
-    http.begin(url);
+    beginNetwork(http, g_taskTls, url);
     http.addHeader("X-Api-Key", ds.readkey);
     int code = http.GET();
     if (code == 200 || code == 201) {
@@ -192,10 +256,11 @@ static void taskFetchBalance(HTTPClient &http, DeviceState &ds,
     }
     http.end();
   } else if (FundingService::isGaloy(fundingSource)) {
-    // Blink pays from the BTC wallet; Flash from the custodial USD wallet
-    // (its BTC wallet is external/non-custodial - server can't spend it).
-    const char *walletCur = FundingService::galoyWalletCurrency(fundingSource);
-    if (FundingService::fetchGaloyBalance(http, ds, ss, walletCur)) {
+    // Blink pays from the operator-chosen wallet (BTC or Stablesats/USD);
+    // Flash from the custodial USD wallet (its BTC wallet is external).
+    const char *walletCur = FundingService::galoyWalletCurrency(
+        fundingSource, ds.blinkWalletBuffer);
+    if (FundingService::fetchGaloyBalance(ds, ss, walletCur)) {
       if (strcmp(walletCur, "USD") == 0) {
         // Balance is in USD cents; convert to the operator's fiat via the
         // BTC/USD cross rate (usd_cents/100 * (fiat_per_btc / usd_per_btc)).
@@ -225,29 +290,30 @@ static void priceBalanceTaskFunc(void *param) {
       continue;
 
     float fiatValue = 0.0f;
-    taskFetchPrice(g_taskHttp, g_sessionState->currencySelected,
+    taskFetchPrice(g_taskHttp, g_taskTls, g_sessionState->currencySelected,
                   g_deviceState->rateSourceBuffer, &fiatValue);
 
     // Fetch rates for all 3 currencies (for mixed-currency insert)
     float fv1 = 0.0f, fv2 = 0.0f, fv3 = 0.0f;
     if (g_deviceState->currencyOne[0] != '\0')
-      taskFetchPrice(g_taskHttp, g_deviceState->currencyOne,
+      taskFetchPrice(g_taskHttp, g_taskTls, g_deviceState->currencyOne,
                     g_deviceState->rateSourceBuffer, &fv1);
     if (g_deviceState->currencyTwo[0] != '\0')
-      taskFetchPrice(g_taskHttp, g_deviceState->currencyTwo,
+      taskFetchPrice(g_taskHttp, g_taskTls, g_deviceState->currencyTwo,
                     g_deviceState->rateSourceBuffer, &fv2);
     if (g_deviceState->currencyThree[0] != '\0')
-      taskFetchPrice(g_taskHttp, g_deviceState->currencyThree,
+      taskFetchPrice(g_taskHttp, g_taskTls, g_deviceState->currencyThree,
                     g_deviceState->rateSourceBuffer, &fv3);
 
-    // Flash pays from the USD wallet - fetch the BTC/USD cross rate for
-    // converting its cent balance into the operator's fiat.
+    // A USD funding wallet (Flash cash, or Blink Stablesats) needs the
+    // BTC/USD cross rate to convert its cent balance into the operator's fiat.
     float fvUsd = 0.0f;
     if (strcmp(FundingService::galoyWalletCurrency(
-                   g_deviceState->fundingSourceBuffer),
+                   g_deviceState->fundingSourceBuffer,
+                   g_deviceState->blinkWalletBuffer),
                "USD") == 0 &&
         FundingService::isGaloy(g_deviceState->fundingSourceBuffer)) {
-      taskFetchPrice(g_taskHttp, "USD", g_deviceState->rateSourceBuffer,
+      taskFetchPrice(g_taskHttp, g_taskTls, "USD", g_deviceState->rateSourceBuffer,
                      &fvUsd);
     }
 
@@ -260,11 +326,16 @@ static void priceBalanceTaskFunc(void *param) {
       if (fv2 > 0.0f)       g_sessionState->fiatValue2 = fv2;
       if (fv3 > 0.0f)       g_sessionState->fiatValue3 = fv3;
       if (fvUsd > 0.0f)     g_sessionState->btcUsdValue = fvUsd;
-      // Use the freshest available price for balance conversion
-      const float priceForBalance =
-          (fiatValue > 0.0f) ? fiatValue : g_sessionState->fiatValue;
-      taskFetchBalance(g_taskHttp, *g_deviceState, *g_sessionState,
-                       priceForBalance);
+      xSemaphoreGive(g_dataMutex);
+    }
+    // Balance HTTPS must stay outside the mutex. The payout copies the Blink
+    // wallet id under that same lock, and a fetch that holds it for the whole
+    // request makes the payment give up.
+    const float priceForBalance =
+        (fiatValue > 0.0f) ? fiatValue : g_sessionState->fiatValue;
+    taskFetchBalance(g_taskHttp, *g_deviceState, *g_sessionState,
+                     priceForBalance);
+    if (xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
       g_dataReadyForUi = true;
       xSemaphoreGive(g_dataMutex);
     }
@@ -292,6 +363,23 @@ void triggerPriceBalanceFetch(PriceBalanceRequest req) {
     xQueueSend(g_requestQueue, &req, 0);
 }
 
+void priceBalancePublishWallet(DeviceState &ds, SessionState &ss,
+                               const char *walletId, long balanceSats) {
+  if (g_dataMutex != nullptr &&
+      xSemaphoreTake(g_dataMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    if (walletId != nullptr) {
+      strlcpy(ds.blinkwalletid, walletId, sizeof(ds.blinkwalletid));
+    }
+    ss.balanceSats = balanceSats;
+    xSemaphoreGive(g_dataMutex);
+    return;
+  }
+  if (walletId != nullptr) {
+    strlcpy(ds.blinkwalletid, walletId, sizeof(ds.blinkwalletid));
+  }
+  ss.balanceSats = balanceSats;
+}
+
 PriceBalanceWalletIdResult priceBalanceCopyWalletId(char *dst, size_t dstSize,
                                                     uint32_t timeoutMs) {
   if (!g_deviceState || !g_dataMutex)
@@ -301,6 +389,21 @@ PriceBalanceWalletIdResult priceBalanceCopyWalletId(char *dst, size_t dstSize,
   strlcpy(dst, g_deviceState->blinkwalletid, dstSize);
   xSemaphoreGive(g_dataMutex);
   return PB_WALLETID_OK;
+}
+
+bool priceBalanceFetchPriceNow(const char *currency, const char *rateSource,
+                               float *outFiat) {
+  if (outFiat == nullptr) {
+    return false;
+  }
+  *outFiat = 0.0f;
+  if (!wifiConnected()) {
+    return false;
+  }
+  HttpsSession session;
+  taskFetchPrice(session.httpClient, session.tls, currency, rateSource,
+                 outFiat);
+  return *outFiat > 0.0f;
 }
 
 bool isPriceBalanceDataReady() { return g_dataReadyForUi; }

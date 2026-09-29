@@ -12,7 +12,6 @@
 #include "services/FlashAuthService.h"
 #include <Arduino.h>
 #include <FS.h>
-#include <HTTPClient.h>
 
 static const char FLASHKEY_STYLE[] PROGMEM = R"(<style>
 body{background:#111;color:#eee;font-family:Arial,sans-serif;margin:0;padding:16px;max-width:520px;margin:auto}
@@ -32,25 +31,25 @@ a{color:#f90}
 </style>)";
 
 static const char FLASHKEY_PAGE_HTML[] PROGMEM = R"(<!DOCTYPE html>
-<html lang="sk"><head><meta charset="utf-8">
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Flash API kluc</title>%%STYLE%%</head><body>
-<h1>&#9889; Ziskat Flash API kluc</h1>
+<title>Flash API key</title>%%STYLE%%</head><body>
+<h1>&#9889; Get a Flash API key</h1>
 %%OFFLINE_WARN%%
 <ol>
-  <li>Nainstaluj si appku <b>Flash</b> a zaregistruj sa svojim telefonnym cislom (ak este nemas ucet).</li>
-  <li>V appke si na prihlasovacej obrazovke vyziadaj <b>SMS kod</b> pre svoje cislo.</li>
-  <li><b>Kod nezadavaj do appky</b> &mdash; zadaj ho sem dole. Kod plati len par minut.</li>
+  <li>Install the <b>Flash</b> app and register with your phone number (if you don't have an account yet).</li>
+  <li>In the app, request an <b>SMS code</b> for your number on the login screen.</li>
+  <li><b>Don't enter the code in the app</b> &mdash; enter it below instead. The code is valid for only a few minutes.</li>
 </ol>
 <form method="POST" action="/flashkey/run">
-  <label>Telefonne cislo (medzinarodny format)</label>
-  <input type="tel" name="phone" placeholder="+421900123456" required>
-  <label>6-miestny SMS kod</label>
+  <label>Phone number (international format)</label>
+  <input type="tel" name="phone" placeholder="+15551234567" required>
+  <label>6-digit SMS code</label>
   <input type="text" name="code" placeholder="123456" minlength="6" maxlength="6"
          inputmode="numeric" required>
-  <button type="submit">Vytvorit a ulozit kluc</button>
+  <button type="submit">Create and save key</button>
 </form>
-<p><a href="/">&larr; spat</a></p>
+<p><a href="/">&larr; back</a></p>
 </body></html>)";
 
 inline String flashKeyPageHtml(bool online) {
@@ -58,9 +57,9 @@ inline String flashKeyPageHtml(bool online) {
   html.replace(F("%%STYLE%%"), FPSTR(FLASHKEY_STYLE));
   html.replace(F("%%OFFLINE_WARN%%"),
                online ? ""
-                      : "<div class=warn>&#9888; Zariadenie nie je pripojene "
-                        "na internet &mdash; najprv nastav WiFi, inak "
-                        "vytvorenie kluca zlyha.</div>");
+                      : "<div class=warn>&#9888; The device is not connected "
+                        "to the internet &mdash; set up WiFi first, otherwise "
+                        "key creation will fail.</div>");
   return html;
 }
 
@@ -87,23 +86,23 @@ inline String flashKeyEscape(const String &in) {
 // non-empty, is rendered (escaped) in the styled key box.
 inline String flashKeyResultHtml(bool ok, const String &detail,
                                  const String &keyToShow = String()) {
-  String html = F("<!DOCTYPE html><html lang=\"sk\"><head><meta "
+  String html = F("<!DOCTYPE html><html lang=\"en\"><head><meta "
                   "charset=\"utf-8\"><meta name=\"viewport\" "
                   "content=\"width=device-width,initial-scale=1\">"
-                  "<title>Flash API kluc</title>%%STYLE%%</head><body>"
-                  "<h1>&#9889; Flash API kluc</h1>");
+                  "<title>Flash API key</title>%%STYLE%%</head><body>"
+                  "<h1>&#9889; Flash API key</h1>");
   html.replace(F("%%STYLE%%"), FPSTR(FLASHKEY_STYLE));
   if (ok) {
-    html += F("<div class=ok>&#10004; Kluc bol vytvoreny a ulozeny do "
-              "zariadenia. ATM je pripravene vyplacat cez Flash.</div>"
-              "<p>Toto je tvoj kluc &mdash; zobrazuje sa <b>len raz</b>. "
-              "Odloz si ho na bezpecne miesto (napr. spravca hesiel):</p>"
+    html += F("<div class=ok>&#10004; The key was created and stored on the "
+              "device. The ATM is ready to pay out via Flash.</div>"
+              "<p>This is your key &mdash; it is shown <b>only once</b>. "
+              "Store it somewhere safe (e.g. a password manager):</p>"
               "<div class=key>");
     html += flashKeyEscape(detail);
-    html += F("</div><p>Wallet ID netreba &mdash; zariadenie si ho zisti "
-              "samo.</p>");
+    html += F("</div><p>No wallet ID needed &mdash; the device discovers it "
+              "by itself.</p>");
   } else {
-    html += F("<div class=err>&#10006; Nepodarilo sa: ");
+    html += F("<div class=err>&#10006; Failed: ");
     html += flashKeyEscape(detail);
     html += F("</div>");
     if (keyToShow.length() > 0) {
@@ -111,10 +110,10 @@ inline String flashKeyResultHtml(bool ok, const String &detail,
       html += flashKeyEscape(keyToShow);
       html += F("</div>");
     }
-    html += F("<p>Vyziadaj si v appke novy SMS kod a <a "
-              "href=\"/flashkey\">skus znova</a>.</p>");
+    html += F("<p>Request a new SMS code in the app and <a "
+              "href=\"/flashkey\">try again</a>.</p>");
   }
-  html += F("<p><a href=\"/\">&larr; spat</a></p></body></html>");
+  html += F("<p><a href=\"/\">&larr; back</a></p></body></html>");
   return html;
 }
 
@@ -122,7 +121,7 @@ inline String flashKeyResultHtml(bool ok, const String &detail,
  * Execute the wizard: login with phone+code, create the API key, persist it
  * into /first.json and DeviceState. Returns the result page HTML.
  */
-inline String flashKeyRunAndRender(HTTPClient &http, DeviceState &ds,
+inline String flashKeyRunAndRender(DeviceState &ds,
                                    ConfigService &configService, fs::FS &fs,
                                    const char *firstFile, String phone,
                                    String code) {
@@ -130,18 +129,18 @@ inline String flashKeyRunAndRender(HTTPClient &http, DeviceState &ds,
   code.trim();
   if (phone.length() < 8 || phone[0] != '+') {
     return flashKeyResultHtml(
-        false, F("cislo musi byt v medzinarodnom formate (+421...)"));
+        false, F("the number must be in international format (+1...)"));
   }
   if (code.length() != 6) {
-    return flashKeyResultHtml(false, F("kod musi mat 6 cislic"));
+    return flashKeyResultHtml(false, F("the code must have 6 digits"));
   }
 
   String authToken, apiKey, err;
-  if (!FlashAuthService::userLogin(http, phone, code, authToken, err)) {
-    return flashKeyResultHtml(false, "prihlasenie zlyhalo: " + err);
+  if (!FlashAuthService::userLogin(phone, code, authToken, err)) {
+    return flashKeyResultHtml(false, "login failed: " + err);
   }
-  if (!FlashAuthService::apiKeyCreate(http, authToken, apiKey, err)) {
-    return flashKeyResultHtml(false, "vytvorenie kluca zlyhalo: " + err);
+  if (!FlashAuthService::apiKeyCreate(authToken, apiKey, err)) {
+    return flashKeyResultHtml(false, "key creation failed: " + err);
   }
 
   if (!configService.updateFirstBlinkApiKey(fs, firstFile, apiKey.c_str())) {
@@ -149,8 +148,8 @@ inline String flashKeyRunAndRender(HTTPClient &http, DeviceState &ds,
     // operator can enter it manually instead of losing it forever.
     return flashKeyResultHtml(
         false,
-        "kluc vznikol, ale zapis do zariadenia zlyhal - odloz si ho a zadaj "
-        "rucne v portali:",
+        "the key was created but saving it to the device failed - store it "
+        "and enter it manually in the portal:",
         apiKey);
   }
   strlcpy(ds.blinkapikey, apiKey.c_str(), sizeof(ds.blinkapikey));

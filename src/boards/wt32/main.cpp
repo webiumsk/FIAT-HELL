@@ -53,12 +53,18 @@ fs::SPIFFSFS &FlashFS = SPIFFS;
 #include <Bitcoin.h>
 #include <HTTPClient.h>
 #include <Hash.h>
+#include "payout/Bolt11.h"
+#include "payout/OfflineLnurl.h"
+#include "payout/Quote.h"
+#include "portal/PortalPolicy.h"
+#include "services/HttpsClient.h"
+#include "services/PortalAccess.h"
+#include <climits>
 
 #include <iostream>
 #include <vector>
 
 #include <cstring> // For memset
-char Buf[200];     // Buffer for the encrypted data
 
 #include "btcsmall.c"
 LV_IMG_DECLARE(btcSmallImg);
@@ -160,7 +166,6 @@ char totalStr[64] = {0};
 #define chargeSelected sessionState.chargeSelected
 #define fiatBalance sessionState.fiatBalance
 #define fiatValue sessionState.fiatValue
-#define tempCharge sessionState.tempCharge
 #define result sessionState.result
 #define isInsertingMoney sessionState.isInsertingMoney
 #define previousMillis sessionState.previousMillis
@@ -209,7 +214,7 @@ const String cuexApiKey =
 const String alternativeConversionAPI =
     "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=";
 
-WiFiClientSecure secureClient;
+BundleTlsClient secureClient;
 
 // Blink and Flash both speak the Galoy GraphQL API; FundingService holds the
 // endpoints and client code.
@@ -261,6 +266,10 @@ void checkStackUsage() {
 
 bool triggerAp = false;
 
+// Random per-boot hotspot PSK, set only while the stored portal password
+// fails the policy. Shown on the portal screen so the operator can join.
+static String g_fallbackApPsk;
+
 String content = "<h1>ATM Access-point</br>For easy variable setting</h1>";
 
 #include "pagefirst.h"
@@ -271,13 +280,6 @@ String content = "<h1>ATM Access-point</br>For easy variable setting</h1>";
 
 WebServerClass server;
 AutoConnect portal(server);
-
-// True when the HTTP request comes from the device's own AP subnet
-// (AutoConnect default 192.168.4.x). Used to gate the Flash key wizard.
-static bool flashkeyIsApClient() {
-  const IPAddress c = server.client().remoteIP();
-  return c[0] == 192 && c[1] == 168 && c[2] == 4;
-}
 
 AutoConnectConfig config;
 AutoConnectAux elementsAux;
@@ -421,10 +423,13 @@ void setup() {
   delay(10);
 
   SerialPort1.begin(300, SERIAL_8N2, TX1, RX1); // Bill acceptor
+  // The NV10 keeps its enabled state across an ESP32 reset. Inhibit it until
+  // enableAcceptor() has a usable price quote.
+  SerialPort1.write(185);
   SerialPort2.begin(4800, SERIAL_8N1, TX2);     // Coin mech
   pinMode(INHIBITMECH, OUTPUT);
 
-  secureClient.setInsecure();
+  initCertificateBundle();
 
   // Start logo wait state (non-blocking)
   currentUiState = UI_LOGO_WAIT;
@@ -477,27 +482,31 @@ void setup() {
   }
   paramFile.close();
 
+  // Config and /flashkey answer 403 to anyone not on the setup hotspot.
+  // Registered before every other route: WebServer uses the first handler
+  // that claims a request, and it owns (deletes) registered handlers.
+  server.addHandler(new ApOnlyConfigHandler(server));
+
   server.on("/", []() {
     content += AUTOCONNECT_LINK(COG_24);
     server.send(200, "text/html", content);
   });
 
-  // On-device Flash API key wizard (see pageflashkey.h). AP-only: it creates
-  // and reveals a spending API key, so restrict it to the local AP subnet.
+  // On-device Flash API key wizard (see pageflashkey.h). It creates and
+  // reveals a spending API key: hotspot-only via ApOnlyConfigHandler, plus the
+  // portal's Basic credentials.
   server.on("/flashkey", HTTP_GET, []() {
-    if (!flashkeyIsApClient()) {
-      server.send(403, "text/plain", "Wizard only via AP");
+    if (!portalBasicAuth(server, config.password.c_str())) {
       return;
     }
     server.send(200, "text/html", flashKeyPageHtml(wifiStatus()));
   });
   server.on("/flashkey/run", HTTP_POST, []() {
-    if (!flashkeyIsApClient()) {
-      server.send(403, "text/plain", "Wizard only via AP");
+    if (!portalBasicAuth(server, config.password.c_str())) {
       return;
     }
     server.send(200, "text/html",
-                flashKeyRunAndRender(http, deviceState, configService, FlashFS,
+                flashKeyRunAndRender(deviceState, configService, FlashFS,
                                      FIRST_FILE, server.arg("phone"),
                                      server.arg("code")));
   });
@@ -691,6 +700,13 @@ void setup() {
   // Save page one
   saveAux.load(FPSTR(PAGE_SAVE));
   saveAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    const AutoConnectElement *passwordEl = elementsAux.getElement("password");
+    if (passwordEl == nullptr ||
+        !portalPasswordAccepted(passwordEl->value.c_str())) {
+      aux["echo"].value =
+          "Password must be 8-63 characters and cannot be changeme.";
+      return String();
+    }
     aux["caption"].value = PARAM_FILE;
     File param = FlashFS.open(PARAM_FILE, "w");
     if (param) {
@@ -780,12 +796,18 @@ void setup() {
   if ((deviceState.currencyATM2[0] != '\0') || (currencyTwo[0] != '\0')) {
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntTwo.begin(),
                             billAmountIntTwo.end());
+  } else {
+    // Channel ranges count these slots; a currency that was not merged has
+    // none.
+    originalSizeTwo = 0;
   }
   // Check if currencyATM3 is not empty
   if ((deviceState.currencyATM3[0] != '\0') || (currencyThree[0] != '\0')) {
     // Then merge billAmountIntThree into the now-extended billAmountIntOne
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntThree.begin(),
                             billAmountIntThree.end());
+  } else {
+    originalSizeThree = 0;
   }
 
   /*********************************************************/
@@ -797,16 +819,27 @@ void setup() {
   config.autoReconnect = true;
   config.autoRise = false; // set dynamically during startup based on mode
   config.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  config.psk = deviceState.password; // Password for AP
+  // A stored password that fails the policy must not leave the hotspot open
+  // or set to the known default. While it is invalid the AP uses a random
+  // per-boot PSK shown on the portal screen, so only someone standing at the
+  // machine can join.
+  const bool passwordRejected = !portalPasswordAccepted(deviceState.password);
+  if (passwordRejected) {
+    g_fallbackApPsk = makeFallbackApPsk();
+  }
+  config.psk = passwordRejected ? g_fallbackApPsk
+                                : String(deviceState.password); // Password for AP
   config.menuItems =
       AC_MENUITEM_CONFIGNEW | AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET;
   config.title = "LN ATM";
   config.reconnectInterval = 1;
   config.immediateStart =
       false; // If we don't have WiFi saved, it will start AP
-  // To define a username/password for the Basic Auth portal, you can use:
-  config.username = deviceState.password;
-  config.password = deviceState.password;
+  // Basic auth for the portal pages: admin, with the same secret as the
+  // hotspot. While the stored password is rejected that is the random
+  // per-boot passphrase, not the default.
+  config.username = "admin";
+  config.password = config.psk;
 
   // Register all Aux pages to the portal
   portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
@@ -876,8 +909,10 @@ void setup() {
        (currencyOne[0] == '\0'));
 
   // Decide portal behavior once, then call portal.begin() once.
-  config.immediateStart = (userWantsPortal || apiDataMissing);
-  config.autoRise = (userWantsPortal || apiDataMissing || wifiRequired);
+  config.immediateStart =
+      (userWantsPortal || apiDataMissing || passwordRejected);
+  config.autoRise =
+      (userWantsPortal || apiDataMissing || passwordRejected || wifiRequired);
 
   if (isGaloyMode) {
     Serial.print(deviceState.fundingSourceBuffer);
@@ -892,6 +927,8 @@ void setup() {
 
   if (userWantsPortal) {
     Serial.println("User tap => start AP portal immediately");
+  } else if (passwordRejected) {
+    Serial.println("Default password => start AP portal immediately");
   } else if (apiDataMissing) {
     Serial.println("API data missing => start AP portal immediately");
   } else {
@@ -899,13 +936,27 @@ void setup() {
   }
 
   portal.config(config);
+  WiFi.setSleep(false);
+  // portal.begin() blocks in AutoConnect's captive loop while the hotspot is
+  // up, so the instructions (and a fallback hotspot password) are drawn when
+  // the portal starts.
+  portal.onDetect([](IPAddress &) {
+    static bool shown = false;
+    if (!shown) {
+      createPortalScreen();
+      lv_task_handler();
+      shown = true;
+    }
+    return true;
+  });
   Serial.println("Attempting to connect via AutoConnect...");
   (void)portal.begin(); // may connect STA or start AP depending on config
 
   if (wifiStatus()) {
     Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
-    if (wifiRequired) {
-      // If you don't want to leave the AP on, switch to STA only
+    const bool stayingInPortal =
+        userWantsPortal || apiDataMissing || passwordRejected;
+    if (wifiRequired && !stayingInPortal) {
       WiFi.mode(WIFI_STA);
     }
   } else {
@@ -917,8 +968,15 @@ void setup() {
   }
 
   // If portal is required (tap / missing data / Blink no-wifi), stay in portal.
-  if (userWantsPortal || apiDataMissing || (wifiRequired && !wifiStatus())) {
+  if (userWantsPortal || apiDataMissing || passwordRejected ||
+      (wifiRequired && !wifiStatus())) {
     return;
+  }
+
+  if (wifiStatus() && (WiFi.getMode() & WIFI_AP)) {
+    Serial.println("WiFi up; turning the setup hotspot off");
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
   }
 
   // Otherwise we can continue (LNbits offline allowed).
@@ -967,6 +1025,27 @@ int nonBlockingRead() {
     return SerialPort1.read();
   }
   return -1; // No data available
+}
+
+// A note already past the NV10's inhibit point is still stacked and reports
+// its channel afterwards. Stop the acceptor, then give such a note time to
+// report so it is part of the payout instead of being taken uncredited.
+static const unsigned long BILL_SETTLE_MS = 2000;
+
+static void inhibitAndCollectPendingBills() {
+  SerialPort1.write(185);
+  digitalWrite(INHIBITMECH, LOW);
+  const unsigned long start = millis();
+  while (millis() - start < BILL_SETTLE_MS) {
+    const int pending = nonBlockingRead();
+    if (pending >= 1 && pending <= (int)billAmountIntOne.size()) {
+      bills = bills + billAmountIntOne[pending - 1];
+      total = (coins + bills);
+    } else {
+      lv_task_handler();
+      delay(10);
+    }
+  }
 }
 
 // Create the logo screen
@@ -1113,6 +1192,14 @@ void createPortalScreen() {
                240); // Center but 20 from the top
   lv_obj_set_style_text_font(portaltextfour, &lv_font_montserrat_22,
                              0); // Use the large font
+
+  if (g_fallbackApPsk.length() > 0) {
+    String pskLine = "Wi-Fi password: " + g_fallbackApPsk;
+    lv_obj_t *pskLabel = lv_label_create(screen_portal);
+    lv_label_set_text(pskLabel, pskLine.c_str());
+    lv_obj_align(pskLabel, LV_ALIGN_TOP_MID, 0, 280);
+    lv_obj_set_style_text_font(pskLabel, &lv_font_montserrat_22, 0);
+  }
 
   lv_scr_load(screen_portal);
 }
@@ -1394,7 +1481,7 @@ void checkPrice() {
 
 void checkPriceCoinGecko() {
   // Ask for the USD rate too - the Flash USD wallet needs the cross rate
-  http.begin(coingeckoConversionAPI + currencySelected +
+  beginNetwork(http, secureClient, coingeckoConversionAPI + currencySelected +
              ",usd"); // Specify request destination
 
   int httpCode = http.GET(); // Send the request
@@ -1430,7 +1517,7 @@ void checkPriceCoinGecko() {
 }
 
 void checkPriceExchangeApi() {
-  http.begin(exchangeapiConversionAPI);
+  beginNetwork(http, secureClient, exchangeapiConversionAPI);
   int httpResponseCode = http.GET();
 
   if (httpResponseCode == 200 || httpResponseCode == 201) {
@@ -1510,7 +1597,7 @@ void checkBalance() {
     maxamountSelected = maxamount3;
   }
   if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-    http.begin(String(lnbitsURL) +
+    beginNetwork(http, secureClient, String(lnbitsURL) +
                "/api/v1/wallet");         // Specify request destination
     http.addHeader("X-Api-Key", readkey); // Specify API key header
 
@@ -1562,7 +1649,7 @@ void checkBalance() {
     // (its BTC wallet is external/non-custodial - server can't spend it).
     const char *walletCur =
         FundingService::galoyWalletCurrency(deviceState.fundingSourceBuffer);
-    if (FundingService::fetchGaloyBalance(http, deviceState, sessionState,
+    if (FundingService::fetchGaloyBalance(deviceState, sessionState,
                                           walletCur)) {
       if (strcmp(walletCur, "USD") == 0) {
         // Balance is in USD cents; convert to the operator's fiat via the
@@ -1641,6 +1728,9 @@ static void btn1_event_handler(lv_event_t *e) {
 
     // Update price and balance in background (these are slow HTTP requests)
     // This happens after screen is shown, so user sees response immediately
+    // Zero the rate first: a failed fetch must not arm the acceptor with the
+    // previous currency's price.
+    fiatValue = 0;
     checkPrice();
     checkBalance();
 
@@ -1704,6 +1794,9 @@ static void btn2_event_handler(lv_event_t *e) {
     hideLoadingIndicator();
 
     // Update price and balance in background (these are slow HTTP requests)
+    // Zero the rate first: a failed fetch must not arm the acceptor with the
+    // previous currency's price.
+    fiatValue = 0;
     checkPrice();
     checkBalance();
 
@@ -1757,6 +1850,9 @@ static void btn3_event_handler(lv_event_t *e) {
     hideLoadingIndicator();
 
     // Update price and balance in background (these are slow HTTP requests)
+    // Zero the rate first: a failed fetch must not arm the acceptor with the
+    // previous currency's price.
+    fiatValue = 0;
     checkPrice();
     checkBalance();
 
@@ -2152,15 +2248,57 @@ void createCurrencyScreen(const char *currency, float rate, float balance,
 }
 
 void enableAcceptor() {
+  int startChannel = 0;
+  int currencySize = 0;
+  if (strcmp(currencySelected, currencyOne) == 0) {
+    currencySize = originalSizeOne;
+  } else if (strcmp(currencySelected, currencyTwo) == 0) {
+    startChannel = originalSizeOne;
+    currencySize = originalSizeTwo;
+  } else if (strcmp(currencySelected, currencyThree) == 0) {
+    startChannel = originalSizeOne + originalSizeTwo;
+    currencySize = originalSizeThree;
+  }
+  int64_t smallestCents = 0;
+  for (int i = 0; i < currencySize; i++) {
+    const int amount = billAmountIntOne[startChannel + i];
+    if (amount <= 0) {
+      continue;
+    }
+    const int64_t cents = (int64_t)amount * 100;
+    if (smallestCents == 0 || cents < smallestCents) {
+      smallestCents = cents;
+    }
+  }
+  // One unit of PYG (and similar currencies) rounds to 0 sats. The probe is
+  // the smallest note this currency can take.
+  if (!quoteSats(smallestCents, fiatValue, chargeSelected).ok) {
+    Serial.println("Acceptor stays inhibited until a price quote succeeds");
+    return;
+  }
   if (paymentService.isGaloy(deviceState.fundingSourceBuffer) &&
       (!wifiStatus())) {
     Serial.println(
         "Error: online funding source selected but the device is offline");
     return;
-  } else {
-    SerialPort1.write(184);          // Enable acceptor
-    digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
   }
+  SerialPort1.write(184);          // Enable acceptor
+  digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
+}
+
+static void discardInsertMoneyScreen() {
+  uiController.deleteInsertMoneyScreen();
+  labelLastInserted = nullptr;
+  labelTotalAmount = nullptr;
+  labelMaxAmount = nullptr;
+}
+
+// The acceptor is already inhibited on every path that gets here.
+static void enterPaymentError() {
+  createPaymentErrorScreen();
+  lv_task_handler();
+  currentUiState = UI_PAYMENT_ERROR;
+  stateEnterTime = millis();
 }
 
 /**
@@ -2416,7 +2554,7 @@ void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
  * @return true if invoice was successfully retrieved, false otherwise
  */
 bool checkBoltInvoice() {
-  return FundingService::pollBoltInvoice(http, sessionState);
+  return FundingService::pollBoltInvoice(sessionState);
 }
 
 /**
@@ -2425,11 +2563,37 @@ bool checkBoltInvoice() {
  * the payment.
  *
  * @param invoice The Bolt invoice to be sent as part of the request payload.
- * @return true if the payment was accepted (SUCCESS/PENDING/ALREADY_PAID),
+ * @return true if the payment was accepted (SUCCESS/PENDING),
  *         false on HTTP failure, GraphQL errors or FAILURE status.
  */
 bool getBlinkLnURL(const char *invoice) {
-  return FundingService::payInvoice(http, deviceState, invoice);
+  int64_t invoicedSats = 0;
+  if (!bolt11AmountSats(invoice, &invoicedSats) ||
+      invoicedSats != (int64_t)result) {
+    Serial.print("Payout aborted: invoice sats ");
+    Serial.print((long)invoicedSats);
+    Serial.print(" != quoted ");
+    Serial.println(result);
+    return false;
+  }
+  return FundingService::payInvoice(deviceState, invoice);
+}
+
+/**
+ * @brief Quote the payout for the current session into `result`.
+ * Returns false (and zeroes `result`) when the quote is refused.
+ */
+static bool assignQuotedSats() {
+  const Quote quote = quoteSats(llround(total), fiatValue, chargeSelected);
+  if (!quote.ok || quote.sats > LONG_MAX) {
+    result = 0;
+    Serial.println("Quote refused: missing price, bad fee, or non-positive sats");
+    return false;
+  }
+  result = (long)quote.sats;
+  Serial.print("Result (after fee, satoshis): ");
+  Serial.println(result);
+  return true;
 }
 
 /**
@@ -2450,24 +2614,10 @@ bool getBlinkLnURL(const char *invoice) {
  *         false when no QR should be shown (caller must handle the failure).
  */
 bool createLNURLWithdraw() {
-  float temp = ((total / 100.0) / fiatValue * 1e8);
-
-  Serial.print("Temp (satoshis): ");
-  Serial.println(temp);
-
-  if (chargeSelected > 0) {
-    tempCharge = ((total / 100.0) / fiatValue * 1e8) * chargeSelected / 100;
-    result = round(temp) - tempCharge;
-  } else {
-    result = round(temp);
+  if (!assignQuotedSats()) {
+    return false;
   }
-
-  Serial.print("Charge TEMP: ");
-  Serial.println(tempCharge);
-  Serial.print("Result (rounded satoshis): ");
-  Serial.println(result);
-
-  return FundingService::requestLnurlWithdraw(http, sessionState, result);
+  return FundingService::requestLnurlWithdraw(sessionState, result);
 }
 
 /**
@@ -2481,50 +2631,27 @@ bool createLNURLWithdraw() {
  * @note This function assumes that the necessary variables (total, fiatValue,
  * chargeSelected, lnbitsURL, adminkey) have been properly initialized.
  */
-void getLNURL() {
-  Serial.print("Total (cents): ");
-  Serial.println(total);
-  Serial.print("EUR Value (price of 1 Bitcoin in euros): ");
-  Serial.println(fiatValue);
-  Serial.print("Charge: ");
-  Serial.println(chargeSelected);
-
-  float temp = ((total / 100.0) / fiatValue * 1e8);
-
-  Serial.print("Temp (satoshis): ");
-  Serial.println(temp);
-
-  if (chargeSelected > 0) {
-    tempCharge = ((total / 100.0) / fiatValue * 1e8) * chargeSelected / 100;
-    result = round(temp) - tempCharge;
-  } else {
-    result = round(temp);
+bool getLNURL() {
+  if (!assignQuotedSats()) {
+    return false;
   }
-
-  Serial.print("Charge TEMP: ");
-  Serial.println(tempCharge);
-  Serial.print("Result (rounded satoshis): ");
-  Serial.println(result);
-
-  Serial.println(result);
-
-  String resultStr = String(result);
 
   if (lnbitsURL[0] == '\0') {
     Serial.println("Error: lnbitsURL is empty in getLNURL");
-    return;
+    return false;
   }
 
-  http.end(); // Ensure previous connection is closed
-
+  http.end();
   char requestUrl[512];
   snprintf(requestUrl, sizeof(requestUrl), "%s/withdraw/api/v1/links",
            lnbitsURL);
-  http.begin(requestUrl); // Specify request destination
-  http.addHeader("Content-Type",
-                 "application/json");    // Specify content-type header
-  http.addHeader("X-Api-Key", adminkey); // Specify API key header
+  if (!beginNetwork(http, secureClient, requestUrl)) {
+    return false;
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Api-Key", adminkey);
 
+  const String resultStr = String(result);
   String httpRequestData = "{\"title\": \"Fiat Hell ";
   httpRequestData += "\", \"min_withdrawable\": ";
   httpRequestData += resultStr;
@@ -2532,38 +2659,30 @@ void getLNURL() {
   httpRequestData += resultStr;
   httpRequestData += ", \"uses\": 1, \"wait_time\": 1, \"is_unique\": 1, "
                      "\"webhook_url\": \"\"}";
-  int httpCode = http.POST(httpRequestData);
+  const int httpCode = http.POST(httpRequestData);
+  const String responsePayload = http.getString();
+  http.end();
 
-  // int httpCode = http.POST("{\"title\": \"Fiat Hell\", \"min_withdrawable\":
-  // \" + result + \", \"max_withdrawable\": \" + result + \" , \"uses\": \"1\",
-  // \"wait_time\": \"1\", \"is_unique\": \"true\", \"webhook_url\": \"\"}"); //
-  // Send the request
-  String responsePayload = http.getString(); // Get the response payload
-
-  // Serial.println(httpCode);   // Print HTTP return code
-  Serial.print("Temp: ");
-  Serial.println(temp); // Print request response payload
-  Serial.print("Result: ");
-  Serial.println(result);
-  Serial.print("ResultSTR: ");
-  Serial.println(resultStr);
-  Serial.print("Payload: ");
-  Serial.println(responsePayload); // Print request response payload
-
-  // Parse JSON
+  if (httpCode != 200 && httpCode != 201) {
+    Serial.print("getLNURL HTTP ");
+    Serial.println(httpCode);
+    lnURLgen[0] = '\0';
+    return false;
+  }
   DynamicJsonDocument doc(1024);
-  deserializeJson(doc, responsePayload);
-
-  // Get balance from parsed JSON
+  if (deserializeJson(doc, responsePayload)) {
+    Serial.println("getLNURL JSON parse error");
+    lnURLgen[0] = '\0';
+    return false;
+  }
   strlcpy(lnURLgen, doc["lnurl"] | "", sizeof(lnURLgen));
-
-  Serial.print("LNURL: ");
-  Serial.println(lnURLgen);
+  if (lnURLgen[0] == '\0') {
+    Serial.println("getLNURL response has no lnurl");
+    return false;
+  }
   strlcpy(sessionState.modifiedLnURLgen, lnURLgen,
           sizeof(sessionState.modifiedLnURLgen));
-
-  http.end(); // Close connection
-  // lv_task_handler();
+  return true;
 }
 
 /*LNbits offline*/
@@ -2585,35 +2704,61 @@ void getLNURL() {
  *       - total: The total amount for the transaction.
  *       - qrData: The variable to store the bech32-encoded LNURL.
  */
-void makeLNURL() {
+bool makeLNURL() {
+  const OfflinePayout payout = offlineLnurlPayout(
+      isGaloySource() ? FundingKind::Galoy : FundingKind::Lnbits, false,
+      llround(total), chargeSelected);
+  if (!payout.allowed) {
+    Serial.println("Offline LNURL refused");
+    qrData[0] = '\0';
+    return false;
+  }
+
   int randomPin = random(1000, 9999);
   byte nonce[8];
   for (int i = 0; i < 8; i++) {
     nonce[i] = random(256);
   }
 
-  byte payload[51]; // 51 bytes is max one can get with xor-encryption
-
+  byte payload[51];
   size_t payload_len = xor_encrypt(
       payload, sizeof(payload), (uint8_t *)secretATM, strlen(secretATM), nonce,
-      sizeof(nonce), randomPin, float(total));
+      sizeof(nonce), randomPin, payout.centsAfterFee);
+  if (payload_len == 0) {
+    Serial.println("Offline LNURL encrypt failed");
+    return false;
+  }
   String preparedURL = String(baseURLATM) + "?atm=1&p=";
   preparedURL +=
       toBase64(payload, payload_len, BASE64_URLSAFE | BASE64_NOPADDING);
-
   Serial.println(preparedURL);
-  char Buf[200];
-  preparedURL.toCharArray(Buf, 200);
-  char *url = Buf;
-  byte *data = (byte *)calloc(strlen(url) * 2, sizeof(byte));
+
+  // A truncated URL or LNURL still encodes as a QR the wallet cannot redeem.
+  const size_t urlLen = preparedURL.length();
+  // 8-bit to 5-bit regrouping needs ceil(urlLen * 8 / 5) values; bech32 adds
+  // the "lnurl" prefix, the '1' separator, a 6-char checksum and the NUL.
+  const size_t groups = (urlLen * 8 + 4) / 5;
+  byte *data = (byte *)calloc(groups, sizeof(byte));
+  char *charLnurl = (char *)calloc(groups + 5 + 1 + 6 + 1, sizeof(char));
   size_t len = 0;
-  int res = convert_bits(data, &len, 5, (byte *)url, strlen(url), 8, 1);
-  char *charLnurl = (char *)calloc(strlen(url) * 2, sizeof(byte));
-  bech32_encode(charLnurl, "lnurl", data, len);
-  to_upper(charLnurl);
-  strlcpy(qrData, charLnurl, sizeof(qrData));
-  Serial.print("Buf: ");
-  Serial.println(Buf);
+  const bool encoded =
+      data != nullptr && charLnurl != nullptr &&
+      convert_bits(data, &len, 5, (const byte *)preparedURL.c_str(), urlLen, 8,
+                   1) &&
+      bech32_encode(charLnurl, "lnurl", data, len);
+  bool fits = false;
+  if (encoded) {
+    to_upper(charLnurl);
+    fits = strlcpy(qrData, charLnurl, sizeof(qrData)) < sizeof(qrData);
+  }
+  free(data);
+  free(charLnurl);
+  if (!fits) {
+    Serial.println("Offline LNURL does not fit the QR buffer");
+    qrData[0] = '\0';
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -2938,13 +3083,18 @@ void handleUiStateMachine() {
         lv_task_handler();
         stateEnterTime = millis();
         isBlinkFlow = false;
+        // currentTime was taken before the payment request. Comparing it with
+        // the new stateEnterTime underflows and this timeout would replace a
+        // successful payout with the failure screen.
+        break;
       }
       // If no invoice yet, continue polling (will check again in 2 seconds)
     }
-    // Optional: Add timeout (e.g., 5 minutes) to prevent infinite waiting
     if (currentTime - stateEnterTime >= 300000) { // 5 minutes timeout
-      Serial.println("Blink invoice timeout => restarting");
-      ESP.restart();
+      Serial.println("Blink invoice timeout => payment error");
+      uiController.deleteQRCodeScreen();
+      enterPaymentError();
+      isBlinkFlow = false;
     }
     break;
 
@@ -3024,6 +3174,9 @@ void loop() {
 
   if (x != -1) // Data available
   {
+    if (currentUiState != UI_IDLE && currentUiState != UI_INSERTING_MONEY) {
+      SerialPort1.write(185);
+    } else {
     for (int i = 0; i < billAmountIntOne.size();
          i++) // Using .size() method on std::vector
     {
@@ -3058,97 +3211,45 @@ void loop() {
         break; // Exit the for loop as we found a match
       }
     }
+    }
   }
   // Check button release or total (only if in INSERTING_MONEY state)
   if (currentUiState == UI_INSERTING_MONEY) {
     if ((BTNA.wasPressed() && total != 0) || total >= maxamountSelected) {
       // Process the total and reset variables for the next transaction.
+      inhibitAndCollectPendingBills();
       total = (coins + bills) * 100;
 
       Serial.print(F("Total: "));
       Serial.println(total);
 
+      discardInsertMoneyScreen();
+      const char *qrPayload = nullptr;
+      bool blinkFlow = false;
       if (!wifiStatus()) {
-        uiController.deleteInsertMoneyScreen();
-        Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
-        makeLNURL();
-        printHeapStatus();
-        Serial.println("makeLNURL() - LNbits offline: ");
-        showQRCodeLVGL(qrData);
-        Serial.print("showQRCodeLVGL() - LNbits offline: ");
-        Serial.println(qrData);
-        // Turn off machines
-        SerialPort1.write(185);
-        digitalWrite(INHIBITMECH, LOW);
-        Serial.print("Free heap (makeLNURL): ");
-        Serial.println(ESP.getFreeHeap());
+        qrPayload = makeLNURL() ? qrData : nullptr;
+      } else if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
+        // Without an LNURL and callback a QR would trap the customer in a
+        // polling loop that can never succeed.
+        qrPayload = createLNURLWithdraw() ? lnURLgen : nullptr;
+        blinkFlow = true;
+      } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+        if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
+          qrPayload = getLNURL() ? lnURLgen : nullptr;
+        } else {
+          qrPayload = makeLNURL() ? qrData : nullptr;
+        }
+      }
+      if (qrPayload == nullptr) {
+        Serial.println("Payout not created => payment error screen");
+        enterPaymentError();
+      } else {
+        showQRCodeLVGL(qrPayload);
         lv_task_handler();
-        Serial.println("lv_task_handler() - LNbits offline");
         currentUiState = UI_SHOWING_QR;
         stateEnterTime = millis();
         qrDebounceDone = false;
-      } else {
-        if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
-          uiController.deleteInsertMoneyScreen();
-          Serial.println("deleteInsertMoneyScreen() - Blink online");
-          const bool withdrawOk = createLNURLWithdraw();
-          Serial.println("createLNURLWithdraw() - Blink online");
-          // Turn off machines in both outcomes - cash is already inside
-          SerialPort1.write(185);
-          digitalWrite(INHIBITMECH, LOW);
-          if (withdrawOk) {
-            // Display the QR code for online
-            showQRCodeLVGL(lnURLgen);
-            Serial.println("showQRCodeLVGL() - Blink online");
-            lv_task_handler();
-            Serial.println("lv_task_handler() - Blink online");
-            currentUiState = UI_SHOWING_QR;
-            stateEnterTime = millis();
-            qrDebounceDone = false;
-            isBlinkFlow = true; // Mark that we're in Blink flow
-          } else {
-            // No LNURL/callback - showing a QR would trap the customer in a
-            // polling loop that can never succeed.
-            Serial.println("LNURL withdraw failed => payment error screen");
-            createPaymentErrorScreen();
-            lv_task_handler();
-            currentUiState = UI_PAYMENT_ERROR;
-            stateEnterTime = millis();
-          }
-        }
-        if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-          if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
-            uiController.deleteInsertMoneyScreen();
-            Serial.println("deleteInsertMoneyScreen() - LNbits online");
-            getLNURL();
-            Serial.println("getLNURL()");
-            // Display the QR code for online
-            showQRCodeLVGL(lnURLgen);
-            Serial.println("showQRCodeLVGL() - LNbits online");
-            lv_task_handler();
-            Serial.println("lv_task_handler() - LNbits online");
-            // Turn off machines
-            SerialPort1.write(185);
-            digitalWrite(INHIBITMECH, LOW);
-            currentUiState = UI_SHOWING_QR;
-            stateEnterTime = millis();
-            qrDebounceDone = false;
-          } else {
-            uiController.deleteInsertMoneyScreen();
-            Serial.println(
-                "deleteInsertMoneyScreen() - LNbits offline fallback");
-            makeLNURL();
-            showQRCodeLVGL(qrData);
-            lv_task_handler();
-            SerialPort1.write(185);
-            digitalWrite(INHIBITMECH, LOW);
-            currentUiState = UI_SHOWING_QR;
-            stateEnterTime = millis();
-            qrDebounceDone = false;
-          }
-        }
-        Serial.print("Free heap (showQRCodeLVGL): ");
-        Serial.println(ESP.getFreeHeap());
+        isBlinkFlow = blinkFlow;
       }
     }
 

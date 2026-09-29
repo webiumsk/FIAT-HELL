@@ -11,6 +11,11 @@ PHP server pre AutoConnect OTA aktualizácie.
    .pio/build/esp32-8048s050/firmware.bin  →  bin/firmware.bin
    ```
 4. Pre poradové verzie môžeš premenovať: `fiat-hell-v1.2.0.bin`.
+5. Podpíš image a nahraj aj podpis (rovnaký názov s príponou `.sig`):
+   ```text
+   python3 tools/sign_firmware.py bin/fiat-hell-v1.2.0.bin
+   ```
+   Súbor `fiat-hell-v1.2.0.bin.sig` musí ležať vedľa `.bin`. Bez platného podpisu zariadenie update odmietne. Názov musí obsahovať `vX.Y.Z`, ktoré nie je staršie ako bežiaci firmvér.
 
 ## Štruktúra
 
@@ -29,6 +34,11 @@ ota-server/
 - `OTA_UPDATE_PORT` = 80 (štandardný HTTP) alebo 443 (HTTPS)
 
 Pre HTTPS bude treba upraviť AutoConnectUpdate (zatiaľ len HTTP).
+
+## Poznámky
+
+- `.bin` musí byť servovaný s hlavičkou `Content-Length` (tento PHP skript ju posiela). Chunked odpoveď z CDN/proxy by update odmietla.
+- Zariadenie kontroluje verziu z názvu súboru aj z markra `FHFW:X.Y.Z` vloženého v image, takže premenovanie staršieho súboru downgrade neobíde.
 
 ## Cloudflare
 

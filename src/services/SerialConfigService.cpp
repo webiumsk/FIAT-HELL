@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <lvgl.h>
 #include <algorithm>
 #include <vector>
 
@@ -229,11 +230,23 @@ static String mergeKeepMarkers(fs::FS &fs, const String &path,
   return merged;
 }
 
+// The boot screen is still up during this window. A tight yield() loop
+// would freeze the circular progress the operator just asked for.
+static void pumpUi() {
+  static unsigned long lastMs = 0;
+  const unsigned long now = millis();
+  if (now - lastMs >= 25) {
+    lastMs = now;
+    lv_task_handler();
+  }
+  yield();
+}
+
 void runSerialConfigWindow(fs::FS &fs) {
   Serial.println("FIAT-HELL:CONFIG_READY");
 
   const unsigned long detectEnd = millis() + 2000UL;
-  while (millis() < detectEnd && !Serial.available()) yield();
+  while (millis() < detectEnd && !Serial.available()) pumpUi();
   if (!Serial.available()) return;
 
   unsigned long cfgDeadline = millis() + 10000UL;
@@ -274,7 +287,7 @@ void runSerialConfigWindow(fs::FS &fs) {
         break;
       }
     }
-    yield();
+    pumpUi();
   }
 }
 

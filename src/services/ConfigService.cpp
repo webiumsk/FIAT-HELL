@@ -40,6 +40,14 @@ bool ConfigService::loadGuiConfig(fs::FS &fs, const char *path,
     fillFromArray(docGui2, "animated", out.animated, sizeof(out.animated));
   }
 
+  // Positional entry 3; files written before this setting existed simply
+  // lack it, leaving blinkWallet empty (= Bitcoin).
+  const JsonObject docGui3 = docGui[3];
+  if (!docGui3.isNull()) {
+    fillFromArray(docGui3, "blinkwallet", out.blinkWallet,
+                  sizeof(out.blinkWallet));
+  }
+
   out.valid = (out.fundingSource[0] != '\0') || (out.rateSource[0] != '\0') ||
               (out.animated[0] != '\0');
   return out.valid;
@@ -66,12 +74,15 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   valuesRateSource.add("ExchangeApi");
   valuesRateSource.add("CoinYEP");
   valuesRateSource.add("Kraken");
+  valuesRateSource.add("Yadio");
   if (in.rateSource && (strcmp(in.rateSource, "ExchangeApi") == 0))
     docGui1["checked"] = 2;
   else if (in.rateSource && strcmp(in.rateSource, "CoinYEP") == 0)
     docGui1["checked"] = 3;
   else if (in.rateSource && strcmp(in.rateSource, "Kraken") == 0)
     docGui1["checked"] = 4;
+  else if (in.rateSource && strcmp(in.rateSource, "Yadio") == 0)
+    docGui1["checked"] = 5;
   else
     docGui1["checked"] = 1;  // CoinGecko is default for unknown/empty
 
@@ -81,6 +92,14 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   valuesEnableAnim.add("No");
   valuesEnableAnim.add("Yes");
   docGui2["checked"] = (strcmp(in.animated, "No") == 0) ? 1 : 2;
+
+  JsonObject docGui3 = docGui.createNestedObject();
+  docGui3["name"] = "blinkwallet";
+  JsonArray valuesBlinkWallet = docGui3.createNestedArray("value");
+  valuesBlinkWallet.add("Bitcoin");
+  valuesBlinkWallet.add("Stablesats");
+  docGui3["checked"] =
+      (in.blinkWallet && strcmp(in.blinkWallet, "Stablesats") == 0) ? 2 : 1;
 
   File guiFile = fs.open(path, "w");
   if (!guiFile) {
@@ -92,7 +111,6 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   return true;
 }
 
-#if FIAT_HAS_AUTOCONNECT
 bool ConfigService::loadAuxConfig(fs::FS &fs, const char *path,
                                   AutoConnectAux &aux,
                                   std::initializer_list<const char *> keys) {
@@ -135,7 +153,6 @@ bool ConfigService::saveAuxConfig(fs::FS &fs, const char *path,
   }
   return true;
 }
-#endif // FIAT_HAS_AUTOCONNECT
 
 static String csvField(const String &csv, int index) {
   int startPos = 0;
@@ -219,7 +236,9 @@ bool ConfigService::loadFirst(fs::FS &fs, const char *path, FirstConfig &out) {
   out.charge = String(doc8["value"] | "").toFloat();
 
   out.valid = out.currencyLabel[0] != '\0';
-  return out.valid;
+  // A blank currency must not discard the API key and wallet id that share
+  // this file. Callers copy every field; the startup check reports the blank.
+  return true;
 }
 
 bool ConfigService::updateFirstBlinkApiKey(fs::FS &fs, const char *path,

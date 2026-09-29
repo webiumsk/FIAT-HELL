@@ -91,12 +91,13 @@ struct SessionState {
   char lnURLgen[1024] = {0};
   char modifiedLnURLgen[1024] = {0};
   char callback[1024] = {0};
-  char boltInvoice[1024] = {0};
+  // Phone wallets attach routing hints, so a BOLT11 invoice is often longer
+  // than a kilobyte. Truncating it makes Blink reject the payment.
+  char boltInvoice[4096] = {0};
   char paymentRequest[1024] = {0};
   char payload[1024] = {0};
 
   // Temporary calculation values
-  float tempCharge = 0.0f;
   long result = 0;
 
   // Periodic update timing
@@ -116,7 +117,6 @@ struct SessionState {
     totalCurrency3 = 0;
     lastBillCents = 0;
     memset(lastBillCurrency, 0, sizeof(lastBillCurrency));
-    tempCharge = 0.0f;
     result = 0;
   }
 

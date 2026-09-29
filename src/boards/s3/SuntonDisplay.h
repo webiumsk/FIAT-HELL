@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <TAMC_GT911.h>
 #include <Wire.h>
+#include <driver/gpio.h>
 #include <Arduino_DataBus.h>
 #include <databus/Arduino_ESP32RGBPanel.h>
 #include <display/Arduino_RGB_Display.h>
@@ -24,6 +25,7 @@ public:
     if (!_gfx.begin()) {
       return false;
     }
+    reduceRgbDriveStrength();
 
     pinMode(TFT_BL, OUTPUT);
     digitalWrite(TFT_BL, HIGH);
@@ -91,6 +93,18 @@ public:
   }
 
 private:
+  // The 16 MHz RGB bus sits next to the module antenna; at the default drive
+  // strength its harmonics desense the 2.4 GHz radio (0.1-2 s ping, loss).
+  void reduceRgbDriveStrength() {
+    const int pins[] = {DE,      VSYNC,   HSYNC,   PCLK,    DATA_R0,
+                        DATA_R1, DATA_R2, DATA_R3, DATA_R4, DATA_G0,
+                        DATA_G1, DATA_G2, DATA_G3, DATA_G4, DATA_G5,
+                        DATA_B0, DATA_B1, DATA_B2, DATA_B3, DATA_B4};
+    for (int pin : pins) {
+      gpio_set_drive_capability(static_cast<gpio_num_t>(pin), GPIO_DRIVE_CAP_0);
+    }
+  }
+
   uint8_t probeTouchAddress() {
     return probeTouchController(GT911_ADDR1) ? GT911_ADDR1 : GT911_ADDR2;
   }

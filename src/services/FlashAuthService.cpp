@@ -1,5 +1,6 @@
 #include "services/FlashAuthService.h"
 #include "services/FundingService.h"
+#include "services/HttpsClient.h"
 
 #include <ArduinoJson.h>
 
@@ -10,9 +11,13 @@ static const char *flashEndpoint() {
 }
 
 // POST a GraphQL request; returns HTTP code and fills responseOut.
-static int postGraphql(HTTPClient &http, const String &requestBody,
-                       const String &bearerToken, String &responseOut) {
-  http.begin(flashEndpoint());
+static int postGraphql(const String &requestBody, const String &bearerToken,
+                       String &responseOut) {
+  HttpsSession session;
+  HTTPClient &http = session.httpClient;
+  if (!session.begin(flashEndpoint())) {
+    return -1;
+  }
   http.addHeader("Content-Type", "application/json");
   if (bearerToken.length() > 0) {
     http.addHeader("Authorization", "Bearer " + bearerToken);
@@ -24,8 +29,8 @@ static int postGraphql(HTTPClient &http, const String &requestBody,
   return code;
 }
 
-bool userLogin(HTTPClient &http, const String &phone, const String &code,
-               String &authTokenOut, String &errOut) {
+bool userLogin(const String &phone, const String &code, String &authTokenOut,
+               String &errOut) {
   DynamicJsonDocument doc(1024);
   doc["query"] =
       "mutation($input: UserLoginInput!) { userLogin(input: $input) { "
@@ -36,10 +41,10 @@ bool userLogin(HTTPClient &http, const String &phone, const String &code,
   serializeJson(doc, body);
 
   String response;
-  const int httpCode = postGraphql(http, body, "", response);
+  const int httpCode = postGraphql(body, "", response);
   Serial.printf("flashkey userLogin: HTTP %d\n", httpCode);
   if (httpCode != 200) {
-    errOut = "HTTP " + String(httpCode) + " - skontroluj internet zariadenia";
+    errOut = "HTTP " + String(httpCode) + " - check the device's internet connection";
     return false;
   }
 
@@ -49,25 +54,24 @@ bool userLogin(HTTPClient &http, const String &phone, const String &code,
     return false;
   }
   if (resp["errors"].is<JsonArray>() && resp["errors"].size() > 0) {
-    errOut = String((const char *)(resp["errors"][0]["message"] | "chyba"));
+    errOut = String((const char *)(resp["errors"][0]["message"] | "error"));
     return false;
   }
   JsonObject login = resp["data"]["userLogin"];
   if (login["errors"].is<JsonArray>() && login["errors"].size() > 0) {
-    errOut = String((const char *)(login["errors"][0]["message"] | "chyba"));
+    errOut = String((const char *)(login["errors"][0]["message"] | "error"));
     return false;
   }
   const char *token = login["authToken"] | "";
   if (token[0] == '\0') {
-    errOut = "Server nevratil token - kod je asi nespravny alebo expirovany";
+    errOut = "The server did not return a token - the code is likely wrong or expired";
     return false;
   }
   authTokenOut = token;
   return true;
 }
 
-bool apiKeyCreate(HTTPClient &http, const String &authToken,
-                  String &apiKeyOut, String &errOut) {
+bool apiKeyCreate(const String &authToken, String &apiKeyOut, String &errOut) {
   DynamicJsonDocument doc(1024);
   doc["query"] =
       "mutation($input: ApiKeyCreateInput!) { apiKeyCreate(input: $input) { "
@@ -85,10 +89,10 @@ bool apiKeyCreate(HTTPClient &http, const String &authToken,
   serializeJson(doc, body);
 
   String response;
-  const int httpCode = postGraphql(http, body, authToken, response);
+  const int httpCode = postGraphql(body, authToken, response);
   Serial.printf("flashkey apiKeyCreate: HTTP %d\n", httpCode);
   if (httpCode != 200) {
-    errOut = "HTTP " + String(httpCode) + " pri vytvarani kluca";
+    errOut = "HTTP " + String(httpCode) + " while creating the key";
     return false;
   }
 
@@ -98,17 +102,17 @@ bool apiKeyCreate(HTTPClient &http, const String &authToken,
     return false;
   }
   if (resp["errors"].is<JsonArray>() && resp["errors"].size() > 0) {
-    errOut = String((const char *)(resp["errors"][0]["message"] | "chyba"));
+    errOut = String((const char *)(resp["errors"][0]["message"] | "error"));
     return false;
   }
   JsonObject payload = resp["data"]["apiKeyCreate"];
   if (payload["errors"].is<JsonArray>() && payload["errors"].size() > 0) {
-    errOut = String((const char *)(payload["errors"][0]["message"] | "chyba"));
+    errOut = String((const char *)(payload["errors"][0]["message"] | "error"));
     return false;
   }
   const char *key = payload["apiKey"]["apiKey"] | "";
   if (key[0] == '\0') {
-    errOut = "Server nevratil kluc";
+    errOut = "The server did not return a key";
     return false;
   }
   apiKeyOut = key;

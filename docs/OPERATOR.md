@@ -74,10 +74,10 @@ webstránku ani tretiu stranu.
 ## 5. Zmeny nastavení
 
 - **AP portál:** podrž pri štarte `BOOT` (S3) alebo ťukni na logo, pripoj sa
-  na WiFi **LN ATM-xxxx** (heslo = tvoje heslo portálu). Telefón by mal sám
-  ponúknuť prihlasovaciu stránku; ak nie, otvor `http://192.168.4.1/setup`.
-  Na S3 je portál chránený heslom WiFi siete, žiadne ďalšie prihlásenie
-  netreba. (WT32: `http://192.168.4.1`, login `admin` + heslo portálu.)
+  na WiFi **LN ATM-xxxx**, otvor `http://192.168.4.1`
+  (login `admin` + tvoje heslo portálu). Heslo musí mať 8–63 znakov a nesmie
+  byť `changeme`. Kým je uložené heslo neplatné, AP aj login používajú náhodné
+  heslo, ktoré displej zobrazí na obrazovke portálu (pri každom štarte iné).
 - **Bez portálu:** vo flasheri zmeň hodnoty a klikni **⬆ Iba konfig**
   (netreba flashovať firmvér).
 - **Nový firmvér:** S3 vie OTA cez portál; WT32 sa aktualizuje flasherom
@@ -105,7 +105,6 @@ webstránku ani tretiu stranu.
 | Flasher visí na „Synchronizujem s bootloaderom" | Port drží iný program (sériový monitor, druhý tab) — zavri ho a skús znova; na S3 zopakuj BOOT+RESET tanec |
 | Zariadenie po flashi nenabootuje | Skontroluj, či bola vybraná správna doska (rôzne flash adresy!) |
 | Balance `OFFLINE` | WiFi nefunguje — skontroluj sieť/heslo v portáli |
-| Telefón sa od AP „LN ATM" odpája alebo portál nenabieha | Počkaj ~15 s po zapnutí (zariadenie najprv raz skúša domácu WiFi, až potom spustí AP). Ak sa prihlasovacia stránka neotvorí sama, zadaj `http://192.168.4.1/setup` ručne. |
 | Balance `0`, v appke peniaze sú | Prostriedky musia byť v **Cash** wallete (nie Bitcoin wallete); over aj platnosť API kľúča |
 | `PAYMENT FAILED` na displeji | Nedostatočný Cash zostatok (suma + poplatok), alebo zrušený kľúč — pozri sériový monitor (115200 baud), riadok `Payment error message` |
 | SMS kód „nesprávny alebo expirovaný" | Kód platí pár minút a je jednorazový — vyžiadaj v appke nový |

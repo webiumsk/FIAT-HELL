@@ -44,15 +44,32 @@ static const lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_OR
                        LV_COLOR_YELLOW, LV_COLOR_GREEN, LV_COLOR_BLUE};
 
 #include <FS.h>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <SPIFFS.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include "ota/FirmwareVersion.h"
+#include "ota/OtaImage.h"
+#include "payout/Bolt11.h"
+#include "payout/NoteMask.h"
+#include "payout/OfflineLnurl.h"
+#include "payout/Quote.h"
+#include "portal/PortalPolicy.h"
+#include "services/HttpsClient.h"
+#include "services/PortalAccess.h"
+#include <climits>
+#include <cmath>
 
 using WebServerClass = WebServer;
 fs::SPIFFSFS &FlashFS = SPIFFS;
 #define FORMAT_ON_FAIL true
+
+// Embedded firmware version marker. The OTA handler scans a downloaded image
+// for it, so a renamed file cannot bypass the downgrade check. setup() prints
+// it, which keeps the linker from discarding it.
+static const char kFirmwareVersionMarker[] = "FHFW:" FW_VERSION;
 
 static const char *resetReasonToString(esp_reset_reason_t reason) {
   switch (reason) {
@@ -83,11 +100,12 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
   }
 }
 
-#include "WifiPortal.h"
-#include <HTTPUpdate.h>
+#include <AutoConnect.h>
+#include <AutoConnectCredential.h>
 #include <Update.h>
 #include <WiFiClientSecure.h>
 #include "PriceBalanceTask.h"
+#define AUTOCONNECT_USE_LOG 1
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
 #include <JC_Button.h>
@@ -104,7 +122,6 @@ static const char *resetReasonToString(esp_reset_reason_t reason) {
 #include <vector>
 
 #include <cstring> // For memset
-char Buf[200];     // Buffer for the encrypted data
 
 #include "btcsmall.c"
 LV_IMG_DECLARE(btcSmallImg);
@@ -127,7 +144,7 @@ LV_IMG_DECLARE(lnbits);
 #include "services/UiController.h"
 // pageflashkey.h must come before the http/field alias macros below
 #include "pageflashkey.h"
-#include "pagesetup.h"
+#include "pageota.h"
 
 // Runtime-allocated to avoid pre-setup global constructors on ESP32.
 static DeviceState *deviceStatePtr = nullptr;
@@ -204,7 +221,6 @@ char totalStr[64] = {0};
 #define chargeSelected sessionState.chargeSelected
 #define fiatBalance sessionState.fiatBalance
 #define fiatValue sessionState.fiatValue
-#define tempCharge sessionState.tempCharge
 #define result sessionState.result
 #define isInsertingMoney sessionState.isInsertingMoney
 #define previousMillis sessionState.previousMillis
@@ -227,11 +243,12 @@ lv_obj_t *mainScreenCurrency2RateLabel = nullptr;
 lv_obj_t *mainScreenCurrency2FeeLabel = nullptr;
 lv_obj_t *mainScreenCurrency3RateLabel = nullptr;
 lv_obj_t *mainScreenCurrency3FeeLabel = nullptr;
+lv_obj_t *mainScreenHoldLabel = nullptr;
 
 // Temporary buffers
 char buffer[32];
 
-const long interval = 300000; // 5 minutes in milliseconds
+const long interval = 30000; // price and balance refresh, 30 seconds
 
 // UI State Machine - now defined in SessionState.h
 #define currentUiState sessionState.currentUiState
@@ -262,7 +279,7 @@ const char *cuexApiKey =
 const char *alternativeConversionAPI =
     "https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms=";
 
-WiFiClientSecure *secureClientPtr = nullptr;
+BundleTlsClient *secureClientPtr = nullptr;
 HTTPClient *httpPtr = nullptr;
 HardwareSerial *serialPort1Ptr = nullptr;
 HardwareSerial *serialPort2Ptr = nullptr;
@@ -283,6 +300,8 @@ lv_obj_t *labelTotalCurrency2 = nullptr;
 lv_obj_t *labelTotalCurrency3 = nullptr;
 lv_obj_t *labelTotalSats = nullptr;
 lv_obj_t *labelMaxAmount = nullptr;
+lv_obj_t *insertFinishBtn = nullptr;
+static volatile bool insertFinishTapped = false;
 
 lv_obj_t *loadingLabel;
 
@@ -310,6 +329,7 @@ static lv_obj_t *battery_cells[4] = {nullptr};
 static lv_obj_t *battery_label = nullptr;
 static unsigned long lastBatteryUpdate = 0;
 static const unsigned long BATTERY_UPDATE_INTERVAL_MS = 4000;
+static int lastBatteryPct = -2; // -2 = never measured, -1 = no battery
 
 void checkStackUsage() {
   UBaseType_t highWaterMark = uxTaskGetStackHighWaterMark(NULL);
@@ -322,7 +342,14 @@ void checkStackUsage() {
  * Returns -1 if ADC invalid or voltage out of sane range.
  */
 static int readBatteryPercent() {
-  int raw = analogRead(BATTERY_ADC_GPIO);
+  // Average several samples; with no battery connected the divider input is
+  // open, the pin floats, and a single read jumps all over the range.
+  uint32_t sum = 0;
+  for (int i = 0; i < 8; i++) {
+    sum += analogRead(BATTERY_ADC_GPIO);
+    delay(1);
+  }
+  int raw = sum / 8;
   float vAdc = (raw / 4095.0f) * 3.3f;
   float vBatt = vAdc * BATTERY_DIVIDER_RATIO;
   if (vBatt < 8.0f || vBatt > 14.0f) {
@@ -378,7 +405,13 @@ void attachBatteryToCurrentScreen() {
 #if (BATTERY_ADC_GPIO < 0)
   lv_obj_add_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
 #else
-  lv_obj_clear_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+  // Without a battery the divider holds the ADC near 0 V; keep the indicator
+  // hidden until a battery is actually present.
+  if (lastBatteryPct < 0) {
+    lv_obj_add_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+  }
 #endif
 }
 
@@ -392,29 +425,53 @@ void updateBatteryIndicator() {
   return;
 #endif
   int pct = readBatteryPercent();
+  // A floating pin (no battery, divider input open) wanders between reads;
+  // a real battery barely moves. Believe the reading only after a few
+  // consecutive samples that hold still, so the indicator cannot flicker.
+  static int prevPct = -2;
+  static int stableStreak = 0;
+  if (pct >= 0 && prevPct >= 0 && abs(pct - prevPct) <= 3) {
+    stableStreak++;
+  } else {
+    stableStreak = 0;
+  }
+  prevPct = pct;
+  const bool present = (pct >= 0) && (stableStreak >= 2);
+  if (!present) {
+    if (lastBatteryPct != -1) {
+      lastBatteryPct = -1;
+      lv_obj_add_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+      Serial.println("battery: no battery detected, indicator hidden");
+    }
+    return;
+  }
+  // Every label/style write invalidates the area and the resulting flush can
+  // make the panel twitch; repaint only when the reading actually changed.
+  if (pct == lastBatteryPct) {
+    return;
+  }
+  if (lastBatteryPct < 0) {
+    Serial.printf("battery: detected, %d%%\n", pct);
+  }
+  lastBatteryPct = pct;
+  lv_obj_clear_flag(battery_container, LV_OBJ_FLAG_HIDDEN);
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%d%%", pct);
+  lv_label_set_text(battery_label, buf);
   int filled;
   lv_color_t color;
-  if (pct < 0) {
-    filled = 0;
-    color = lv_color_hex(0x808080);
-    lv_label_set_text(battery_label, "---");
+  if (pct >= 75) {
+    filled = 4;
+    color = LV_COLOR_GREEN;
+  } else if (pct >= 50) {
+    filled = 3;
+    color = LV_COLOR_GREEN;
+  } else if (pct >= 25) {
+    filled = 2;
+    color = LV_COLOR_ORANGE;
   } else {
-    char buf[12];
-    snprintf(buf, sizeof(buf), "%d%%", pct);
-    lv_label_set_text(battery_label, buf);
-    if (pct >= 75) {
-      filled = 4;
-      color = LV_COLOR_GREEN;
-    } else if (pct >= 50) {
-      filled = 3;
-      color = LV_COLOR_GREEN;
-    } else if (pct >= 25) {
-      filled = 2;
-      color = LV_COLOR_ORANGE;
-    } else {
-      filled = 1;
-      color = LV_COLOR_RED;
-    }
+    filled = 1;
+    color = LV_COLOR_RED;
   }
   for (int i = 0; i < 4; i++) {
     lv_obj_set_style_bg_color(battery_cells[i],
@@ -431,8 +488,50 @@ bool triggerAp = false;
 static String *contentPtr = nullptr;
 #define content (*contentPtr)
 
+#include "pagefirst.h"
+#include "pagegui.h"
+#include "pageone.h"
+#include "pagesecond.h"
+#include "pagethird.h"
+
 WebServerClass *serverPtr = nullptr;
+AutoConnect *portalPtr = nullptr;
 #define server (*serverPtr)
+#define portal (*portalPtr)
+AutoConnectConfig *configPtr = nullptr;
+AutoConnectAux *elementsAuxPtr = nullptr;
+AutoConnectAux *saveAuxPtr = nullptr;
+AutoConnectConfig *firstPtr = nullptr;
+AutoConnectAux *firstAuxPtr = nullptr;
+AutoConnectAux *savefirstAuxPtr = nullptr;
+AutoConnectConfig *secondPtr = nullptr;
+AutoConnectAux *secondAuxPtr = nullptr;
+AutoConnectAux *savesecondAuxPtr = nullptr;
+AutoConnectConfig *thirdPtr = nullptr;
+AutoConnectAux *thirdAuxPtr = nullptr;
+AutoConnectAux *savethirdAuxPtr = nullptr;
+AutoConnectConfig *guiPtr = nullptr;
+AutoConnectAux *guiAuxPtr = nullptr;
+AutoConnectAux *saveguiAuxPtr = nullptr;
+AutoConnectAux *otaAuxPtr = nullptr;
+AutoConnectAux *otaDoAuxPtr = nullptr;
+#define acConfig (*configPtr)
+#define elementsAux (*elementsAuxPtr)
+#define saveAux (*saveAuxPtr)
+#define first (*firstPtr)
+#define firstAux (*firstAuxPtr)
+#define savefirstAux (*savefirstAuxPtr)
+#define second (*secondPtr)
+#define secondAux (*secondAuxPtr)
+#define savesecondAux (*savesecondAuxPtr)
+#define third (*thirdPtr)
+#define thirdAux (*thirdAuxPtr)
+#define savethirdAux (*savethirdAuxPtr)
+#define gui (*guiPtr)
+#define   guiAux (*guiAuxPtr)
+#define otaAux (*otaAuxPtr)
+#define otaDoAux (*otaDoAuxPtr)
+#define saveguiAux (*saveguiAuxPtr)
 
 /*** Setup screen resolution for LVGL ***/
 static const uint16_t screenWidth = 800;
@@ -453,6 +552,10 @@ void createLogoScreen();
 void createPortalScreen();
 void createAPIScreen();
 void createPaymentErrorScreen();
+bool createLNURLWithdraw();
+bool getLNURL();
+bool makeLNURL();
+bool getBlinkLnURL(const char *invoice);
 void createMainScreen();
 void createInsertMoneyScreen();
 void createSwitch(lv_obj_t *parent);
@@ -468,10 +571,11 @@ void showQRCodeLVGL(const char *data);
 int xor_encrypt(uint8_t *output, size_t outlen, uint8_t *key, size_t keylen,
                 uint8_t *nonce, size_t nonce_len, uint64_t pin,
                 uint64_t amount_in_cents);
-static long computeMixedTotalSats();
+static bool assignQuotedSats(bool mixed);
 static long computeMixedMaxSats();
 
 void checkNetworkAndDeviceStatus();
+void startConfigPortal();
 //void btn_reset_event_handler(lv_event_t *e);
 void handleUiStateMachine();
 
@@ -508,7 +612,20 @@ static void billAcceptorBegin() {
   }
 }
 
+// The channel mask is unknown, so the next update sends it again. It is out
+// of the 16-bit range on purpose: 0xFFFF is a real mask (16 channels open),
+// and mistaking it for "unknown" would skip the command that reopens them.
+// A master inhibit from anywhere else (185) clears a note the mask still
+// thinks is open, so the mask is marked unknown unless this write is part of
+// applying the mask.
+static const uint32_t kNoteMaskUnknown = 0x10000;
+static uint32_t enabledNoteMask = kNoteMaskUnknown;
+static bool noteMaskOwnsWrite = false;
+
 static size_t billAcceptorWrite(uint8_t value) {
+  if (value == 185 && !noteMaskOwnsWrite) {
+    enabledNoteMask = kNoteMaskUnknown;
+  }
   if (BILL_ACCEPTOR_ENABLED) {
     return SerialPort1.write(value);
   }
@@ -524,7 +641,91 @@ static int billAcceptorRead() {
 
 static bool suspendTouchPolling = false;
 
+// Own captive-portal DNS: the only resolver on UDP 53 while the AP is up.
+// We answer every query with the softAP IP. The Arduino DNSServer that
+// AutoConnect would otherwise start mangles EDNS0 queries (modern phones send
+// them) into malformed replies, so this is a minimal hand-rolled responder
+// that drops the additional/OPT section and returns a valid A answer.
+// AutoConnect's own DNSServer is suppressed via portal.onDetect() in setup().
+static WiFiUDP apDnsUdp;
+static bool apDnsRunning = false;
+
+static void ensureApDns() {
+  if (apDnsRunning) return;
+  if (!(WiFi.getMode() & WIFI_AP)) return;
+  if (apDnsUdp.begin(53)) {
+    apDnsRunning = true;
+    Serial.println("Captive DNS up -> " + WiFi.softAPIP().toString());
+  }
+}
+
+static void stopApDns() {
+  if (!apDnsRunning) return;
+  apDnsUdp.stop();
+  apDnsRunning = false;
+}
+
+// Handle one pending DNS query, if any. Returns true if a packet was serviced.
+static bool processApDnsOnce() {
+  const int avail = apDnsUdp.parsePacket();
+  if (avail <= 0) return false;
+
+  static uint8_t buf[512];
+  int n = apDnsUdp.read(buf, sizeof(buf));
+  if (n < 12) return true;              // too short to be a query
+  if (buf[2] & 0x80) return true;       // already a response, ignore
+
+  // Walk the first question: QNAME (labels) then QTYPE(2) + QCLASS(2).
+  int p = 12;
+  while (p < n && buf[p] != 0) {
+    if ((buf[p] & 0xC0) == 0xC0) { p += 2; goto have_end; } // compressed
+    p += buf[p] + 1;
+  }
+  if (p >= n) return true;
+  p += 1; // null label
+have_end:
+  if (p + 4 > n) return true;
+  const uint16_t qtype = (buf[p] << 8) | buf[p + 1];
+  const int qend = p + 4; // end of question section
+
+  // Response header: QR=1, AA=1, keep RD; RCODE=0.
+  buf[2] = 0x84 | (buf[2] & 0x01);
+  buf[3] = 0x00;
+  buf[6] = 0x00; buf[8] = 0x00; buf[10] = 0x00; buf[11] = 0x00; // NS/AR=0
+  // Answer only A queries with an address; anything else -> valid empty answer
+  // (NODATA) so EDNS/AAAA probes still get a well-formed reply.
+  const bool answerA = (qtype == 1);
+  buf[7] = answerA ? 0x01 : 0x00; // ANCOUNT
+
+  int outLen = qend;
+  if (answerA && qend + 16 <= (int)sizeof(buf)) {
+    uint8_t *a = buf + qend;
+    a[0] = 0xC0; a[1] = 0x0C;             // name -> pointer to question
+    a[2] = 0x00; a[3] = 0x01;             // TYPE A
+    a[4] = 0x00; a[5] = 0x01;             // CLASS IN
+    a[6] = 0; a[7] = 0; a[8] = 0; a[9] = 30; // TTL 30s
+    a[10] = 0x00; a[11] = 0x04;           // RDLENGTH 4
+    const IPAddress ip = WiFi.softAPIP();
+    a[12] = ip[0]; a[13] = ip[1]; a[14] = ip[2]; a[15] = ip[3];
+    outLen = qend + 16;
+  }
+
+  apDnsUdp.beginPacket(apDnsUdp.remoteIP(), apDnsUdp.remotePort());
+  apDnsUdp.write(buf, outLen);
+  apDnsUdp.endPacket();
+  return true;
+}
+
+// Drain a small burst of queries per loop so bursts aren't dropped.
+static void processApDns() {
+  for (int i = 0; i < 6 && processApDnsOnce(); i++) {
+  }
+}
 static bool pendingPortalCompletion = false;
+// The startup TLS checks must not run inside setup(): that frame plus the
+// handshake overflows the loop task and the ATM reboot-loops, so fiathell.local
+// never answers. loop() runs them after setup() has returned.
+static bool pendingPreflight = false;
 static bool appStartupCompleted = false;
 static bool portalRequestedByUser = false;
 static bool portalRequiredForMissingConfig = false;
@@ -532,21 +733,678 @@ static bool portalRequiredForWifiRecovery = false;
 static bool portalNetworkStateLogged = false;
 static bool pendingConfigReload = false;
 static unsigned long pendingRestartAt = 0;
+// Random per-boot hotspot PSK, set only while the stored portal password
+// fails the policy. Shown on the portal screen so the operator can join.
+static String g_fallbackApPsk;
 
-void completeStartupAfterPortal() {
-  if (appStartupCompleted) {
+// The hotspot passphrase and the web login ("admin") are one secret. A stored
+// password that fails the policy is replaced by a random per-boot one, and it
+// stays in force until a valid password is saved. Boot and every config
+// reload go through here, so a reload cannot put the rejected default back.
+static void applyPortalCredentials() {
+  if (portalPasswordAccepted(deviceState.password)) {
+    g_fallbackApPsk = "";
+    acConfig.psk = String(deviceState.password);
+  } else {
+    if (g_fallbackApPsk.length() == 0) {
+      g_fallbackApPsk = makeFallbackApPsk();
+    }
+    acConfig.psk = g_fallbackApPsk;
+  }
+  acConfig.password = acConfig.psk;
+}
+
+// AutoConnect::isPortalAvailable() only reports its own DNSServer, which is
+// suppressed here, so the config portal counts as up while the softAP serves
+// clients and the station link is down.
+static bool configPortalUp() {
+  return (WiFi.getMode() & WIFI_AP) && !wifiStatus();
+}
+
+static void onWifiDiagEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+  case ARDUINO_EVENT_WIFI_AP_START:
+    Serial.println("[WIFI] AP started");
+    break;
+  case ARDUINO_EVENT_WIFI_AP_STOP:
+    Serial.println("[WIFI] AP stopped");
+    break;
+  case ARDUINO_EVENT_WIFI_AP_STACONNECTED: {
+    const uint8_t *m = info.wifi_ap_staconnected.mac;
+    Serial.printf("[WIFI] AP client joined %02x:%02x:%02x:%02x:%02x:%02x aid=%u\n",
+                  m[0], m[1], m[2], m[3], m[4], m[5],
+                  info.wifi_ap_staconnected.aid);
+    break;
+  }
+  case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED: {
+    const uint8_t *m = info.wifi_ap_stadisconnected.mac;
+    Serial.printf("[WIFI] AP client left %02x:%02x:%02x:%02x:%02x:%02x aid=%u\n",
+                  m[0], m[1], m[2], m[3], m[4], m[5],
+                  info.wifi_ap_stadisconnected.aid);
+    break;
+  }
+  case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+    Serial.println("[WIFI] STA connected");
+    break;
+  case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+    Serial.printf("[WIFI] STA disconnected reason=%u\n",
+                  info.wifi_sta_disconnected.reason);
+    break;
+  default:
+    break;
+  }
+}
+
+// Periodic radio/heap snapshot while the config portal is up, so AP drops
+// can be told apart from client-side (phone) disconnects in the serial log.
+// Counter reads only: heap_caps_get_largest_free_block() walks the heap with
+// interrupts off and trips the Interrupt WDT here (see printHeapStatus()).
+static void logPortalHeartbeat() {
+  static unsigned long lastLog = 0;
+  if (millis() - lastLog < 10000UL) return;
+  lastLog = millis();
+  Serial.printf("[AP] clients=%u ch=%d mode=%d heapInt=%u minInt=%u psram=%u\n",
+                WiFi.softAPgetStationNum(), WiFi.channel(),
+                static_cast<int>(WiFi.getMode()),
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
+// ---------------------------------------------------------------------------
+// Boot self-check ("preflight"). The main screen stays unreachable until
+// every blocking check passes: complete config, network (mandatory for
+// Blink/Flash, warning-only offline mode for LNbits), a real BTC price for
+// every configured currency, a reachable funding service whose API key may
+// actually pay, and a bill acceptor answering on UART. On failure the screen
+// names the broken check and offers RETRY (re-run) and SETUP (reboot into
+// the config hotspot).
+// ---------------------------------------------------------------------------
+
+enum PreflightRow {
+  PF_CONFIG = 0,
+  PF_WIFI,
+  PF_PRICE,
+  PF_FUNDING,
+  PF_ACCEPTOR,
+  PF_ROWS
+};
+
+static lv_obj_t *preflightRowLabel[PF_ROWS] = {nullptr};
+static lv_obj_t *preflightDetailLabel = nullptr;
+static lv_obj_t *preflightRetryBtn = nullptr;
+static lv_obj_t *preflightSetupBtn = nullptr;
+static char preflightRowName[PF_ROWS][40];
+static volatile bool preflightRetryTapped = false;
+static volatile bool preflightSetupTapped = false;
+
+static void preflightRetryCb(lv_event_t *) { preflightRetryTapped = true; }
+static void preflightSetupCb(lv_event_t *) { preflightSetupTapped = true; }
+
+// Same orange as the FINISH button on the bill insert screen.
+static const uint32_t kActionColor = 0xF5A623;
+static const uint32_t kActionTextColor = 0x1A1A1A;
+
+static void styleActionButton(lv_obj_t *btn) {
+  const lv_color_t bg = lv_color_hex(kActionColor);
+  const lv_color_t text = lv_color_hex(kActionTextColor);
+  lv_obj_set_style_bg_color(btn, bg, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0xC4841C),
+                            LV_PART_MAIN | LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_text_color(btn, text, LV_PART_MAIN);
+  lv_obj_set_style_text_color(btn, text, LV_PART_MAIN | LV_STATE_PRESSED);
+  const uint32_t n = lv_obj_get_child_cnt(btn);
+  for (uint32_t i = 0; i < n; i++) {
+    lv_obj_set_style_text_color(lv_obj_get_child(btn, i), text, 0);
+  }
+}
+
+static void styleWaitSpinner(lv_obj_t *spinner) {
+  const lv_color_t accent = lv_color_hex(kActionColor);
+  lv_obj_set_style_arc_color(spinner, lv_color_hex(0x3D2A10), LV_PART_MAIN);
+  lv_obj_set_style_arc_color(spinner, accent, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(spinner, 10, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(spinner, 10, LV_PART_MAIN);
+}
+
+static void preflightSetRow(PreflightRow row, const char *status,
+                            lv_color_t color) {
+  if (preflightRowLabel[row] == nullptr) {
     return;
   }
+  char line[96];
+  snprintf(line, sizeof(line), "%s: %s", preflightRowName[row], status);
+  lv_label_set_text(preflightRowLabel[row], line);
+  lv_obj_set_style_text_color(preflightRowLabel[row], color, 0);
+  Serial.printf("preflight[%s]: %s\n", preflightRowName[row], status);
+  lv_task_handler();
+}
 
-  if (wifiStatus() && MDNS.begin("fiathell")) {
-    MDNS.addService("http", "tcp", 80);
-    Serial.println("mDNS: http://fiathell.local");
+// One line under the logo while boot blocks (loading settings, joining
+// Wi-Fi). The join can take many seconds with no LVGL tick, so the text is
+// the only sign of life; it is drawn once before the block starts.
+static lv_obj_t *logoStatusLabel = nullptr;
+static lv_obj_t *logoStatusScreen = nullptr;
+
+static void setBootStatus(const char *text) {
+  if (screen_logo == nullptr || lv_scr_act() != screen_logo) {
+    return;
+  }
+  if (logoStatusLabel == nullptr || logoStatusScreen != screen_logo) {
+    logoStatusLabel = lv_label_create(screen_logo);
+    logoStatusScreen = screen_logo;
+    lv_obj_set_style_text_font(logoStatusLabel, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(logoStatusLabel, lv_color_hex(kActionColor), 0);
+    lv_obj_align(logoStatusLabel, LV_ALIGN_BOTTOM_MID, 0, -40);
+  }
+  lv_label_set_text(logoStatusLabel, text);
+  lv_obj_align(logoStatusLabel, LV_ALIGN_BOTTOM_MID, 0, -40);
+  lv_refr_now(NULL);
+}
+
+static void createPreflightScreen() {
+  lv_obj_t *screen = lv_obj_create(NULL);
+
+  lv_obj_t *title = lv_label_create(screen);
+  lv_label_set_text(title, "STARTUP CHECK");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+  lv_obj_set_style_text_color(title, LV_COLOR_PURPLE, 0);
+
+  strlcpy(preflightRowName[PF_CONFIG], "Configuration",
+          sizeof(preflightRowName[PF_CONFIG]));
+  strlcpy(preflightRowName[PF_WIFI], "WiFi network",
+          sizeof(preflightRowName[PF_WIFI]));
+  strlcpy(preflightRowName[PF_PRICE], "BTC price feed",
+          sizeof(preflightRowName[PF_PRICE]));
+  snprintf(preflightRowName[PF_FUNDING], sizeof(preflightRowName[PF_FUNDING]),
+           "Funding (%s)", deviceState.fundingSourceBuffer[0] != '\0'
+                               ? deviceState.fundingSourceBuffer
+                               : "not set");
+  strlcpy(preflightRowName[PF_ACCEPTOR], "Bill acceptor",
+          sizeof(preflightRowName[PF_ACCEPTOR]));
+
+  for (int i = 0; i < PF_ROWS; i++) {
+    preflightRowLabel[i] = lv_label_create(screen);
+    char line[64];
+    snprintf(line, sizeof(line), "%s: ...", preflightRowName[i]);
+    lv_label_set_text(preflightRowLabel[i], line);
+    lv_obj_align(preflightRowLabel[i], LV_ALIGN_TOP_LEFT, 60, 100 + i * 42);
+    lv_obj_set_style_text_font(preflightRowLabel[i], &lv_font_montserrat_20,
+                               0);
   }
 
+  preflightDetailLabel = lv_label_create(screen);
+  lv_label_set_text(preflightDetailLabel, "");
+  lv_obj_set_width(preflightDetailLabel, 720);
+  lv_label_set_long_mode(preflightDetailLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(preflightDetailLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(preflightDetailLabel, LV_ALIGN_TOP_MID, 0, 330);
+  lv_obj_set_style_text_font(preflightDetailLabel, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(preflightDetailLabel, LV_COLOR_RED, 0);
+
+  preflightRetryBtn = lv_btn_create(screen);
+  lv_obj_set_size(preflightRetryBtn, 220, 64);
+  lv_obj_align(preflightRetryBtn, LV_ALIGN_BOTTOM_LEFT, 120, -30);
+  lv_obj_add_event_cb(preflightRetryBtn, preflightRetryCb, LV_EVENT_CLICKED,
+                      nullptr);
+  lv_obj_t *retryLabel = lv_label_create(preflightRetryBtn);
+  lv_label_set_text(retryLabel, "RETRY");
+  lv_obj_set_style_text_font(retryLabel, &lv_font_montserrat_20, 0);
+  lv_obj_center(retryLabel);
+  styleActionButton(preflightRetryBtn);
+
+  preflightSetupBtn = lv_btn_create(screen);
+  lv_obj_set_size(preflightSetupBtn, 220, 64);
+  lv_obj_align(preflightSetupBtn, LV_ALIGN_BOTTOM_RIGHT, -120, -30);
+  lv_obj_add_event_cb(preflightSetupBtn, preflightSetupCb, LV_EVENT_CLICKED,
+                      nullptr);
+  lv_obj_t *setupLabel = lv_label_create(preflightSetupBtn);
+  lv_label_set_text(setupLabel, "SETUP");
+  lv_obj_set_style_text_font(setupLabel, &lv_font_montserrat_20, 0);
+  lv_obj_center(setupLabel);
+  styleActionButton(preflightSetupBtn);
+
+  lv_obj_add_flag(preflightRetryBtn, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(preflightSetupBtn, LV_OBJ_FLAG_HIDDEN);
+
+  // The rows are filled in by preflightSetRow() before the first draw, so the
+  // screen is loaded once, not empty and then again with the results.
+  lv_scr_load(screen);
+}
+
+// The NV10 echoes command bytes; an inhibit command is the safest probe
+// because it leaves the acceptor blocked regardless of the outcome.
+static bool probeBillAcceptor() {
+  while (billAcceptorRead() != -1) {
+  }
+  billAcceptorWrite(185);
+  const unsigned long start = millis();
+  while (millis() - start < 2500) {
+    if (billAcceptorRead() != -1) {
+      return true;
+    }
+    lv_task_handler();
+    delay(5);
+  }
+  return false;
+}
+
+static int smallestConfiguredNote();
+static long insertSessionCap();
+
+// Stablesats and Flash cash balances are dollar cents. The BTC formula
+// (cents / 1e8 * price) paints a fake PYG number until the BTC/USD rate
+// arrives, which is what the main screen used to show for the first 30 s.
+static bool fundingWalletIsUsd() {
+  const char *walletCur = FundingService::galoyWalletCurrency(
+      deviceState.fundingSourceBuffer, deviceState.blinkWalletBuffer);
+  return FundingService::isGaloy(deviceState.fundingSourceBuffer) &&
+         strcmp(walletCur, "USD") == 0;
+}
+
+static bool displayedFiatBalance(double *out) {
+  const float price =
+      fiatValue > 0.0f ? fiatValue : sessionState.fiatValue1;
+  if (out == nullptr || balanceSats <= 0 || price <= 0.0f) {
+    return false;
+  }
+  if (fundingWalletIsUsd()) {
+    if (sessionState.btcUsdValue <= 0.0f) {
+      return false;
+    }
+    *out = ((double)balanceSats / 100.0) * (price / sessionState.btcUsdValue);
+    return true;
+  }
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+    *out = ((double)balanceSats * price) / 100000000000.0;
+    return true;
+  }
+  *out = ((double)balanceSats / 100000000.0) * price;
+  return true;
+}
+
+// One pass over all checks. Every check runs even after a failure so the
+// operator sees everything that is broken at once. Returns false when any
+// blocking check failed; firstFailure then describes the first one.
+static bool runPreflightOnce(char *firstFailure, size_t firstFailureLen,
+                             bool *anyWarning) {
+  firstFailure[0] = '\0';
+  *anyWarning = false;
+  bool pass = true;
+  const lv_color_t orange = lv_color_hex(0xFFA500);
+  const lv_color_t gray = lv_color_hex(0x888888);
+  const char *funding = deviceState.fundingSourceBuffer;
+  const bool galoy = FundingService::isGaloy(funding);
+  const bool lnbits = strcmp(funding, "LNbits") == 0;
+
+  // 1. Configuration
+  const char *cfgProblem = nullptr;
+  if (!galoy && !lnbits) {
+    cfgProblem = "funding source not set";
+  } else if (galoy && blinkapikey[0] == '\0') {
+    cfgProblem = "Blink API key missing";
+  } else if (lnbits && (baseURLATM1[0] == '\0' || adminkey[0] == '\0' ||
+                        readkey[0] == '\0')) {
+    cfgProblem = "LNbits URL or keys missing";
+  } else if (currencyOne[0] == '\0') {
+    cfgProblem = "no currency configured";
+  } else if (billAmountIntOne.empty() && billAmountIntTwo.empty() &&
+             billAmountIntThree.empty()) {
+    cfgProblem = "no bill channels configured";
+  }
+  if (cfgProblem != nullptr) {
+    preflightSetRow(PF_CONFIG, cfgProblem, LV_COLOR_RED);
+    strlcpy(firstFailure, cfgProblem, firstFailureLen);
+    pass = false;
+  } else {
+    preflightSetRow(PF_CONFIG, "OK", LV_COLOR_GREEN);
+  }
+
+  // 2. WiFi. Blink/Flash cannot work offline; LNbits falls back to its
+  // locally encoded LNURL with a visible warning.
+  const bool wifi = wifiStatus();
+  if (wifi) {
+    preflightSetRow(PF_WIFI, "OK", LV_COLOR_GREEN);
+  } else if (galoy) {
+    preflightSetRow(PF_WIFI, "FAILED - Blink/Flash needs internet",
+                    LV_COLOR_RED);
+    if (firstFailure[0] == '\0') {
+      strlcpy(firstFailure, "WiFi not connected (required for Blink/Flash)",
+              firstFailureLen);
+    }
+    pass = false;
+  } else {
+    preflightSetRow(PF_WIFI, "offline mode", orange);
+    *anyWarning = true;
+  }
+
+  // 3. BTC price for every configured currency. Without a price no quote can
+  // succeed and the acceptor would stay dark, so this is blocking.
+  if (!wifi) {
+    preflightSetRow(PF_PRICE, "skipped (offline)", gray);
+  } else {
+    char priceProblem[80] = "";
+    if (originalSizeOne > 0) {
+      float v = 0.0f;
+      if (priceBalanceFetchPriceNow(currencyOne, deviceState.rateSourceBuffer,
+                                    &v)) {
+        sessionState.fiatValue1 = v;
+      } else {
+        snprintf(priceProblem, sizeof(priceProblem), "no BTC price for %s",
+                 currencyOne);
+      }
+    }
+    if (priceProblem[0] == '\0' && originalSizeTwo > 0) {
+      float v = 0.0f;
+      if (priceBalanceFetchPriceNow(currencyTwo, deviceState.rateSourceBuffer,
+                                    &v)) {
+        sessionState.fiatValue2 = v;
+      } else {
+        snprintf(priceProblem, sizeof(priceProblem), "no BTC price for %s",
+                 currencyTwo);
+      }
+    }
+    if (priceProblem[0] == '\0' && originalSizeThree > 0) {
+      float v = 0.0f;
+      if (priceBalanceFetchPriceNow(currencyThree,
+                                    deviceState.rateSourceBuffer, &v)) {
+        sessionState.fiatValue3 = v;
+      } else {
+        snprintf(priceProblem, sizeof(priceProblem), "no BTC price for %s",
+                 currencyThree);
+      }
+    }
+    if (priceProblem[0] == '\0' && fundingWalletIsUsd()) {
+      float usd = 0.0f;
+      if (priceBalanceFetchPriceNow("USD", deviceState.rateSourceBuffer,
+                                    &usd)) {
+        sessionState.btcUsdValue = usd;
+      } else {
+        snprintf(priceProblem, sizeof(priceProblem), "no BTC/USD rate");
+      }
+    }
+    if (priceProblem[0] != '\0') {
+      preflightSetRow(PF_PRICE, priceProblem, LV_COLOR_RED);
+      if (firstFailure[0] == '\0') {
+        strlcpy(firstFailure, priceProblem, firstFailureLen);
+      }
+      pass = false;
+    } else {
+      preflightSetRow(PF_PRICE, "OK", LV_COLOR_GREEN);
+      // Mirror the selected currency into fiatValue so the very first quote
+      // works before the background task's first refresh.
+      if (strcmp(currencySelected, currencyOne) == 0) {
+        fiatValue = sessionState.fiatValue1;
+      } else if (strcmp(currencySelected, currencyTwo) == 0) {
+        fiatValue = sessionState.fiatValue2;
+      } else if (strcmp(currencySelected, currencyThree) == 0) {
+        fiatValue = sessionState.fiatValue3;
+      }
+    }
+  }
+
+  // 4. Funding service: reachable, key may pay, wallet can pay.
+  if (!wifi) {
+    preflightSetRow(PF_FUNDING, "skipped (offline)", gray);
+  } else if (galoy) {
+    char fundProblem[120] = "";
+    if (!FundingService::fetchGaloyBalance(
+            deviceState, sessionState,
+            FundingService::galoyWalletCurrency(
+                funding, deviceState.blinkWalletBuffer))) {
+      strlcpy(fundProblem, "unreachable or API key rejected",
+              sizeof(fundProblem));
+    } else if (balanceSats <= 0) {
+      strlcpy(fundProblem, "funding wallet is empty", sizeof(fundProblem));
+    } else {
+      char scopes[64] = "";
+      if (!FundingService::fetchGaloyAuthorization(deviceState, scopes,
+                                                   sizeof(scopes))) {
+        strlcpy(fundProblem, "cannot verify API key permissions",
+                sizeof(fundProblem));
+      } else if (strstr(scopes, "WRITE") == nullptr) {
+        snprintf(fundProblem, sizeof(fundProblem),
+                 "API key cannot pay (scopes: %s)",
+                 scopes[0] ? scopes : "none");
+      }
+    }
+    if (fundProblem[0] == '\0') {
+      double shown = 0.0;
+      chargeSelected = charge1;
+      maxamountSelected = maxamount;
+      const long usable = insertSessionCap();
+      const int smallestNote = smallestConfiguredNote();
+      if (!displayedFiatBalance(&shown)) {
+        strlcpy(fundProblem, "balance could not be priced",
+                sizeof(fundProblem));
+      } else if (smallestNote > 0 && usable < (long)smallestNote) {
+        snprintf(fundProblem, sizeof(fundProblem),
+                 "balance %ld %s, need %d", usable, currencyOne, smallestNote);
+      } else {
+        fiatBalance = shown;
+      }
+    }
+    if (fundProblem[0] != '\0') {
+      preflightSetRow(PF_FUNDING, fundProblem, LV_COLOR_RED);
+      if (firstFailure[0] == '\0') {
+        strlcpy(firstFailure, fundProblem, firstFailureLen);
+      }
+      pass = false;
+    } else {
+      preflightSetRow(PF_FUNDING, "OK", LV_COLOR_GREEN);
+    }
+  } else {
+    long lnbitsBalance = 0;
+    if (FundingService::checkLNbitsWallet(deviceState, &lnbitsBalance)) {
+      balanceSats = lnbitsBalance;
+      double shown = 0.0;
+      chargeSelected = charge1;
+      maxamountSelected = maxamount;
+      const long usable = insertSessionCap();
+      const int smallestNote = smallestConfiguredNote();
+      if (wifi && displayedFiatBalance(&shown) && smallestNote > 0 &&
+          usable < (long)smallestNote) {
+        char low[120];
+        snprintf(low, sizeof(low), "balance %ld %s, need %d", usable,
+                 currencyOne, smallestNote);
+        preflightSetRow(PF_FUNDING, low, LV_COLOR_RED);
+        if (firstFailure[0] == '\0') {
+          strlcpy(firstFailure, low, firstFailureLen);
+        }
+        pass = false;
+      } else {
+        if (shown > 0.0) {
+          fiatBalance = shown;
+        }
+        preflightSetRow(PF_FUNDING, "OK", LV_COLOR_GREEN);
+      }
+    } else {
+      preflightSetRow(PF_FUNDING, "wallet unreachable or read key rejected",
+                      LV_COLOR_RED);
+      if (firstFailure[0] == '\0') {
+        strlcpy(firstFailure, "LNbits wallet unreachable",
+                firstFailureLen);
+      }
+      pass = false;
+    }
+  }
+
+  // 5. Bill acceptor hardware probe.
+#if BILL_ACCEPTOR_ENABLED
+  if (probeBillAcceptor()) {
+    preflightSetRow(PF_ACCEPTOR, "OK", LV_COLOR_GREEN);
+  } else {
+    preflightSetRow(PF_ACCEPTOR, "no answer on UART (GPIO17/18)",
+                    LV_COLOR_RED);
+    if (firstFailure[0] == '\0') {
+      strlcpy(firstFailure, "Bill acceptor not responding", firstFailureLen);
+    }
+    pass = false;
+  }
+#else
+  preflightSetRow(PF_ACCEPTOR, "disabled in build", gray);
+#endif
+
+  return pass;
+}
+
+static void preflightGate() {
+  createPreflightScreen();
+  char reason[160];
+  bool warned = false;
+  for (;;) {
+    if (runPreflightOnce(reason, sizeof(reason), &warned)) {
+      if (warned) {
+        lv_label_set_text(preflightDetailLabel,
+                          "Offline mode: payout uses the stored LNbits link.");
+        lv_obj_set_style_text_color(preflightDetailLabel,
+                                    lv_color_hex(0xFFA500), 0);
+        lv_task_handler();
+        delay(3000);
+      }
+      return;
+    }
+    Serial.printf("preflight FAILED: %s\n", reason);
+    lv_label_set_text(preflightDetailLabel, reason);
+    lv_obj_clear_flag(preflightRetryBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(preflightSetupBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_task_handler();
+    preflightRetryTapped = false;
+    preflightSetupTapped = false;
+    // This screen used to spin here without serving HTTP, so fiathell.local
+    // sat until the browser gave up. Keep the portal alive while the
+    // operator reads the failure.
+    while (!preflightRetryTapped && !preflightSetupTapped) {
+      portal.handleClient();
+      lv_task_handler();
+      delay(5);
+    }
+    if (preflightSetupTapped) {
+      File flag = FlashFS.open("/force-portal", "w");
+      if (flag) {
+        flag.print("1");
+        flag.close();
+      }
+      ESP.restart();
+    }
+    lv_obj_add_flag(preflightRetryBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(preflightSetupBtn, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(preflightDetailLabel, "");
+    lv_task_handler();
+  }
+}
+
+// fiathell.local must advertise only the address clients can actually use.
+// Announcing the hotspot and the home LAN together makes browsers try the
+// unreachable one first and the page sits for several seconds.
+static bool g_mdnsUp = false;
+
+static void startFiathellMdns() {
+  // Advertise a link-local IPv6 address. Without an AAAA answer, macOS and
+  // phones wait out the IPv6 query (~5 s) before using IPv4, which is the
+  // "slow then fast" page load. The address is only used for the name lookup.
+  if (WiFi.getMode() & WIFI_STA) {
+    WiFi.enableIpV6();
+  }
+  if (WiFi.getMode() & WIFI_AP) {
+    WiFi.softAPenableIpV6();
+  }
+  if (g_mdnsUp) {
+    MDNS.end();
+    g_mdnsUp = false;
+  }
+  if (!MDNS.begin("fiathell")) {
+    Serial.println("mDNS: fiathell.local failed");
+    return;
+  }
+  MDNS.addService("http", "tcp", 80);
+  g_mdnsUp = true;
+  Serial.println("mDNS: http://fiathell.local");
+}
+
+// Settings are served on the hotspot. Leave station mode joined as well and
+// fiathell.local answers with both IPs; a phone on the hotspot then waits on
+// the home-LAN address. One radio mode, one address.
+static void settleSetupHotspot() {
+  stopApDns();
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false);
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str(), acConfig.channel);
+  WiFi.setSleep(false);
+  acConfig.autoReconnect = false;
+  acConfig.reconnectInterval = 0;
+  acConfig.preserveAPMode = true;
+  portal.config(acConfig);
+  ensureApDns();
+  startFiathellMdns();
+  Serial.println("Setup hotspot only: http://192.168.4.1 and http://fiathell.local");
+}
+
+// The startup check already fetched the price and the wallet balance. Copy
+// them into the fields the main screen reads, so the first paint is not a
+// row of zeros waiting on the background task. The center rate uses
+// fiatValue1 directly; the bottom price uses fiatValue, which used to stay
+// 0 until that later refresh.
+static void applyDisplayedQuotes() {
+  if (currencyOne[0] != '\0') {
+    strlcpy(currencySelected, currencyOne, sizeof(currencySelected));
+    if (sessionState.fiatValue1 > 0.0f) {
+      fiatValue = sessionState.fiatValue1;
+    }
+    chargeSelected = charge1;
+    maxamountSelected = maxamount;
+  }
+  double shown = 0.0;
+  if (displayedFiatBalance(&shown)) {
+    fiatBalance = shown;
+  }
+}
+
+static void finishStartupAfterPreflight() {
   Serial.println("Proceeding to main screen");
+  applyDisplayedQuotes();
   createMainScreen();
   lv_task_handler();
   bootStage(50, "main screen created");
+
+  Serial.print("ESP Free heap (Setup end): ");
+  Serial.println(ESP.getFreeHeap());
+
+  startPriceBalanceTask(deviceStatePtr, sessionStatePtr);
+  // No immediate fetch: the startup check fetched price and balance seconds
+  // ago, and a TLS burst right as the main screen appears makes the panel
+  // glitch. The 30 s cadence in loop() refreshes soon enough.
+
+  appStartupCompleted = true;
+  pendingPortalCompletion = false;
+}
+
+void completeStartupAfterPortal() {
+  if (appStartupCompleted || pendingPreflight) {
+    return;
+  }
+
+  // Portal mode turns reconnects off to keep the AP on one channel; in normal
+  // operation the ATM has to recover from router outages by itself.
+  acConfig.autoReconnect = true;
+  acConfig.reconnectInterval = 1;
+  portal.config(acConfig);
+  WiFi.setAutoReconnect(true);
+
+  if (wifiStatus() && (WiFi.getMode() & WIFI_AP)) {
+    Serial.println("WiFi up; turning the setup hotspot off");
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+  }
+  // A fresh STA start applies modem sleep from the core default unless this
+  // is repeated, and mDNS has to be published after the hotspot is gone.
+  WiFi.setSleep(false);
+  if (wifiStatus()) {
+    startFiathellMdns();
+  }
 
   // Extract "https://your.lnbits.com" from baseURLATM
   // "https://your.lnbits.com/lnurldevice/api/v1/lnurl/<id>";
@@ -572,14 +1430,9 @@ void completeStartupAfterPortal() {
 
   Serial.print(F("lnbitsURL: "));
   Serial.println(lnbitsURL);
-  Serial.print("ESP Free heap (Setup end): ");
-  Serial.println(ESP.getFreeHeap());
 
-  startPriceBalanceTask(deviceStatePtr, sessionStatePtr);
-  triggerPriceBalanceFetch(PBR_PERIODIC);
-
-  appStartupCompleted = true;
-  pendingPortalCompletion = false;
+  // Run from loop(), once setup()'s frame is gone. See pendingPreflight.
+  pendingPreflight = true;
 }
 
 void reloadRuntimeConfigFromFlash() {
@@ -666,6 +1519,11 @@ void reloadRuntimeConfigFromFlash() {
               sizeof(deviceState.enableAnimBuffer));
       animated = deviceState.enableAnimBuffer;
     }
+
+    if (guiConfig.blinkWallet[0] != '\0') {
+      strlcpy(deviceState.blinkWalletBuffer, guiConfig.blinkWallet,
+              sizeof(deviceState.blinkWalletBuffer));
+    }
   }
 
   int thirdSlash = 0;
@@ -686,12 +1544,17 @@ void reloadRuntimeConfigFromFlash() {
     strlcpy(lnbitsURL, baseURLATM1, sizeof(lnbitsURL));
   }
 
+  applyPortalCredentials();
+  portal.config(acConfig);
+
   if (appStartupCompleted) {
+    // Settings that change what the ATM can pay (funding source, Blink
+    // wallet, price source, keys) must be validated before the main screen
+    // comes back - landing there with the old wallet's balance is confusing.
+    // Re-run the startup check so the new balance/price are confirmed first.
     uiController.deleteMainScreen();
-    createMainScreen();
-    triggerPriceBalanceFetch(PBR_PERIODIC);
-    updateMainScreenLabel();
-    lv_task_handler();
+    preflightGate();
+    finishStartupAfterPreflight();
   }
 
   pendingConfigReload = false;
@@ -731,6 +1594,46 @@ void to_upper(char *arr) {
   }
 }
 
+// Reads exactly len body bytes from an open response. Gives up after 20 s
+// without progress: a server that stalls without closing would otherwise hang
+// loop() forever. progressLabel, when set, shows the percentage every 32 KB.
+static size_t readResponseBytes(HTTPClient &response, uint8_t *dst, size_t len,
+                                lv_obj_t *progressLabel) {
+  WiFiClient *stream = response.getStreamPtr();
+  if (stream == nullptr) {
+    return 0;
+  }
+  size_t got = 0;
+  unsigned long lastDataAt = millis();
+  while (got < len && millis() - lastDataAt <= 20000) {
+    const int avail = stream->available();
+    if (avail <= 0) {
+      if (!response.connected()) {
+        break;
+      }
+      delay(1);
+      continue;
+    }
+    const size_t want = len - got;
+    const int n = stream->readBytes(
+        dst + got, (size_t)avail < want ? (size_t)avail : want);
+    if (n <= 0) {
+      delay(1);
+      continue;
+    }
+    got += (size_t)n;
+    lastDataAt = millis();
+    if (progressLabel != nullptr && got % 32768 < (size_t)n) {
+      char buf[32];
+      snprintf(buf, sizeof(buf), "Downloading... %u%%",
+               (unsigned)(100ULL * got / len));
+      lv_label_set_text(progressLabel, buf);
+      lv_task_handler();
+    }
+  }
+  return got;
+}
+
 // State shared between OTA upload handler and done handler.
 // Browser uploads .bin via multipart POST — no internet on device required.
 static bool otaUploadAborted = false;
@@ -743,6 +1646,7 @@ void setup() {
   Serial.printf("Reset reason: %s (%d)\n", resetReasonToString(resetReason),
                 static_cast<int>(resetReason));
   Serial.println("Booting FIAT HELL on ESP32-8048S050...");
+  Serial.println(kFirmwareVersionMarker);
   bootStage(1, "serial ready");
 
   bootStage(2, "allocating runtime objects");
@@ -750,16 +1654,35 @@ void setup() {
   sessionStatePtr = new SessionState();
   contentPtr = new String();
   serverPtr = new WebServerClass();
-  secureClientPtr = new WiFiClientSecure();
+  portalPtr = new AutoConnect(server);
+  secureClientPtr = new BundleTlsClient();
   httpPtr = new HTTPClient();
   serialPort1Ptr = new HardwareSerial(1);
   serialPort2Ptr = new HardwareSerial(2);
   BTNAPtr = new Button(BTN1);
+  configPtr = new AutoConnectConfig();
+  elementsAuxPtr = new AutoConnectAux();
+  saveAuxPtr = new AutoConnectAux();
+  firstPtr = new AutoConnectConfig();
+  firstAuxPtr = new AutoConnectAux();
+  savefirstAuxPtr = new AutoConnectAux();
+  secondPtr = new AutoConnectConfig();
+  secondAuxPtr = new AutoConnectAux();
+  savesecondAuxPtr = new AutoConnectAux();
+  thirdPtr = new AutoConnectConfig();
+  thirdAuxPtr = new AutoConnectAux();
+  savethirdAuxPtr = new AutoConnectAux();
+  guiPtr = new AutoConnectConfig();
+  guiAuxPtr = new AutoConnectAux();
+  saveguiAuxPtr = new AutoConnectAux();
+  otaAuxPtr = new AutoConnectAux();
+  otaDoAuxPtr = new AutoConnectAux();
   uiControllerPtr = new UiController(screen_logo, screen_portal, screen_api,
                                      screen_thx, screen_main,
                                      screen_insert_money, screen_qr);
   if ((deviceStatePtr == nullptr) || (sessionStatePtr == nullptr) ||
       (contentPtr == nullptr) || (serverPtr == nullptr) ||
+      (portalPtr == nullptr) ||
       (secureClientPtr == nullptr) || (httpPtr == nullptr) ||
       (serialPort1Ptr == nullptr) || (serialPort2Ptr == nullptr) ||
       (BTNAPtr == nullptr)) {
@@ -841,6 +1764,10 @@ void setup() {
   bootStage(13, "button initialized");
 
   billAcceptorBegin(); // Bill acceptor – leave running; turned off in createMainScreen()
+  // The NV10 keeps its enabled state across an ESP32 reset. Inhibit it until
+  // armAcceptorIfQuoted() has a usable price, so a bill inserted during boot
+  // cannot be taken before any quote can succeed.
+  billAcceptorWrite(185);
   if (TX2 >= 0) {
     SerialPort2.begin(4800, SERIAL_8N1, -1, TX2); // Coin mech
   }
@@ -849,8 +1776,8 @@ void setup() {
   }
   bootStage(14, "serial peripherals initialized");
 
-  secureClient.setInsecure();
-  bootStage(15, "secure client configured");
+  initCertificateBundle();
+  bootStage(15, "certificate bundle loaded");
 
   // Start logo wait state (non-blocking)
   currentUiState = UI_LOGO_WAIT;
@@ -865,6 +1792,7 @@ void setup() {
     yield(); // Allow other tasks to run
   }
   bootStage(17, "logo wait finished");
+  setBootStatus("Loading settings...");
 
   /******************************************/
   /*** Read params from SPIFFS  ***/
@@ -875,6 +1803,21 @@ void setup() {
   bootStage(19, "filesystem initialized");
   if (format == true) {
     SPIFFS.format();
+  }
+  if (SPIFFS.exists("/payout-error.txt")) {
+    File errFile = SPIFFS.open("/payout-error.txt", "r");
+    if (errFile) {
+      Serial.print("Last payout error: ");
+      Serial.println(errFile.readString());
+      errFile.close();
+    }
+  }
+  // The self-check's SETUP button asks for the portal via this flag because
+  // the logo tap window has already passed by the time the check fails.
+  if (FlashFS.exists("/force-portal")) {
+    FlashFS.remove("/force-portal");
+    triggerAp = true;
+    Serial.println("Self-check requested setup => starting config portal");
   }
 
   // Serial provisioning window for the web flasher (config upload + WiFi
@@ -912,53 +1855,110 @@ void setup() {
   }
   bootStage(20, "main params loaded");
 
-  // /wifi.json (from the web flasher or /setup) is read by WifiPortal.
-  bootStage(21, "wifi credentials deferred to WifiPortal");
+  // Save WiFi credentials from /wifi.json into AutoConnect's NVS credential store.
+  // AutoConnect reads from there during portal.begin(), so this is the correct hook.
+  // The file is written by the web-flasher via USB serial (WRITE_CONFIG:/wifi.json).
+  {
+    File wifiFile = SPIFFS.open("/wifi.json", "r");
+    if (wifiFile) {
+      DynamicJsonDocument wifiDoc(256);
+      if (deserializeJson(wifiDoc, wifiFile) == DeserializationError::Ok) {
+        const char* ssid = wifiDoc["ssid"] | "";
+        const char* pwd  = wifiDoc["password"] | "";
+        if (ssid[0] != '\0') {
+          AutoConnectCredential cred;
+          station_config_t stConfig;
+          memset(&stConfig, 0, sizeof(stConfig));
+          strlcpy((char*)stConfig.ssid,     ssid, sizeof(stConfig.ssid));
+          strlcpy((char*)stConfig.password, pwd,  sizeof(stConfig.password));
+          memset(stConfig.bssid, 0, sizeof(stConfig.bssid));
+          stConfig.dhcp = STA_DHCP;
+          cred.save(&stConfig);
+          Serial.print("WiFi credentials saved to AutoConnect NVS: ");
+          Serial.println(ssid);
+          SPIFFS.remove("/wifi.json"); // consumed — don't re-apply on every boot
+        }
+      }
+      wifiFile.close();
+    }
+  }
+  bootStage(21, "wifi.json applied");
 
-  // true iba pre klientov z AP podsiete (192.168.4.x) - portál nie je
-  // dostupný zo STA (verejnej) siete.
-  auto isApClient = []() -> bool { return WifiPortal::isApClient(server); };
+  // Config, OTA and /flashkey answer 403 to anyone not on the setup hotspot.
+  // Registered before every other route: WebServer uses the first handler
+  // that claims a request, and it owns (deletes) registered handlers.
+  server.addHandler(new ApOnlyConfigHandler(server));
 
-  server.on("/", [isApClient]() {
-    if (isApClient()) {
-      server.sendHeader("Location", "/setup", true);
+  server.on("/", []() {
+    const bool routeToConfigPortal =
+        pendingPortalCompletion || portalRequestedByUser ||
+        portalRequiredForMissingConfig || configPortalUp();
+    if (routeToConfigPortal) {
+      if (!clientOnSoftAp(server.client())) {
+        server.send(403, "text/plain",
+          "Portal accessible only via AP — hold BOOT button 3 s to enable");
+        server.client().stop();
+        return;
+      }
+      server.sendHeader("Location", "/_ac", true);
       server.send(302, "text/plain", "");
       server.client().stop();
       return;
     }
-    server.send(200, "text/html", content);
+
+    const String page = content + AUTOCONNECT_LINK(COG_24);
+    server.send(200, "text/html", page);
   });
   bootStage(22, "root route registered");
 
-  // Captive probe URL (generate_204, hotspot-detect.html, ...) a onNotFound:
-  // AP klientov presmeruje absolútnou URL na /setup, aby telefón sám otvoril
-  // prihlasovaciu stránku.
-  WifiPortal::registerCaptiveRoutes(server, "/setup");
+  // Captive-portal probe URLs (generate_204, hotspot-detect.html, ...) are
+  // intentionally NOT handled here: AutoConnect's own onNotFound/_captivePortal
+  // catches them and replies with an absolute-URL 302 to the portal, which is
+  // what makes phones auto-open the sign-in page (matching WT32). Registering
+  // explicit handlers here would shadow that and only offer a relative
+  // redirect that Android won't auto-open.
   server.on("/favicon.ico", []() { server.send(204, "text/plain", ""); });
 
-  // On-device Flash API key wizard (see pageflashkey.h). AP-only: it creates
-  // and reveals a spending API key, so restrict it to the local AP just like
-  // the other config routes.
-  server.on("/flashkey", HTTP_GET, [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "text/plain", "Wizard only via AP — hold BOOT 3 s to enable");
+  // On-device Flash API key wizard (see pageflashkey.h). It creates and
+  // reveals a spending API key: hotspot-only via ApOnlyConfigHandler, plus the
+  // portal's Basic credentials.
+  server.on("/flashkey", HTTP_GET, []() {
+    if (!portalBasicAuth(server, acConfig.password.c_str())) {
       return;
     }
     server.send(200, "text/html", flashKeyPageHtml(wifiStatus()));
   });
-  server.on("/flashkey/run", HTTP_POST, [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "text/plain", "Wizard only via AP — hold BOOT 3 s to enable");
+  server.on("/flashkey/run", HTTP_POST, []() {
+    if (!portalBasicAuth(server, acConfig.password.c_str())) {
       return;
     }
     server.send(200, "text/html",
-                flashKeyRunAndRender(http, deviceState, configService, FlashFS,
+                flashKeyRunAndRender(deviceState, configService, FlashFS,
                                      FIRST_FILE, server.arg("phone"),
                                      server.arg("code")));
   });
 
 
-  bootStage(22, "elements loaded");
+  elementsAux.load(FPSTR(PAGE_ELEMENTS));
+  elementsAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    File param = FlashFS.open(PARAM_FILE, "r");
+    if (param) {
+      aux.loadElement(param,
+                      {"password", "atmdesc", "atmsubtitle", "atmtitle"});
+      param.close();
+    }
+
+    if (portal.where() == "/config") {
+      File param = FlashFS.open(PARAM_FILE, "r");
+      if (param) {
+        aux.loadElement(param,
+                        {"password", "atmdesc", "atmsubtitle", "atmtitle"});
+        param.close();
+      }
+    }
+    return String();
+  });
+  bootStage(22, "elements aux configured");
 
   // First page start
   //  get the saved details and store in global variables
@@ -981,7 +1981,22 @@ void setup() {
   }
   bootStage(23, "first config loaded");
 
-  bootStage(24, "first config applied");
+  firstAux.load(FPSTR(PAGE_FIRST));
+  firstAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    configService.loadAuxConfig(FlashFS, FIRST_FILE, aux,
+                                {"blinkapikey", "blinkwalletid", "lnurl",
+                                 "adminkey", "readkey", "currencyOne",
+                                 "billmech", "maxamount", "charge1"});
+
+    if (portal.where() == "/first") {
+      configService.loadAuxConfig(FlashFS, FIRST_FILE, aux,
+                                  {"blinkapikey", "blinkwalletid", "lnurl",
+                                   "adminkey", "readkey", "currencyOne",
+                                   "billmech", "maxamount", "charge1"});
+    }
+    return String();
+  });
+  bootStage(24, "first aux configured");
 
   // Second page start
   // get the saved details and store in global variables
@@ -1000,7 +2015,19 @@ void setup() {
   }
   bootStage(25, "second config loaded");
 
-  bootStage(26, "second config applied");
+  secondAux.load(FPSTR(PAGE_SECOND));
+  secondAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    configService.loadAuxConfig(
+        FlashFS, SECOND_FILE, aux,
+        {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
+    if (portal.where() == "/second") {
+      configService.loadAuxConfig(
+          FlashFS, SECOND_FILE, aux,
+          {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"});
+    }
+    return String();
+  });
+  bootStage(26, "second aux configured");
 
   //*
   //*
@@ -1021,7 +2048,19 @@ void setup() {
   }
   bootStage(27, "third config loaded");
 
-  bootStage(28, "third config applied");
+  thirdAux.load(FPSTR(PAGE_THIRD));
+  thirdAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    configService.loadAuxConfig(
+        FlashFS, THIRD_FILE, aux,
+        {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
+    if (portal.where() == "/third") {
+      configService.loadAuxConfig(
+          FlashFS, THIRD_FILE, aux,
+          {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"});
+    }
+    return String();
+  });
+  bootStage(28, "third aux configured");
 
   bootStage(29, "before second filesystem init");
   FlashFS.begin(FORMAT_ON_FAIL);
@@ -1056,18 +2095,188 @@ void setup() {
       Serial.print("animated: ");
       Serial.println(animated);
     }
+
+    if (guiConfig.blinkWallet[0] != '\0') {
+      strlcpy(deviceState.blinkWalletBuffer, guiConfig.blinkWallet,
+              sizeof(deviceState.blinkWalletBuffer));
+      Serial.print("blinkwallet: ");
+      Serial.println(deviceState.blinkWalletBuffer);
+    }
     //} else {
     // triggerAp = true;
   }
   bootStage(31, "gui config loaded");
 
-  bootStage(32, "gui config applied");
+  // The saved /gui.json carries the radio option lists from the firmware
+  // that wrote it, and loadElement() restores them over the page definition -
+  // a file written by an older build hides options added since (e.g. Yadio).
+  // Rebuild the options from the firmware list and keep the selection.
+  static const char *const kFundingSources[] = {"Blink", "LNbits", "Flash"};
+  static const char *const kRateSources[] = {"CoinGecko", "ExchangeApi",
+                                             "CoinYEP", "Kraken", "Yadio"};
+  static const char *const kAnimatedOptions[] = {"No", "Yes"};
+  static const char *const kBlinkWallets[] = {"Bitcoin", "Stablesats"};
+  auto ensureRadioOptions = [](AutoConnectAux &aux, const char *name,
+                               const char *const *options, size_t count) {
+    AutoConnectElement *elm = aux.getElement(name);
+    if (!elm || elm->typeOf() != AC_Radio) {
+      return;
+    }
+    AutoConnectRadio *radio = static_cast<AutoConnectRadio *>(elm);
+    bool same = radio->size() == count;
+    for (size_t i = 0; same && i < count; i++) {
+      same = radio->at(i).equals(options[i]);
+    }
+    if (same) {
+      return;
+    }
+    String selected;
+    if (radio->checked >= 1 && radio->checked <= radio->size()) {
+      selected = radio->at(radio->checked - 1);
+    }
+    radio->empty(count);
+    for (size_t i = 0; i < count; i++) {
+      radio->add(options[i]);
+    }
+    radio->checked = 1;
+    if (selected.length() > 0) {
+      radio->check(selected);
+    }
+  };
+
+  guiAux.load(FPSTR(PAGE_GUI));
+  guiAux.on([ensureRadioOptions](AutoConnectAux &aux, PageArgument &arg) {
+    File paramGui = FlashFS.open(GUI_FILE, "r");
+    if (paramGui) {
+      aux.loadElement(paramGui,
+                      {"fundingsource", "ratesource", "animated", "blinkwallet"});
+      paramGui.close();
+    }
+
+    if (portal.where() == "/gui") {
+      File paramGui = FlashFS.open(GUI_FILE, "r");
+      if (paramGui) {
+        aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated",
+                                   "blinkwallet"});
+        paramGui.close();
+      }
+    }
+    ensureRadioOptions(aux, "fundingsource", kFundingSources,
+                       sizeof(kFundingSources) / sizeof(kFundingSources[0]));
+    ensureRadioOptions(aux, "ratesource", kRateSources,
+                       sizeof(kRateSources) / sizeof(kRateSources[0]));
+    ensureRadioOptions(aux, "animated", kAnimatedOptions,
+                       sizeof(kAnimatedOptions) / sizeof(kAnimatedOptions[0]));
+    ensureRadioOptions(aux, "blinkwallet", kBlinkWallets,
+                       sizeof(kBlinkWallets) / sizeof(kBlinkWallets[0]));
+    return String();
+  });
+  bootStage(32, "gui aux configured");
 
   //*
   //*
   //*
   // Save page one
-  bootStage(37, "config pages served by /setup");
+  saveAux.load(FPSTR(PAGE_SAVE));
+  saveAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    const AutoConnectElement *passwordEl = elementsAux.getElement("password");
+    if (passwordEl == nullptr ||
+        !portalPasswordAccepted(passwordEl->value.c_str())) {
+      aux["echo"].value =
+          "Password must be 8-63 characters and cannot be changeme.";
+      return String();
+    }
+    aux["caption"].value = PARAM_FILE;
+    File param = FlashFS.open(PARAM_FILE, "w");
+    if (param) {
+      // save as a loadable set for parameters.
+      elementsAux.saveElement(
+          param, {"password", "atmdesc", "atmsubtitle", "atmtitle"});
+      param.close();
+      // read the saved elements again to display.
+      param = FlashFS.open(PARAM_FILE, "r");
+      aux["echo"].value = param.readString();
+      param.close();
+    } else {
+      aux["echo"].value = "Filesystem failed to open.";
+    }
+    pendingConfigReload = true;
+    return String();
+  });
+  bootStage(33, "save aux configured");
+
+  // Save first page
+  savefirstAux.load(FPSTR(FIRST_SAVE));
+  savefirstAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    aux["caption"].value = FIRST_FILE;
+    String echo;
+    if (configService.saveAuxConfig(FlashFS, FIRST_FILE, firstAux,
+                                    {"blinkapikey", "blinkwalletid", "lnurl",
+                                     "adminkey", "readkey", "currencyOne",
+                                     "billmech", "maxamount", "charge1"},
+                                    echo)) {
+      aux["echo"].value = echo;
+      pendingConfigReload = true;
+    } else {
+      aux["echo"].value = "Filesystem failed to open.";
+    }
+    return String();
+  });
+  bootStage(34, "save first aux configured");
+
+  // Save second page
+  savesecondAux.load(FPSTR(SECOND_SAVE));
+  savesecondAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    aux["caption"].value = SECOND_FILE;
+    String echo;
+    if (configService.saveAuxConfig(
+            FlashFS, SECOND_FILE, secondAux,
+            {"currencyTwo", "lnurl2", "billmech2", "maxamount2", "charge2"},
+            echo)) {
+      aux["echo"].value = echo;
+      pendingConfigReload = true;
+    } else {
+      aux["echo"].value = "Filesystem failed to open.";
+    }
+    return String();
+  });
+  bootStage(35, "save second aux configured");
+
+  // Save third page
+  savethirdAux.load(FPSTR(THIRD_SAVE));
+  savethirdAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    aux["caption"].value = THIRD_FILE;
+    String echo;
+    if (configService.saveAuxConfig(
+            FlashFS, THIRD_FILE, thirdAux,
+            {"currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3"},
+            echo)) {
+      aux["echo"].value = echo;
+      pendingConfigReload = true;
+    } else {
+      aux["echo"].value = "Filesystem failed to open.";
+    }
+    return String();
+  });
+  bootStage(36, "save third aux configured");
+
+  // Save gui page
+  saveguiAux.load(FPSTR(GUI_SAVE));
+  saveguiAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    aux["caption"].value = GUI_FILE;
+    String echo;
+    if (configService.saveAuxConfig(FlashFS, GUI_FILE, guiAux,
+                                    {"fundingsource", "ratesource", "animated",
+                                     "blinkwallet"},
+                                    echo)) {
+      aux["echo"].value = echo;
+      pendingConfigReload = true;
+    } else {
+      aux["echo"].value = "Filesystem failed to open.";
+    }
+    return String();
+  });
+  bootStage(37, "save gui aux configured");
 
   originalSizeOne = billAmountIntOne.size();
   originalSizeTwo = billAmountIntTwo.size();
@@ -1078,404 +2287,129 @@ void setup() {
   if ((deviceState.currencyATM2[0] != '\0') || (currencyTwo[0] != '\0')) {
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntTwo.begin(),
                             billAmountIntTwo.end());
+  } else {
+    // Channel ranges and per-currency crediting count these slots; a
+    // currency that was not merged has none.
+    originalSizeTwo = 0;
   }
   // Check if currencyATM3 is not empty
   if ((deviceState.currencyATM3[0] != '\0') || (currencyThree[0] != '\0')) {
     // Then merge billAmountIntThree into the now-extended billAmountIntOne
     billAmountIntOne.insert(billAmountIntOne.end(), billAmountIntThree.begin(),
                             billAmountIntThree.end());
+  } else {
+    originalSizeThree = 0;
   }
   bootStage(39, "bill vectors merged");
 
   /*********************************************************/
-  /*** Config portal: /setup (iba pre klientov z AP)      ***/
+  /*** Set AutoConnect before launching the portal       ***/
   /*********************************************************/
-  server.on("/setup", HTTP_GET, [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "text/plain", "Setup only via AP — hold BOOT 3 s to enable");
-      return;
-    }
-    const bool isLNbitsMode = (strcmp(deviceStatePtr->fundingSourceBuffer, "LNbits") == 0);
-    const bool isFlashMode  = (strcmp(deviceStatePtr->fundingSourceBuffer, "Flash") == 0);
-    const char *rs = deviceStatePtr->rateSourceBuffer;
-    String html = FPSTR(SETUP_PAGE_HTML);
+  acConfig.auth = AC_AUTH_BASIC;
+  acConfig.authScope = AC_AUTHSCOPE_PORTAL;
+  // No status LED on this board: the ticker's default pin (LED_BUILTIN) maps
+  // to GPIO48 via RMT, which is the RGB panel's DATA_R1 line.
+  acConfig.ticker = false;
+  acConfig.autoReset = false;
+  acConfig.autoReconnect = true;
+  acConfig.retainPortal = true;
+  acConfig.autoRise = false; // set dynamically during startup based on mode
+  acConfig.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+  // A stored password that fails the policy must not leave the hotspot open
+  // or set to the known default. While it is invalid the hotspot and the web
+  // login use a random per-boot secret shown on the portal screen, so only
+  // someone standing at the machine can join.
+  const bool passwordRejected = !portalPasswordAccepted(deviceState.password);
+  applyPortalCredentials();
+  // AutoConnect 1.4.2 defaults apip to 172.217.28.1 (Google IP, surprising).
+  // Force the standard 192.168.4.0/24 so the apClient subnet check works
+  // and so users see a familiar AP IP in the browser URL bar.
+  acConfig.apip    = IPAddress(192, 168, 4, 1);
+  acConfig.gateway = IPAddress(192, 168, 4, 1);
+  acConfig.netmask = IPAddress(255, 255, 255, 0);
+  acConfig.menuItems =
+      AC_MENUITEM_CONFIGNEW | AC_MENUITEM_OPENSSIDS |
+      AC_MENUITEM_DEVINFO | AC_MENUITEM_RESET | AC_MENUITEM_HOME;
+  acConfig.title = "LN ATM";
+  acConfig.homeUri = "/_ac";
+  acConfig.reconnectInterval = 1;
+  acConfig.channel = 6;        // Fixed channel for stable AP (avoids scan disrupting clients)
+  acConfig.beginTimeout = 12000; // 12 s — fast fallback to AP if saved WiFi unreachable
+  acConfig.immediateStart =
+      false; // If we don't have WiFi saved, it will start AP
+  acConfig.username = "admin";
+  bootStage(40, "autoconnect config prepared");
 
-    const bool rsKraken      = (strcmp(rs, "Kraken")      == 0);
-    const bool rsExchangeApi = (strcmp(rs, "ExchangeApi") == 0);
-    const bool rsCoinGecko   = (strcmp(rs, "CoinGecko")   == 0);
-    html.replace(F("%%RS_KRAKEN%%"),      rsKraken      ? "selected" : "");
-    html.replace(F("%%RS_EXCHANGEAPI%%"), rsExchangeApi ? "selected" : "");
-    html.replace(F("%%RS_COINGECKO%%"),   rsCoinGecko   ? "selected" : "");
-    html.replace(F("%%RS_COINYEP%%"),
-                 (!rsKraken && !rsExchangeApi && !rsCoinGecko) ? "selected" : "");
-
-    auto esc = [](const char *v) -> String {
-      String out(v);
-      out.replace(F("&"), F("&amp;"));
-      out.replace(F("\""), F("&quot;"));
-      out.replace(F("<"), F("&lt;"));
-      out.replace(F(">"), F("&gt;"));
-      return out;
-    };
-    auto billsCsvFromVec = [](const std::vector<int> &v, size_t count) -> String {
-      String out;
-      for (size_t i = 0; i < v.size() && i < count; i++) {
-        if (i) out += ',';
-        out += v[i];
-      }
-      return out;
-    };
-
-    WifiCredentials creds;
-    WifiPortal::loadCredentials(SPIFFS, creds);
-    html.replace(F("%%WIFI_SSID%%"), esc(creds.valid ? creds.ssid : ""));
-    html.replace(F("%%WIFI_STATE%%"),
-                 wifiStatus() ? "pripojené, IP " + WiFi.localIP().toString()
-                              : String("nepripojené"));
-
-    html.replace(F("%%CHECKED_BLINK%%"),  (!isLNbitsMode && !isFlashMode) ? "checked" : "");
-    html.replace(F("%%CHECKED_LNBITS%%"), isLNbitsMode ? "checked" : "");
-    html.replace(F("%%CHECKED_FLASH%%"),  isFlashMode  ? "checked" : "");
-    html.replace(F("%%BLINK_APIKEY%%"),   esc(blinkapikey));
-    html.replace(F("%%BLINK_WALLET%%"),   esc(blinkwalletid));
-    html.replace(F("%%ADMINKEY%%"),       esc(adminkey));
-    html.replace(F("%%READKEY%%"),        esc(readkey));
-    html.replace(F("%%LNURL_BASE%%"),     esc(baseURLATM1));
-    html.replace(F("%%LNURL_SECRET%%"),   esc(secretATM1));
-    html.replace(F("%%CUR1_CODE%%"),      esc(currencyOne));
-    // billAmountIntOne má po štarte zlúčené aj meny 2 a 3 - vziať len prvú.
-    html.replace(F("%%CUR1_BILLS%%"),     billsCsvFromVec(billAmountIntOne, originalSizeOne));
-    html.replace(F("%%CUR1_MAX%%"),       String(maxamount, 0));
-    html.replace(F("%%CUR1_CHARGE%%"),    String(charge1, 2));
-    html.replace(F("%%ATM_TITLE%%"),      esc(atmtitle));
-    html.replace(F("%%ATM_SUBTITLE%%"),   esc(atmsubtitle));
-    html.replace(F("%%ATM_DESC%%"),       esc(atmdesc));
-
-    html.replace(F("%%CUR2_CODE%%"),         esc(currencyTwo));
-    html.replace(F("%%CUR2_LNURL_BASE%%"),   esc(baseURLATM2));
-    html.replace(F("%%CUR2_LNURL_SECRET%%"), esc(secretATM2));
-    html.replace(F("%%CUR2_BILLS%%"),        billsCsvFromVec(billAmountIntTwo, billAmountIntTwo.size()));
-    html.replace(F("%%CUR2_MAX%%"),          String(maxamount2, 0));
-    html.replace(F("%%CUR2_CHARGE%%"),       String(charge2, 2));
-
-    html.replace(F("%%CUR3_CODE%%"),         esc(currencyThree));
-    html.replace(F("%%CUR3_LNURL_BASE%%"),   esc(baseURLATM3));
-    html.replace(F("%%CUR3_LNURL_SECRET%%"), esc(secretATM3));
-    html.replace(F("%%CUR3_BILLS%%"),        billsCsvFromVec(billAmountIntThree, billAmountIntThree.size()));
-    html.replace(F("%%CUR3_MAX%%"),          String(maxamount3, 0));
-    html.replace(F("%%CUR3_CHARGE%%"),       String(charge3, 2));
-
-    html.replace(F("%%FW_VERSION%%"), F(FW_VERSION));
-
-    server.sendHeader("Cache-Control", "no-store");
-    server.send(200, "text/html", html);
-  });
-
-  // Sken WiFi sietí: JSON [{ssid,rssi,secure}], zoradené podľa RSSI.
-  // Asynchrónne - synchrónny sken by na sekundy rozhodil AP a zhodil telefón
-  // uprostred requestu. Vracia {"scanning":true}, klient polluje.
-  server.on("/setup/wifi-scan", HTTP_GET, [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "application/json", "[]");
-      return;
-    }
-    if (!(WiFi.getMode() & WIFI_MODE_STA)) {
-      WiFi.mode(WIFI_AP_STA);
-    }
-    const int st = WiFi.scanComplete();
-    if (st == WIFI_SCAN_RUNNING) {
-      server.send(200, "application/json", "{\"scanning\":true}");
-      return;
-    }
-    if (st == WIFI_SCAN_FAILED) {
-      WiFi.scanNetworks(true, false);
-      server.send(200, "application/json", "{\"scanning\":true}");
-      return;
-    }
-    const int n = st;
-    struct Net { String ssid; int rssi; bool secure; };
-    std::vector<Net> nets;
-    nets.reserve(n);
-    for (int i = 0; i < n; i++) {
-      const String ssid = WiFi.SSID(i);
-      if (ssid.length() == 0) continue;
-      bool merged = false;
-      for (auto &e : nets) {
-        if (e.ssid == ssid) {
-          merged = true;
-          if (WiFi.RSSI(i) > e.rssi) {
-            e.rssi   = WiFi.RSSI(i);
-            e.secure = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
-          }
-          break;
-        }
-      }
-      if (!merged) {
-        nets.push_back({ssid, WiFi.RSSI(i), WiFi.encryptionType(i) != WIFI_AUTH_OPEN});
-      }
-    }
-    WiFi.scanDelete();
-    std::sort(nets.begin(), nets.end(),
-              [](const Net &a, const Net &b) { return a.rssi > b.rssi; });
-    if (nets.size() > 30) nets.resize(30);
-
-    DynamicJsonDocument doc(4096);
-    JsonArray arr = doc.to<JsonArray>();
-    for (auto &nt : nets) {
-      JsonObject o = arr.createNestedObject();
-      o["ssid"]   = nt.ssid;
-      o["rssi"]   = nt.rssi;
-      o["secure"] = nt.secure;
-    }
-    String out;
-    serializeJson(doc, out);
-    server.send(200, "application/json", out);
-  });
-
-  server.on("/setup/save", HTTP_POST, [isApClient]() {
-    if (!isApClient()) {
-      server.send(403, "text/plain", "Setup only via AP");
-      return;
-    }
-
-    // WiFi: prázdne SSID = nemeniť; prázdne heslo pri rovnakom SSID = nechať.
-    {
-      const String newSsid = server.arg("wifi_ssid");
-      const String newPwd  = server.arg("wifi_password");
-      if (newSsid.length() > 0) {
-        WifiCredentials cur;
-        WifiPortal::loadCredentials(SPIFFS, cur);
-        const bool keepPwd =
-            (newPwd.length() == 0 && cur.valid && newSsid == cur.ssid);
-        WifiPortal::saveCredentials(SPIFFS, newSsid.c_str(),
-                                    keepPwd ? cur.password : newPwd.c_str());
-      }
-    }
-
-    // elements.json — [{name,value},...]
-    {
-      DynamicJsonDocument doc(512);
-      JsonArray arr = doc.to<JsonArray>();
-      auto add = [&](const char *n, const String &v) {
-        JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
-      };
-      const String newPwd = server.arg("ap_password");
-      const String title  = server.arg("atm_title");
-      add("password",    newPwd.length() >= 8 ? newPwd : String(deviceStatePtr->password));
-      add("atmdesc",     server.arg("atm_desc"));
-      add("atmsubtitle", server.arg("atm_subtitle"));
-      add("atmtitle",    title.length() ? title : "FIAT HELL");
-      File f = FlashFS.open(PARAM_FILE, "w");
-      if (f) { serializeJson(doc, f); f.close(); }
-    }
-
-    // gui.json — funding + rate source; animated zachovať
-    {
-      GuiConfig gui;
-      if (!configService.loadGuiConfig(FlashFS, GUI_FILE, gui)) {
-        strlcpy(gui.rateSource, "CoinYEP", sizeof(gui.rateSource));
-        strlcpy(gui.animated,   "No",      sizeof(gui.animated));
-      }
-      const String funding = server.arg("funding");
-      strlcpy(gui.fundingSource,
-              (funding == "LNbits")  ? "LNbits"
-              : (funding == "Flash") ? "Flash"
-                                     : "Blink",
-              sizeof(gui.fundingSource));
-      const String rs = server.arg("ratesource");
-      if (rs == "CoinYEP" || rs == "Kraken" || rs == "ExchangeApi" || rs == "CoinGecko") {
-        strlcpy(gui.rateSource, rs.c_str(), sizeof(gui.rateSource));
-      }
-      configService.saveGuiConfig(FlashFS, GUI_FILE, gui);
-    }
-
-    // first.json — poradie musí sedieť s ConfigService::loadFirst()
-    {
-      DynamicJsonDocument doc(1024);
-      JsonArray arr = doc.to<JsonArray>();
-      const bool isLNbitsMode = (server.arg("funding") == "LNbits");
-      const String lnurlVal = server.arg("lnurl_base") + "," +
-                              server.arg("lnurl_secret") + "," +
-                              server.arg("cur1_code");
-      auto add = [&](const char *n, const String &v) {
-        JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
-      };
-      add("blinkapikey",   isLNbitsMode ? "" : server.arg("blink_apikey"));
-      add("blinkwalletid", isLNbitsMode ? "" : server.arg("blink_wallet"));
-      add("lnurl",         isLNbitsMode ? lnurlVal : "");
-      add("adminkey",      isLNbitsMode ? server.arg("adminkey") : "");
-      add("readkey",       isLNbitsMode ? server.arg("readkey")  : "");
-      add("currencyOne",   server.arg("cur1_code"));
-      add("billmech",      server.arg("cur1_bills"));
-      add("maxamount",     server.arg("cur1_max"));
-      add("charge1",       server.arg("cur1_charge"));
-      File f = FlashFS.open(FIRST_FILE, "w");
-      if (f) { serializeJson(doc, f); f.close(); }
-    }
-
-    // second.json / third.json — zapísať iba ak je kód meny, inak zmazať
-    auto saveExtraCurrency = [&](const char *path, const char *prefix,
-                                 const char *nCode, const char *nLnurl,
-                                 const char *nBills, const char *nMax,
-                                 const char *nCharge) {
-      const String pre(prefix);
-      const String code = server.arg(pre + "code");
-      if (code.length() == 0) {
-        FlashFS.remove(path);
-        return;
-      }
-      DynamicJsonDocument doc(1024);
-      JsonArray arr = doc.to<JsonArray>();
-      auto add = [&](const char *n, const String &v) {
-        JsonObject o = arr.createNestedObject(); o["name"] = n; o["value"] = v;
-      };
-      add(nCode,   code);
-      add(nLnurl,  server.arg(pre + "lnurl_base") + "," +
-                   server.arg(pre + "lnurl_secret") + "," + code);
-      add(nBills,  server.arg(pre + "bills"));
-      add(nMax,    server.arg(pre + "max"));
-      add(nCharge, server.arg(pre + "charge"));
-      File f = FlashFS.open(path, "w");
-      if (f) { serializeJson(doc, f); f.close(); }
-    };
-    saveExtraCurrency(SECOND_FILE, "cur2_", "currencyTwo",   "lnurl2", "billmech2", "maxamount2", "charge2");
-    saveExtraCurrency(THIRD_FILE,  "cur3_", "currencyThree", "lnurl3", "billmech3", "maxamount3", "charge3");
-
-    server.send(200, "text/html",
-      "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>"
-      "<body style='background:#111;color:#eee;font-family:sans-serif;padding:32px;text-align:center'>"
-      "<h2 style='color:#f90'>&#10003; Uložené</h2>"
-      "<p>Zariadenie sa reštartuje za 2 sekundy…</p>"
-      "</body></html>");
-    pendingRestartAt = millis() + 2000UL;
-  });
-
-  // OTA z telefónu: multipart upload .bin cez AP, internet netreba.
-  server.on("/setup/ota", HTTP_POST,
-    [isApClient]() {
-      if (!isApClient()) { server.send(403, "text/plain", "AP only"); return; }
-      const bool ok = !otaUploadAborted && !Update.hasError();
-      String page = F("<html><head><meta charset='utf-8'></head><body style='background:#111;color:#eee;font-family:sans-serif;padding:32px;text-align:center'>");
-      if (ok) {
-        page += F("<h2 style='color:#0c0'>&#10003; Firmware nahraný</h2>"
-                  "<p>Zariadenie sa reštartuje za 2 sekundy…</p>");
-      } else {
-        page += F("<h2 style='color:#f33'>&#10007; Chyba</h2><p>");
-        page += Update.errorString();
-        page += F("</p><a href='/setup' style='color:#f90'>&#8592; Späť</a>");
-      }
-      page += F("</body></html>");
-      server.send(200, "text/html", page);
-      if (otaUploadOverlay) {
-        lv_obj_del(otaUploadOverlay);
-        otaUploadOverlay = nullptr;
-        lv_task_handler();
-      }
-      if (ok) pendingRestartAt = millis() + 2000UL;
-    },
-    [isApClient]() {
-      HTTPUpload &up = server.upload();
-      if (up.status == UPLOAD_FILE_START) {
-        otaUploadAborted = !isApClient();
-        if (otaUploadAborted) return;
-        Serial.printf("OTA upload begin: %s\n", up.filename.c_str());
-        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-          otaUploadAborted = true;
-          Update.printError(Serial);
-          return;
-        }
-        otaUploadOverlay = lv_obj_create(lv_scr_act());
-        lv_obj_set_size(otaUploadOverlay, screenWidth, screenHeight);
-        lv_obj_set_pos(otaUploadOverlay, 0, 0);
-        lv_obj_set_style_bg_color(otaUploadOverlay, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(otaUploadOverlay, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(otaUploadOverlay, 0, 0);
-        lv_obj_clear_flag(otaUploadOverlay, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_t *l = lv_label_create(otaUploadOverlay);
-        lv_label_set_text(l, "Nahravam firmware...");
-        lv_obj_center(l);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_22, 0);
-        lv_obj_set_style_text_color(l, lv_color_white(), 0);
-        lv_obj_move_foreground(otaUploadOverlay);
-        lv_task_handler();
-      } else if (up.status == UPLOAD_FILE_WRITE && !otaUploadAborted) {
-        if (Update.write(up.buf, up.currentSize) != up.currentSize) {
-          otaUploadAborted = true;
-          Update.printError(Serial);
-        }
-      } else if (up.status == UPLOAD_FILE_END && !otaUploadAborted) {
-        if (!Update.end(true)) {
-          otaUploadAborted = true;
-          Update.printError(Serial);
-        } else {
-          Serial.printf("OTA OK: %u bytes\n", up.totalSize);
-        }
-      } else if (up.status == UPLOAD_FILE_ABORTED) {
-        otaUploadAborted = true;
-        Update.abort();
-      }
-      yield();
-    });
-
-  // OTA zo servera: zoznam verzií z katalógu (JSON [{name,date,size}]).
-  server.on("/setup/ota-catalog", HTTP_GET, [isApClient]() {
-    if (!isApClient()) { server.send(403, "application/json", "[]"); return; }
-    if (!wifiStatus()) {
-      server.send(503, "application/json", "{\"error\":\"Zariadenie nie je pripojené na WiFi\"}");
-      return;
-    }
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient catalogHttp;
+  // Register all Aux pages to the portal
+  otaAux.load(FPSTR(PAGE_OTA));
+  otaAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    // Populate version select from catalog
+    HttpsSession catalog;
+    HTTPClient &catalogHttp = catalog.httpClient;
     catalogHttp.setTimeout(8000);
-    String out = "{\"error\":\"Katalóg sa nepodarilo načítať\"}";
-    int status = 502;
-    if (catalogHttp.begin(client, OTA_CATALOG_URL)) {
-      if (catalogHttp.GET() == 200) {
-        DynamicJsonDocument doc(4096);
-        if (deserializeJson(doc, catalogHttp.getString()) == DeserializationError::Ok &&
+    if (catalog.begin(OTA_CATALOG_URL)) {
+      int code = catalogHttp.GET();
+      if (code == 200) {
+        String payload = catalogHttp.getString();
+        DynamicJsonDocument doc(2048);
+        if (deserializeJson(doc, payload) == DeserializationError::Ok &&
             doc.is<JsonArray>()) {
-          DynamicJsonDocument res(4096);
-          JsonArray arr = res.to<JsonArray>();
+          AutoConnectSelect &versionSelect =
+              aux["version"].as<AutoConnectSelect>();
+          versionSelect.empty(16);
           for (JsonObject item : doc.as<JsonArray>()) {
             const char *name = item["name"];
-            if (!name || item["type"] != "bin") continue;
-            JsonObject o = arr.createNestedObject();
-            o["name"] = name;
-            o["date"] = item["date"] | "";
-            o["size"] = item["size"] | 0;
+            if (name && item["type"] == "bin" &&
+                !firmwareUpdateRejected(name, FW_VERSION)) {
+              const char *date = item["date"] | "";
+              size_t sizeVal = item["size"] | 0;
+              String label = String(name);
+              if (date[0])
+                label += " (" + String(date);
+              if (sizeVal > 0)
+                label += date[0] ? ", " : " (";
+              if (sizeVal > 0)
+                label += String(sizeVal / 1024) + " KB";
+              if (date[0] || sizeVal > 0)
+                label += ")";
+              versionSelect.add(label);
+            }
           }
-          out = "";
-          serializeJson(res, out);
-          status = 200;
+          if (versionSelect.size() == 0)
+            versionSelect.add("No firmware found");
+        } else {
+          aux["version"].as<AutoConnectSelect>().empty(1);
+          aux["version"].as<AutoConnectSelect>().add("Catalog parse error");
         }
+      } else {
+        aux["version"].as<AutoConnectSelect>().empty(1);
+        aux["version"].as<AutoConnectSelect>().add("Catalog fetch failed");
       }
       catalogHttp.end();
+    } else {
+      aux["version"].as<AutoConnectSelect>().empty(1);
+      aux["version"].as<AutoConnectSelect>().add("Connection failed");
     }
-    server.send(status, "application/json", out);
-  });
-
-  // OTA zo servera: stiahnuť a nahrať vybranú verziu (HTTPS).
-  server.on("/setup/ota-run", HTTP_POST, [isApClient]() {
-    if (!isApClient()) { server.send(403, "text/plain", "AP only"); return; }
-    String filename = server.arg("file");
+    return String();
+  }, AC_EXIT_AHEAD);
+  otaDoAux.load(FPSTR(PAGE_OTA_DO));
+  otaDoAux.on([](AutoConnectAux &aux, PageArgument &arg) {
+    String selected = arg.arg("version");
+    // Extract filename: "fiat-hell-v1.2.0.bin (2026-03-08, 1911 KB)" -> "fiat-hell-v1.2.0.bin"
+    int parenIdx = selected.indexOf(" (");
+    String filename = parenIdx > 0 ? selected.substring(0, parenIdx) : selected;
     filename.trim();
-    if (!filename.endsWith(".bin") || filename.indexOf('/') >= 0 ||
-        filename.indexOf("..") >= 0) {
-      server.send(400, "text/plain", "Neplatný súbor");
-      return;
+    if (!filename.endsWith(".bin"))
+      filename = "";
+    if (filename.length() == 0) {
+      aux["result"].value = "No version selected.";
+      return String();
     }
-    if (!wifiStatus()) {
-      server.send(503, "text/plain", "Zariadenie nie je pripojené na WiFi");
-      return;
+    if (firmwareUpdateRejected(filename.c_str(), FW_VERSION)) {
+      aux["result"].value = "Refused: missing or older version.";
+      return String();
     }
-    const String updateUrl = String(OTA_BASE_URL) + "/" + filename;
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPUpdate updater;
-    updater.setLedPin(-1); // GPIO2 je podsvietenie displeja
-    updater.rebootOnUpdate(false);
-
+    String updateUrl = String(OTA_BASE_URL) + "/" + filename;
     static lv_obj_t *otaOverlay = nullptr;
     otaOverlay = lv_obj_create(lv_scr_act());
     lv_obj_set_size(otaOverlay, screenWidth, screenHeight);
@@ -1490,40 +2424,98 @@ void setup() {
     lv_obj_set_style_text_font(otaLabel, &lv_font_montserrat_22, 0);
     lv_obj_set_style_text_color(otaLabel, lv_color_white(), 0);
     lv_obj_move_foreground(otaOverlay);
-    for (int i = 0; i < 8; i++) { lv_task_handler(); delay(30); }
-    updater.onProgress([](int curBytes, int totalBytes) {
-      if (otaOverlay && totalBytes > 0) {
-        char buf[48];
-        snprintf(buf, sizeof(buf), "Downloading... %d%%",
-                 (int)((100ULL * curBytes) / totalBytes));
-        lv_label_set_text(lv_obj_get_child(otaOverlay, 0), buf);
-      }
+    for (int i = 0; i < 8; i++) {
       lv_task_handler();
-      yield();
-    });
-    const HTTPUpdateResult r = updater.update(client, updateUrl);
-    if (otaOverlay) {
+      delay(30);
+    }
+    auto failUpdate = [&](const String &message) {
       lv_obj_del(otaOverlay);
       otaOverlay = nullptr;
       lv_task_handler();
+      aux["result"].value = message;
+    };
+
+    // The OTA slot receives nothing until the signature over the whole
+    // image checks out, so the image is buffered in PSRAM laid out as
+    // signature(64) || image — the input crypto_sign_open expects.
+    HttpsSession bin;
+    bin.httpClient.setTimeout(20000);
+    if (!bin.begin(updateUrl) || bin.httpClient.GET() != 200) {
+      failUpdate("Update failed: firmware download");
+      return String();
     }
-    String page = F("<html><head><meta charset='utf-8'></head><body style='background:#111;color:#eee;font-family:sans-serif;padding:32px;text-align:center'>");
-    if (r == HTTP_UPDATE_OK) {
-      page += F("<h2 style='color:#0c0'>&#10003; Aktualizované</h2><p>Zariadenie sa reštartuje za 2 sekundy…</p>");
-      pendingRestartAt = millis() + 2000UL;
-    } else if (r == HTTP_UPDATE_NO_UPDATES) {
-      page += F("<h2>Žiadna aktualizácia</h2><a href='/setup' style='color:#f90'>&#8592; Späť</a>");
-    } else {
-      page += F("<h2 style='color:#f33'>&#10007; Chyba</h2><p>");
-      page += updater.getLastErrorString();
-      page += F("</p><a href='/setup' style='color:#f90'>&#8592; Späť</a>");
+    const int imageLen = bin.httpClient.getSize();
+    if (imageLen <= 0) {
+      failUpdate("Update failed: server sent no content length");
+      return String();
     }
-    page += F("</body></html>");
-    server.send(200, "text/html", page);
-  });
-  bootStage(40, "setup routes registered");
-  // server.begin() až po inicializácii WiFi stacku (nižšie) - lwip musí bežať,
-  // inak assert "Invalid mbox" v tcpip_send_msg_wait_sem.
+    if ((size_t)imageLen > ESP.getFreeSketchSpace()) {
+      failUpdate("Update failed: image larger than the OTA slot");
+      return String();
+    }
+    uint8_t *signedImage =
+        (uint8_t *)heap_caps_malloc((size_t)imageLen + 64, MALLOC_CAP_SPIRAM);
+    if (signedImage == nullptr) {
+      failUpdate("Update failed: no memory");
+      return String();
+    }
+    const size_t written = readResponseBytes(
+        bin.httpClient, signedImage + 64, (size_t)imageLen,
+        lv_obj_get_child(otaOverlay, 0));
+    bin.httpClient.end();
+    if (written != (size_t)imageLen) {
+      free(signedImage);
+      failUpdate("Update failed: short download");
+      return String();
+    }
+
+    HttpsSession sig;
+    sig.httpClient.setTimeout(15000);
+    const bool sigFetched = sig.begin(updateUrl + ".sig") &&
+                            sig.httpClient.GET() == 200 &&
+                            sig.httpClient.getSize() == 64 &&
+                            readResponseBytes(sig.httpClient, signedImage, 64,
+                                              nullptr) == 64;
+    sig.httpClient.end();
+    if (!sigFetched || !otaSignatureOk(signedImage, written + 64)) {
+      free(signedImage);
+      failUpdate("Update failed: bad signature");
+      return String();
+    }
+    // Checked after the signature so only authenticated bytes are parsed.
+    // The marker is inside the image, so a renamed file cannot fake it.
+    if (firmwareImageDowngrade(signedImage + 64, written, FW_VERSION)) {
+      free(signedImage);
+      failUpdate("Update failed: older firmware");
+      return String();
+    }
+    lv_label_set_text(lv_obj_get_child(otaOverlay, 0), "Installing...");
+    lv_task_handler();
+    // Every Update failure path resets itself; errorString() must be read
+    // before anything else touches Update.
+    const bool installed = Update.begin(written) &&
+                           Update.write(signedImage + 64, written) == written &&
+                           Update.end(true);
+    free(signedImage);
+    if (!installed) {
+      failUpdate("Update failed: " + String(Update.errorString()));
+      return String();
+    }
+    lv_label_set_text(lv_obj_get_child(otaOverlay, 0), "Update OK. Rebooting...");
+    lv_task_handler();
+    aux["result"].value = "Update OK. Rebooting...";
+    // Defer the restart so the /ota_do response reaches the browser first.
+    pendingRestartAt = millis() + 1000;
+    return String();
+  }, AC_EXIT_AHEAD);
+  portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
+               savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux,
+               otaAux, otaDoAux});
+  bootStage(41, "portal aux pages joined");
+
+  // Apply config
+  portal.config(acConfig);
+  bootStage(42, "portal config applied");
 
   // Create the loading indicator
   createLoadingIndicator();
@@ -1568,7 +2560,7 @@ void setup() {
   Serial.println(charge1);*/
 
   /**************************************************************************/
-  /***  WiFi: jeden pokus o STA (blokujúci), potom prípadne konfiguračné AP ***/
+  /***  Starting AutoConnect - connection attempt or AP (portal)         ***/
   /**************************************************************************/
 
   const bool isGaloyMode =
@@ -1588,7 +2580,52 @@ void setup() {
        (currencyOne[0] == '\0'));
 
   portalRequestedByUser = userWantsPortal;
-  portalRequiredForMissingConfig = apiDataMissing;
+  // A missing key or currency used to open this screen on every boot. The
+  // startup check already names what is missing, and SETUP there (or a tap on
+  // the logo) is how the operator asks for the hotspot.
+  portalRequiredForMissingConfig = passwordRejected;
+  portalRequiredForWifiRecovery = (wifiRequired && !wifiStatus());
+
+  const bool showPortalScreenImmediately =
+      (userWantsPortal || portalRequiredForMissingConfig);
+
+  // In config-first mode, keep the AP stable for phones instead of trying to
+  // reconnect to a remembered WiFi in the background. Background STA scans in
+  // AP+STA mode make the SoftAP hop channels, so phones drop the connection
+  // ("connects and disconnects") - so we also stop retries when the portal is
+  // up because WiFi failed (the recovery case), not just on explicit entry.
+  // reconnectInterval=0 is what stops those background scans. An explicit
+  // setup hotspot does not join the saved network: AP+STA makes
+  // fiathell.local advertise two addresses and the page load waits on the
+  // one the phone cannot reach. Normal boot still tries the saved network.
+  const bool portalActiveNow = portalRequestedByUser ||
+                               portalRequiredForMissingConfig ||
+                               portalRequiredForWifiRecovery;
+  const bool explicitPortal =
+      userWantsPortal || portalRequiredForMissingConfig;
+  acConfig.autoReconnect = !explicitPortal;
+  acConfig.reconnectInterval = portalActiveNow ? 0 : 1;
+  acConfig.preserveAPMode = portalActiveNow;
+
+  // Decide portal behavior once, then call portal.begin() once.
+  acConfig.immediateStart =
+      (userWantsPortal || portalRequiredForMissingConfig);
+  acConfig.autoRise =
+      (userWantsPortal || portalRequiredForMissingConfig || wifiRequired);
+  // Keep AutoConnect's DNSServer off port 53 (our apDns answers instead) and
+  // skip its blocking captive loop; the portal is serviced from loop().
+  portal.onDetect([](IPAddress &) { return false; });
+  WiFi.onEvent(onWifiDiagEvent);
+  // The S3 core defaults to modem sleep, which holds every incoming packet
+  // until the next beacon wake-up (0.1-1.3 s ping measured): portal pages and
+  // every Blink/LNbits HTTPS round trip crawl. Must be set before STA starts.
+  WiFi.setSleep(false);
+
+  if (portalActiveNow) {
+    Serial.println("Config portal active: stopping STA retries to keep captive AP stable");
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+  }
 
   if (isGaloyMode) {
     Serial.print(deviceState.fundingSourceBuffer);
@@ -1602,16 +2639,19 @@ void setup() {
   }
 
   if (userWantsPortal) {
-    Serial.println("User tap => config AP after STA attempt");
-  } else if (apiDataMissing) {
-    Serial.println("API data missing => config AP after STA attempt");
+    Serial.println("User tap => start AP portal immediately");
+  } else if (passwordRejected) {
+    Serial.println("Default password => start AP portal immediately");
   } else {
     Serial.println("No tap => try STA first");
+    if (apiDataMissing) {
+      Serial.println("Settings incomplete; startup check will report them");
+    }
   }
   bootStage(44, "portal mode decision made");
 
   bool portalScreenShown = false;
-  if (userWantsPortal || apiDataMissing) {
+  if (showPortalScreenImmediately) {
     createPortalScreen();
     lv_task_handler();
     delay(50);
@@ -1619,62 +2659,61 @@ void setup() {
     portalScreenShown = true;
   }
 
-  // STA: jeden blokujúci pokus (max. 12 s) VŽDY pred spustením AP. Ak sa
-  // nepripojí, STA ostane nečinné - žiadne opakované skeny, ktoré by menili
-  // kanál AP a zhadzovali telefóny.
-  // Inicializovať WiFi stack (lwip/tcpip) aj keď nemáme credentials -
-  // HTTP server ho potrebuje pri begin().
-  WiFi.persistent(false);
-  WiFi.mode(WIFI_STA);
-  bootStage(46, "wifi stack initialized");
+  portal.config(acConfig);
+  bootStage(46, "portal config re-applied");
+  Serial.println("Attempting to connect via AutoConnect...");
+  setBootStatus("Connecting to Wi-Fi...");
+  (void)portal.begin(); // may connect STA or start AP depending on config
+  bootStage(47, "portal begin returned");
 
-  WifiCredentials creds;
-  const bool haveCreds = WifiPortal::loadCredentials(SPIFFS, creds);
-  bool connected = false;
-  if (haveCreds) {
-    Serial.println("WiFi: connecting to " + String(creds.ssid));
-    connected = WifiPortal::connectSta(creds, 12000, []() { lv_task_handler(); });
-  } else {
-    Serial.println("WiFi: no saved credentials");
-  }
-  if (connected) {
-    Serial.println("WiFi connected! IP: " + WiFi.localIP().toString());
+  // NOTE: we intentionally do NOT register our own onNotFound here. AutoConnect
+  // installs its _handleNotFound/_captivePortal in begin(); leaving it in place
+  // gives WT32-identical captive behaviour (absolute-URL 302 to the portal,
+  // host-header based) so phones auto-open the sign-in page.
+
+  if (wifiStatus()) {
+    Serial.println("WiFi connected! IP: " + WiFi.localIP().toString() +
+                   " RSSI: " + String(WiFi.RSSI()) + " dBm ch " +
+                   String(WiFi.channel()));
+    const bool stayingInPortal =
+        userWantsPortal || portalRequiredForMissingConfig;
+    if (wifiRequired && !stayingInPortal) {
+      // If you don't want to leave the AP on, switch to STA only
+      WiFi.mode(WIFI_STA);
+    }
   } else {
     Serial.println("WiFi not connected.");
+    if (acConfig.autoRise) {
+      if (!portalScreenShown) {
+        createPortalScreen();
+        lv_task_handler();
+        delay(50);
+        bootStage(45, "portal screen shown");
+        portalScreenShown = true;
+      }
+      Serial.println("Portal available. AP Name: " + acConfig.apid);
+      Serial.println("Portal AP IP: " + WiFi.softAPIP().toString());
+      ensureApDns();
+      digitalWrite(11, LOW);
+    }
   }
-  bootStage(47, connected ? "wifi connected" : "wifi not connected");
+  // After begin() the radio may still be AP+STA. Collapse an explicit setup
+  // session to the hotspot alone, then publish fiathell.local for that one IP.
+  if (explicitPortal) {
+    settleSetupHotspot();
+  } else if (!wifiStatus() && acConfig.autoRise) {
+    startFiathellMdns();
+  }
+  bootStage(48, "wifi or portal state evaluated");
 
-  server.begin();
-  bootStage(48, "http server started");
-
-  portalRequiredForWifiRecovery = (wifiRequired && !connected);
-  const bool openPortal =
-      userWantsPortal || apiDataMissing || portalRequiredForWifiRecovery;
-
-  if (openPortal) {
-    if (!portalScreenShown) {
-      createPortalScreen();
-      lv_task_handler();
-      delay(50);
-      bootStage(45, "portal screen shown");
-      portalScreenShown = true;
-    }
-    const String apName = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-    WifiPortal::startAp(apName, String(deviceState.password));
-    // Recovery (WiFi nutné, ale nedostupné): skúšať STA každých 5 min.
-    // Každý pokus na chvíľu rozhodí AP, preto tak zriedka.
-    WifiPortal::setBackgroundStaRetry(portalRequiredForWifiRecovery && haveCreds,
-                                      5UL * 60UL * 1000UL);
-    if (MDNS.begin("fiathell")) {
-      MDNS.addService("http", "tcp", 80);
-      Serial.println("mDNS: http://fiathell.local (config AP)");
-    }
-    digitalWrite(11, LOW);
-    Serial.println("Portal: http://" + WifiPortal::apIp().toString() + "/setup");
+  // If portal is required (tap / missing data / Blink no-wifi), stay in portal.
+  if (userWantsPortal || portalRequiredForMissingConfig ||
+      (wifiRequired && !wifiStatus())) {
     pendingPortalCompletion = true;
     bootStage(49, "setup exits into portal mode");
     return;
   }
+
   completeStartupAfterPortal();
 }
 
@@ -1689,6 +2728,68 @@ int nonBlockingRead() {
   return billAcceptorRead();
 }
 
+// More than one currency is configured. Opening every channel of a single
+// currency is not mixed mode — that path was treating a PYG note as euros
+// and ending the sale at the 100 EUR cap after the first bill.
+static bool mixedCurrenciesConfigured() {
+  return originalSizeTwo > 0 || originalSizeThree > 0;
+}
+
+// Credit a validated channel byte to the running totals. Returns false when
+// the channel is outside the single-currency filter. Screen and label
+// updates stay with the caller.
+static bool creditBillTotals(int channelIdx) {
+  const int amount = billAmountIntOne[channelIdx];
+  const bool mixed = mixedCurrenciesConfigured();
+  if (mixed) {
+    if (channelIdx < (int)originalSizeOne) {
+      sessionState.totalCurrency1 += (long)amount * 100;
+      strlcpy(sessionState.lastBillCurrency, currencyOne,
+              sizeof(sessionState.lastBillCurrency));
+    } else if (channelIdx < (int)(originalSizeOne + originalSizeTwo)) {
+      sessionState.totalCurrency2 += (long)amount * 100;
+      strlcpy(sessionState.lastBillCurrency, currencyTwo,
+              sizeof(sessionState.lastBillCurrency));
+    } else {
+      sessionState.totalCurrency3 += (long)amount * 100;
+      strlcpy(sessionState.lastBillCurrency, currencyThree,
+              sizeof(sessionState.lastBillCurrency));
+    }
+    sessionState.lastBillCents = (long)amount * 100;
+    return true;
+  }
+  if (channelIdx >= sessionState.allowedChannelStart &&
+      channelIdx <
+          sessionState.allowedChannelStart + sessionState.allowedChannelCount) {
+    bills = bills + amount;
+    total = (coins + bills);
+    return true;
+  }
+  return false;
+}
+
+// A note already past the NV10's inhibit point is still stacked and reports
+// its channel afterwards. Stop the acceptor, then give such a note time to
+// report so it is part of the payout instead of being taken uncredited.
+static const unsigned long BILL_SETTLE_MS = 2000;
+
+static void inhibitAndCollectPendingBills() {
+  billAcceptorWrite(185);
+  if (INHIBITMECH >= 0) {
+    digitalWrite(INHIBITMECH, LOW);
+  }
+  const unsigned long start = millis();
+  while (millis() - start < BILL_SETTLE_MS) {
+    const int pending = nonBlockingRead();
+    if (pending >= 1 && pending <= (int)billAmountIntOne.size()) {
+      creditBillTotals(pending - 1);
+    } else {
+      lv_task_handler();
+      delay(10);
+    }
+  }
+}
+
 // Create the logo screen
 /**
  * @brief Sets the angle of an LVGL arc object.
@@ -1696,8 +2797,33 @@ int nonBlockingRead() {
  * @param obj Pointer to the LVGL arc object.
  * @param v The angle value to set.
  */
+static lv_obj_t *logoArc = nullptr;
+static lv_obj_t *logoBtcImg = nullptr;
+
 static void set_angle(void *obj, int32_t v) {
   lv_arc_set_value((lv_obj_t *)obj, v);
+}
+
+// Tap on the boot logo asks for settings. Hide the Bitcoin icon and replace
+// the one-shot fill with the same endless spinner used for payouts.
+static void showLogoSettingsProgress() {
+  if (logoBtcImg != nullptr) {
+    lv_obj_add_flag(logoBtcImg, LV_OBJ_FLAG_HIDDEN);
+  }
+  if (logoArc != nullptr) {
+    const lv_coord_t w = lv_obj_get_width(logoArc);
+    const lv_coord_t h = lv_obj_get_height(logoArc);
+    lv_anim_del(logoArc, set_angle);
+    lv_obj_del(logoArc);
+    logoArc = nullptr;
+    lv_obj_t *spinner = lv_spinner_create(screen_logo, 1000, 70);
+    if (w > 0 && h > 0) {
+      lv_obj_set_size(spinner, w, h);
+    }
+    lv_obj_center(spinner);
+    styleWaitSpinner(spinner);
+  }
+  lv_refr_now(NULL);
 }
 
 /**
@@ -1729,18 +2855,19 @@ void createLogoScreen() {
   lv_obj_set_style_text_color(atmurl, LV_COLOR_PURPLE, 0);
 
   /*Create an Arc*/
-  lv_obj_t *arc = lv_arc_create(screen_logo); // Create the arc on screen_logo
-  lv_arc_set_rotation(arc, 270);
-  lv_arc_set_bg_angles(arc, 0, 360);
-  lv_obj_remove_style(arc, NULL,
+  logoArc = lv_arc_create(screen_logo); // Create the arc on screen_logo
+  lv_arc_set_rotation(logoArc, 270);
+  lv_arc_set_bg_angles(logoArc, 0, 360);
+  lv_obj_remove_style(logoArc, NULL,
                       LV_PART_KNOB); /*Be sure the knob is not displayed*/
-  lv_obj_clear_flag(arc,
+  lv_obj_clear_flag(logoArc,
                     LV_OBJ_FLAG_CLICKABLE); /*To not allow adjusting by click*/
-  lv_obj_center(arc);
+  styleWaitSpinner(logoArc);
+  lv_obj_center(logoArc);
 
   lv_anim_t a;
   lv_anim_init(&a);
-  lv_anim_set_var(&a, arc);
+  lv_anim_set_var(&a, logoArc);
   lv_anim_set_exec_cb(&a, set_angle);
   lv_anim_set_time(&a, 2000);
   lv_anim_set_repeat_count(&a, 1); /*Just for the demo*/
@@ -1748,13 +2875,14 @@ void createLogoScreen() {
   lv_anim_set_values(&a, 0, 100);
   lv_anim_start(&a);
 
-  lv_obj_t *img1 = lv_img_create(screen_logo); // Create an image object
+  logoBtcImg = lv_img_create(screen_logo); // Create an image object
   lv_img_set_src(
-      img1,
+      logoBtcImg,
       &btcSmallImg); // Set the image source to your converted image (my_image)
-  lv_obj_align(img1, LV_ALIGN_CENTER, 0,
+  lv_obj_align(logoBtcImg, LV_ALIGN_CENTER, 0,
                0); // Align the image to the center of the screen
 
+  // The arc animation starts before the screen is shown; load it once.
   lv_scr_load(screen_logo);
   createBatteryIndicator();
   attachBatteryToCurrentScreen();
@@ -1773,6 +2901,14 @@ void createLogoScreen() {
  * @note The font styles for the labels are set using predefined font objects.
  * @note The screen_portal object is loaded as the active screen.
  */
+static void portalRestartCb(lv_event_t *e) {
+  if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+    return;
+  }
+  Serial.println("Portal RESTART tapped");
+  pendingRestartAt = millis() + 400;
+}
+
 void createPortalScreen() {
   screen_portal = lv_obj_create(NULL); // Create a new screen
   lv_obj_set_style_bg_color(screen_portal, lv_color_black(), 0);
@@ -1834,7 +2970,7 @@ void createPortalScreen() {
   lv_obj_set_style_text_font(portaltext2b, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(portaltext2b, LV_COLOR_WHITE, 0);*/
 
-  String LVGL_PORTAL_URL = "http://192.168.4.1/setup   (alebo http://fiathell.local)";
+  String LVGL_PORTAL_URL = "http://192.168.4.1   or   http://fiathell.local";
   lv_obj_t *portalurl = lv_label_create(screen_portal);
   lv_label_set_text(portalurl, LVGL_PORTAL_URL.c_str());
   lv_obj_align(portalurl, LV_ALIGN_TOP_MID, 0, 198);
@@ -1861,6 +2997,28 @@ void createPortalScreen() {
                              0); // Use the large font
   lv_obj_set_style_text_color(portaltextfour, LV_COLOR_WHITE, 0);
 
+  if (g_fallbackApPsk.length() > 0) {
+    String pskLine = "Wi-Fi and admin password: " + g_fallbackApPsk;
+    lv_obj_t *pskLabel = lv_label_create(screen_portal);
+    lv_label_set_text(pskLabel, pskLine.c_str());
+    lv_obj_align(pskLabel, LV_ALIGN_TOP_MID, 0, 302);
+    lv_obj_set_style_text_font(pskLabel, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(pskLabel, lv_color_hex(0xFF9900), 0);
+  }
+
+  lv_obj_clear_flag(screen_portal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *restartBtn = lv_btn_create(screen_portal);
+  lv_obj_set_size(restartBtn, 240, 64);
+  lv_obj_align(restartBtn, LV_ALIGN_BOTTOM_MID, 0, -24);
+  lv_obj_clear_flag(restartBtn, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(restartBtn, portalRestartCb, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *restartLabel = lv_label_create(restartBtn);
+  lv_label_set_text(restartLabel, "RESTART");
+  lv_obj_set_style_text_font(restartLabel, &lv_font_montserrat_20, 0);
+  lv_obj_center(restartLabel);
+  styleActionButton(restartBtn);
+
+  // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_portal);
   attachBatteryToCurrentScreen();
 }
@@ -1936,6 +3094,7 @@ void createAPIScreen() {
   lv_obj_set_style_text_font(portaltextfour, &lv_font_montserrat_22,
                              0); // Use the large font
 
+  // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_api);
   attachBatteryToCurrentScreen();
 }
@@ -2012,6 +3171,7 @@ void createThankYouScreen() {
                              0); // Use the large font
   lv_obj_set_style_text_color(thxDesc, LV_COLOR_GREEN, 0);
 
+  // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_thx);
   attachBatteryToCurrentScreen();
 }
@@ -2022,23 +3182,49 @@ void createThankYouScreen() {
  * Shown when the funding source rejected the payout after cash was already
  * inserted, so the customer must not walk away thinking they were paid.
  */
+// Kept so returnToMainScreen() can delete it; a local pointer leaked one
+// screen per failed payout once the error stopped ending in a reboot.
+static lv_obj_t *screen_payment_error = nullptr;
+
 void createPaymentErrorScreen() {
-  lv_obj_t *screen_err = lv_obj_create(NULL); // Create a new screen
+  const char *reason = FundingService::payoutFailureReason();
+  if (reason == nullptr || reason[0] == '\0') {
+    reason = "Blink did not pay the invoice";
+  }
+  Serial.print("Payment error: ");
+  Serial.println(reason);
+  File errFile = SPIFFS.open("/payout-error.txt", "w");
+  if (errFile) {
+    errFile.println(reason);
+    errFile.close();
+  }
+
+  if (screen_payment_error != nullptr && lv_scr_act() != screen_payment_error) {
+    lv_obj_del(screen_payment_error);
+  }
+  screen_payment_error = lv_obj_create(NULL); // Create a new screen
+  lv_obj_t *screen_err = screen_payment_error;
 
   lv_obj_t *errTitle = lv_label_create(screen_err);
   lv_label_set_text(errTitle, "PAYMENT FAILED!");
-  lv_obj_align(errTitle, LV_ALIGN_CENTER, 0, -20);
+  lv_obj_align(errTitle, LV_ALIGN_CENTER, 0, -40);
   lv_obj_set_style_text_font(errTitle, &lv_font_montserrat_48, 0);
   lv_obj_set_style_text_color(errTitle, LV_COLOR_RED, 0);
 
+  char body[240];
+  snprintf(body, sizeof(body),
+           "YOUR SATS WERE NOT SENT\n%s\nMAKE A PHOTO AND CONTACT SUPPORT",
+           reason);
   lv_obj_t *errDesc = lv_label_create(screen_err);
-  lv_label_set_text(errDesc,
-                    "YOUR SATS WERE NOT SENT\nMAKE A PHOTO AND CONTACT SUPPORT");
+  lv_label_set_text(errDesc, body);
+  lv_obj_set_width(errDesc, 740);
+  lv_label_set_long_mode(errDesc, LV_LABEL_LONG_WRAP);
   lv_obj_set_style_text_align(errDesc, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_align(errDesc, LV_ALIGN_CENTER, 0, 60);
+  lv_obj_align(errDesc, LV_ALIGN_CENTER, 0, 50);
   lv_obj_set_style_text_font(errDesc, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(errDesc, LV_COLOR_RED, 0);
 
+  // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_err);
   attachBatteryToCurrentScreen();
 }
@@ -2182,7 +3368,7 @@ void checkPrice() {
 void checkPriceCoinGecko() {
   String targetCurrency = currencySelected;
   targetCurrency.toUpperCase();
-  http.begin(String(coinyepConversionAPI) + targetCurrency);
+  beginNetwork(http, secureClient, String(coinyepConversionAPI) + targetCurrency);
 
   int httpCode = http.GET(); // Send the request
 
@@ -2220,7 +3406,7 @@ void checkPriceCoinGecko() {
 }
 
 void checkPriceExchangeApi() {
-  http.begin(exchangeapiConversionAPI);
+  beginNetwork(http, secureClient, exchangeapiConversionAPI);
   int httpResponseCode = http.GET();
 
   if (httpResponseCode == 200 || httpResponseCode == 201) {
@@ -2265,7 +3451,7 @@ static const char *krakenTickerAPI = "https://api.kraken.com/0/public/Ticker";
 void checkPriceCoinGeckoApi() {
   String curr = String(currencySelected);
   curr.toLowerCase();
-  http.begin(String(coingeckoAPI) + curr);
+  beginNetwork(http, secureClient, String(coingeckoAPI) + curr);
   int code = http.GET();
   if (code == 200 || code == 201) {
     String payload = http.getString();
@@ -2297,7 +3483,7 @@ void checkPriceKraken() {
   else
     pair = "XBT" + curr;
 
-  http.begin(String(krakenTickerAPI) + "?pair=" + pair);
+  beginNetwork(http, secureClient, String(krakenTickerAPI) + "?pair=" + pair);
   int code = http.GET();
   if (code == 200 || code == 201) {
     String payload = http.getString();
@@ -2364,8 +3550,17 @@ void color_anim_cb(void *var, int32_t v) {
   int idx =
       (v * num_colors) /
       256; // This will convert v (0 to 255) to an index in the colors array.
-  lv_color_t color = colors[idx];
 
+  // Repainting the title on every animation step kept the CPU flushing the
+  // framebuffer nonstop, which starved the panel DMA and made the picture
+  // twitch. Repaint only when the color actually changes.
+  static int lastIdx = -1;
+  if (idx == lastIdx) {
+    return;
+  }
+  lastIdx = idx;
+
+  lv_color_t color = colors[idx];
   lv_obj_set_style_text_color(obj, color, 0);
 }
 
@@ -2385,39 +3580,302 @@ void color_anim_cb(void *var, int32_t v) {
  * @note The labels must be created and initialized before calling this
  * function.
  */
+static bool acceptorArmed = false;
+// updateMainScreenLabel() also runs while the settings portal is up; the
+// acceptor must only open once the customer main screen exists.
+static bool mainScreenShown = false;
+
+// One unit of a currency such as PYG is worth a fraction of a sat, so a fixed
+// 100-cent probe never succeeds and the acceptor stays dark. Probe the
+// smallest configured note instead; that is what a customer can actually insert.
+static bool currencyQuoted(const char *currency, int channelStart, int channelCount,
+                           float price, float fee) {
+  if (currency == nullptr || currency[0] == '\0' || channelCount <= 0) {
+    return false;
+  }
+  int64_t smallestCents = 0;
+  for (int i = 0; i < channelCount; i++) {
+    const int amount = billAmountIntOne[channelStart + i];
+    if (amount <= 0) {
+      continue;
+    }
+    const int64_t cents = (int64_t)amount * 100;
+    if (smallestCents == 0 || cents < smallestCents) {
+      smallestCents = cents;
+    }
+  }
+  return smallestCents > 0 && quoteSats(smallestCents, price, fee).ok;
+}
+
+// The main screen uninhibits every configured channel, so a bill of any
+// configured currency is credited. Every one of those currencies needs a
+// usable price before the acceptor may open — otherwise a bill whose currency
+// has no rate would be taken and the payout would fail with the cash inside.
+static bool allCreditableQuotesReady() {
+  if (originalSizeOne == 0) {
+    return false;
+  }
+  if (!currencyQuoted(currencyOne, 0, originalSizeOne, sessionState.fiatValue1,
+                      charge1)) {
+    return false;
+  }
+  if (originalSizeTwo > 0 &&
+      !currencyQuoted(currencyTwo, originalSizeOne, originalSizeTwo,
+                      sessionState.fiatValue2, charge2)) {
+    return false;
+  }
+  if (originalSizeThree > 0 &&
+      !currencyQuoted(currencyThree, originalSizeOne + originalSizeTwo,
+                      originalSizeThree, sessionState.fiatValue3, charge3)) {
+    return false;
+  }
+  return true;
+}
+
+// lv_label_set_text() and style writes invalidate and redraw even when the
+// content is already on screen, and every redraw is a framebuffer flush that
+// can tear against the panel scanout. Skip writes that change nothing.
+static void setLabelTextIfChanged(lv_obj_t *label, const char *text) {
+  if (label == nullptr) {
+    return;
+  }
+  const char *current = lv_label_get_text(label);
+  if (current != nullptr && strcmp(current, text) == 0) {
+    return;
+  }
+  lv_label_set_text(label, text);
+}
+
+static void setLabelColorIfChanged(lv_obj_t *label, lv_color_t color) {
+  if (label == nullptr) {
+    return;
+  }
+  if (lv_obj_get_style_text_color(label, LV_PART_MAIN).full != color.full) {
+    lv_obj_set_style_text_color(label, color, 0);
+  }
+}
+
+// Sends a channel mask to the NV10: one inhibit or uninhibit per channel, then
+// the master enable. An empty mask is a master inhibit. Bit i is channel i.
+// The mask is sent only when it changes. `limitValue` and `unit` are only for
+// the log line.
+static void applyNoteMask(uint16_t mask, long limitValue, const char *unit) {
+  const int count = (int)billAmountIntOne.size();
+  const int limit = count < 16 ? count : 16;
+  if ((uint32_t)mask == enabledNoteMask) {
+    return;
+  }
+  enabledNoteMask = mask;
+  noteMaskOwnsWrite = true;
+  if (mask == 0) {
+    billAcceptorWrite(185);
+    noteMaskOwnsWrite = false;
+    Serial.printf("NV10: no note fits in %ld %s\n", limitValue, unit);
+    return;
+  }
+  for (int i = 0; i < limit; i++) {
+    const uint8_t cmd = (mask & (uint16_t)(1u << i))
+                            ? (uint8_t)(UNINHIBIT_START + i)
+                            : (uint8_t)(INHIBIT_START + i);
+    billAcceptorWrite(cmd);
+    delay(25);
+  }
+  billAcceptorWrite(184);
+  noteMaskOwnsWrite = false;
+  Serial.printf("NV10: notes open for %ld %s (mask 0x%04x)\n", limitValue, unit,
+                mask);
+}
+
+// Enable only the notes that fit in `room`. A larger note is inhibited on its
+// own channel, so the NV10 returns it, and any smaller note still in range
+// stays open.
+static void applyFittingNotes(long room) {
+  uint16_t mask = 0;
+  const int count = (int)billAmountIntOne.size();
+  const int limit = count < 16 ? count : 16;
+  for (int i = 0; i < limit; i++) {
+    const int amount = billAmountIntOne[i];
+    if (amount > 0 && (long)amount <= room) {
+      mask |= (uint16_t)(1u << i);
+    }
+  }
+  applyNoteMask(mask, room, currencySelected);
+}
+
+// Offline LNbits pays out through a stored link and cannot read the wallet, so
+// the wallet limit below does not apply there.
+static bool offlineLnbitsMode() {
+  return strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 &&
+         !wifiStatus();
+}
+
+// The funding wallet in whole sats. LNbits reports millisats, Stablesats and
+// Flash report dollar cents.
+static bool currentWalletSats(int64_t *out) {
+  BalanceUnit unit = BalanceUnit::Sats;
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+    unit = BalanceUnit::Msats;
+  } else if (fundingWalletIsUsd()) {
+    unit = BalanceUnit::UsdCents;
+  }
+  return walletBalanceSats(unit, (int64_t)balanceSats,
+                           (double)sessionState.btcUsdValue, out);
+}
+
+// Several currencies share one NV10 channel list: the first originalSizeOne
+// channels are currency one, the next originalSizeTwo currency two, the rest
+// currency three. A channel is open only when the cash already inserted plus
+// that note still quotes to sats the wallet holds.
+static uint16_t mixedNoteMask(int64_t walletSats) {
+  NoteChannel channels[16];
+  const int count = (int)billAmountIntOne.size() < 16
+                        ? (int)billAmountIntOne.size()
+                        : 16;
+  const int firstEnd = (int)originalSizeOne;
+  const int secondEnd = (int)(originalSizeOne + originalSizeTwo);
+  for (int i = 0; i < count; i++) {
+    channels[i].leg = i < firstEnd ? 0 : (i < secondEnd ? 1 : 2);
+    channels[i].amount = billAmountIntOne[i];
+  }
+  const MixedLeg legs[3] = {
+      {sessionState.totalCurrency1, sessionState.fiatValue1, charge1},
+      {sessionState.totalCurrency2, sessionState.fiatValue2, charge2},
+      {sessionState.totalCurrency3, sessionState.fiatValue3, charge3},
+  };
+  return fittingNoteMask(channels, count, legs, walletSats);
+}
+
+static void showMainHold(const char *text) {
+  if (mainScreenHoldLabel == nullptr) {
+    return;
+  }
+  setLabelTextIfChanged(mainScreenHoldLabel, text);
+  if (lv_obj_has_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN)) {
+    lv_obj_clear_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void hideMainHold() {
+  if (mainScreenHoldLabel != nullptr &&
+      !lv_obj_has_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN)) {
+    lv_obj_add_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void armAcceptorIfQuoted() {
+  if (!mainScreenShown) {
+    return;
+  }
+  // Inserting owns its own channel mask. A sale (QR, paying, thank-you,
+  // error) must not take another note; the price refresh used to reopen
+  // the acceptor behind those screens. It opens again on the main screen.
+  if (currentUiState != UI_IDLE) {
+    return;
+  }
+  // A note that clears the sensor is stacked. Notes larger than the offset
+  // balance are inhibited one channel at a time; smaller notes stay open.
+  if (!offlineLnbitsMode() && !mixedCurrenciesConfigured()) {
+    if (paymentService.isGaloy(deviceState.fundingSourceBuffer) && !wifiStatus()) {
+      applyFittingNotes(0);
+      acceptorArmed = false;
+      return;
+    }
+    if (!allCreditableQuotesReady()) {
+      return;
+    }
+    const long room = insertSessionCap();
+    const int smallestNote = smallestConfiguredNote();
+    const bool known = balanceSats > 0 && fiatBalance > 0.0f && smallestNote > 0;
+    const bool covers = known && room >= (long)smallestNote;
+    if (!covers) {
+      applyFittingNotes(0);
+      acceptorArmed = false;
+      showMainHold(known ? "Balance too low" : "Waiting for price and balance");
+      Serial.printf("NV10 stays off: balance %ld %s, smallest note %d\n",
+                    room, currencySelected, smallestNote);
+      return;
+    }
+    hideMainHold();
+    applyFittingNotes(room);
+    acceptorArmed = true;
+    return;
+  }
+  if (!offlineLnbitsMode()) {
+    // Several currencies. Same rule as above, counted in sats because the
+    // notes are priced in different currencies: a channel stays open only
+    // while the wallet can pay what is inserted plus that note.
+    if (paymentService.isGaloy(deviceState.fundingSourceBuffer) && !wifiStatus()) {
+      applyNoteMask(0, 0, "sats");
+      acceptorArmed = false;
+      return;
+    }
+    if (!allCreditableQuotesReady()) {
+      Serial.printf(
+          "NV10 stays off: sizes %d/%d/%d prices %.2f/%.2f/%.2f\n",
+          originalSizeOne, originalSizeTwo, originalSizeThree,
+          sessionState.fiatValue1, sessionState.fiatValue2,
+          sessionState.fiatValue3);
+      return;
+    }
+    int64_t walletSats = 0;
+    const bool known = currentWalletSats(&walletSats);
+    const uint16_t mask = known ? mixedNoteMask(walletSats) : 0;
+    if (mask == 0) {
+      applyNoteMask(0, (long)walletSats, "sats");
+      acceptorArmed = false;
+      showMainHold(known ? "Balance too low" : "Waiting for price and balance");
+      Serial.printf("NV10 stays off: wallet %lld sats\n", (long long)walletSats);
+      return;
+    }
+    hideMainHold();
+    applyNoteMask(mask, (long)walletSats, "sats");
+    acceptorArmed = true;
+    return;
+  }
+  if (acceptorArmed) {
+    return;
+  }
+  // Offline LNbits pays out through the stored LNURL-device link, which
+  // encodes the fiat amount directly - no BTC price is needed, and the wallet
+  // cannot be read, so the quote and wallet gates are skipped.
+  uninhibitAllChannels();
+  enableAcceptor();
+  acceptorArmed = true;
+}
+
 void updateMainScreenLabel() {
   Serial.print("Free heap (updateMainScreenLabel Start): ");
   Serial.println(ESP.getFreeHeap());
   if (balanceValueLabel) { // Ensure the label has been created
     if (!wifiStatus()) {
-      lv_label_set_text(balanceValueLabel, "OFFLINE");
+      setLabelTextIfChanged(balanceValueLabel, "OFFLINE");
     } else {
       char buffer[32];
-      snprintf(buffer, sizeof(buffer), "%.2f %s", fiatBalance,
-               currencySelected);
-      lv_label_set_text(balanceValueLabel, buffer);
-      lv_obj_set_style_text_color(balanceValueLabel, LV_COLOR_WHITE, 0);
-      if (fiatBalance < maxamountSelected) {
-        lv_obj_set_style_text_color(balanceValueLabel, LV_COLOR_RED, 0);
-      }
+      // Customer balance is the insertable amount: wallet after the fee,
+      // rounded down to the smallest note. The raw wallet stays in fiatBalance.
+      const long usable = insertSessionCap();
+      snprintf(buffer, sizeof(buffer), "%ld %s", usable, currencySelected);
+      setLabelTextIfChanged(balanceValueLabel, buffer);
+      setLabelColorIfChanged(balanceValueLabel,
+                             usable > 0 ? LV_COLOR_WHITE : LV_COLOR_RED);
     }
   }
   if (fiatValueLabel) { // Check if it has been initialized
     if (!wifiStatus()) {
-      lv_label_set_text(fiatValueLabel, "OFFLINE");
-      lv_obj_set_style_text_color(fiatValueLabel, LV_COLOR_RED, 0);
+      setLabelTextIfChanged(fiatValueLabel, "OFFLINE");
+      setLabelColorIfChanged(fiatValueLabel, LV_COLOR_RED);
     } else {
       char buffer[32];
       snprintf(buffer, sizeof(buffer), "%ld %s", (long)fiatValue,
                currencySelected);
-      lv_label_set_text(fiatValueLabel, buffer);
-      lv_obj_set_style_text_color(fiatValueLabel, LV_COLOR_GREEN, 0);
+      setLabelTextIfChanged(fiatValueLabel, buffer);
+      setLabelColorIfChanged(fiatValueLabel, LV_COLOR_GREEN);
     }
   }
   if (chargeValueLabel) { // Check if it has been initialized
     char buffer[32];
     snprintf(buffer, sizeof(buffer), "%.1f %%", (double)chargeSelected);
-    lv_label_set_text(chargeValueLabel, buffer);
+    setLabelTextIfChanged(chargeValueLabel, buffer);
   }
   if (mainScreenCurrency1RateLabel) {
     char buf[32];
@@ -2425,12 +3883,12 @@ void updateMainScreenLabel() {
       snprintf(buf, sizeof(buf), "%ld", (long)sessionState.fiatValue1);
     else
       snprintf(buf, sizeof(buf), "-");
-    lv_label_set_text(mainScreenCurrency1RateLabel, buf);
+    setLabelTextIfChanged(mainScreenCurrency1RateLabel, buf);
   }
   if (mainScreenCurrency1FeeLabel) {
     char feeBuf[24];
     snprintf(feeBuf, sizeof(feeBuf), "Fee: %.1f%%", (double)charge1);
-    lv_label_set_text(mainScreenCurrency1FeeLabel, feeBuf);
+    setLabelTextIfChanged(mainScreenCurrency1FeeLabel, feeBuf);
   }
   if (mainScreenCurrency2RateLabel) {
     char buf[32];
@@ -2438,12 +3896,12 @@ void updateMainScreenLabel() {
       snprintf(buf, sizeof(buf), "%ld", (long)sessionState.fiatValue2);
     else
       snprintf(buf, sizeof(buf), "-");
-    lv_label_set_text(mainScreenCurrency2RateLabel, buf);
+    setLabelTextIfChanged(mainScreenCurrency2RateLabel, buf);
   }
   if (mainScreenCurrency2FeeLabel) {
     char feeBuf[24];
     snprintf(feeBuf, sizeof(feeBuf), "Fee: %.1f%%", (double)charge2);
-    lv_label_set_text(mainScreenCurrency2FeeLabel, feeBuf);
+    setLabelTextIfChanged(mainScreenCurrency2FeeLabel, feeBuf);
   }
   if (mainScreenCurrency3RateLabel) {
     char buf[32];
@@ -2451,16 +3909,17 @@ void updateMainScreenLabel() {
       snprintf(buf, sizeof(buf), "%ld", (long)sessionState.fiatValue3);
     else
       snprintf(buf, sizeof(buf), "-");
-    lv_label_set_text(mainScreenCurrency3RateLabel, buf);
+    setLabelTextIfChanged(mainScreenCurrency3RateLabel, buf);
   }
   if (mainScreenCurrency3FeeLabel) {
     char feeBuf[24];
     snprintf(feeBuf, sizeof(feeBuf), "Fee: %.1f%%", (double)charge3);
-    lv_label_set_text(mainScreenCurrency3FeeLabel, feeBuf);
+    setLabelTextIfChanged(mainScreenCurrency3FeeLabel, feeBuf);
   }
 
   Serial.print("Free heap (updateMainScreenLabel End): ");
   Serial.println(ESP.getFreeHeap());
+  armAcceptorIfQuoted();
 }
 
 /**
@@ -2486,6 +3945,8 @@ void createMainScreen() {
   Serial.print("Free heap (createMainScreen Start): ");
   Serial.println(ESP.getFreeHeap());
 
+  // Build the screen off-screen and load it once. Loading it empty and then
+  // filling the labels draws the panel twice, which shows as a flicker.
   screen_main = lv_obj_create(NULL); // Create a new screen
   Serial.println("createMainScreen: Screen created");
 
@@ -2548,7 +4009,10 @@ void createMainScreen() {
     lv_anim_set_var(&a, fiathell);
     lv_anim_set_values(&a, 0, 255);
     lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_time(&a, 500); // duration of one color change cycle
+    lv_anim_set_time(&a, 500); // one sweep through the palette
+    // ...and the same time back, so the color pulses instead of snapping
+    // from the last color to the first twice per second.
+    lv_anim_set_playback_time(&a, 500);
     lv_anim_set_exec_cb(&a, color_anim_cb);
     lv_anim_start(&a);
     Serial.println("createMainScreen: Animation started");
@@ -2613,8 +4077,8 @@ void createMainScreen() {
 
   char buffer[32];
   snprintf(
-      buffer, sizeof(buffer), "%.2f %s", fiatBalance,
-      currencySelected); // Limiting to 2 decimal places and append the currency
+      buffer, sizeof(buffer), "%ld %s", insertSessionCap(),
+      currencySelected);
   balanceValueLabel = lv_label_create(screen_main); // full screen as the parent
   lv_label_set_text(
       balanceValueLabel,
@@ -2678,14 +4142,23 @@ void createMainScreen() {
     lv_obj_align(flashLabel, LV_ALIGN_TOP_RIGHT, -10, 35);
   }
 
+  mainScreenHoldLabel = lv_label_create(screen_main);
+  lv_label_set_text(mainScreenHoldLabel, "");
+  lv_obj_set_width(mainScreenHoldLabel, 720);
+  lv_label_set_long_mode(mainScreenHoldLabel, LV_LABEL_LONG_WRAP);
+  lv_obj_set_style_text_align(mainScreenHoldLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(mainScreenHoldLabel, LV_ALIGN_CENTER, 0, 20);
+  lv_obj_set_style_text_font(mainScreenHoldLabel, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_color(mainScreenHoldLabel, LV_COLOR_RED, 0);
+  lv_obj_add_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
+
+  // Fill the labels before the screen is shown, so the panel draws once.
+  // updateMainScreenLabel() arms the acceptor, which needs mainScreenShown.
+  mainScreenShown = true;
+  updateMainScreenLabel();
   lv_scr_load(screen_main);
   attachBatteryToCurrentScreen();
   Serial.println("createMainScreen: Screen loaded");
-  // Mixed-currency mode: accept all bills, no single-currency filter
-#if BILL_ACCEPTOR_ENABLED
-  uninhibitAllChannels();
-  enableAcceptor();
-#endif
   Serial.print("Free heap (createMainScreen End): ");
   Serial.println(ESP.getFreeHeap());
 }
@@ -2698,9 +4171,155 @@ void enableAcceptor() {
     return;
   }
   billAcceptorWrite(184);  // Enable acceptor (channels already set by setCurrency)
+  Serial.println("NV10: master enable 184");
   if (INHIBITMECH >= 0) {
     digitalWrite(INHIBITMECH, HIGH); // Uninhibit currencies
   }
+}
+
+static void discardInsertMoneyScreen() {
+  uiController.deleteInsertMoneyScreen();
+  labelLastInserted = nullptr;
+  labelTotalAmount = nullptr;
+  labelTotalCurrency1 = nullptr;
+  labelTotalCurrency2 = nullptr;
+  labelTotalCurrency3 = nullptr;
+  labelTotalSats = nullptr;
+  labelMaxAmount = nullptr;
+  insertFinishBtn = nullptr;
+}
+
+// Blank screen with a spinner, shown from FINISH until the QR (or an error)
+// is ready. The payout request takes seconds, and a screen that does not
+// change looks like the press was ignored.
+static lv_obj_t *screen_wait = nullptr;
+static lv_obj_t *waitCaption = nullptr;
+
+// `caption` is optional text under the spinner; payouts pass none.
+static void showPayoutWaitScreen(const char *caption = nullptr) {
+  if (screen_wait != nullptr) {
+    lv_label_set_text(waitCaption, caption != nullptr ? caption : "");
+    lv_scr_load(screen_wait);
+    attachBatteryToCurrentScreen();
+    lv_refr_now(NULL);
+    return;
+  }
+  screen_wait = lv_obj_create(NULL);
+  lv_obj_t *spinner = lv_spinner_create(screen_wait, 1000, 70);
+  lv_obj_set_size(spinner, 110, 110);
+  lv_obj_center(spinner);
+  styleWaitSpinner(spinner);
+  waitCaption = lv_label_create(screen_wait);
+  lv_label_set_text(waitCaption, caption != nullptr ? caption : "");
+  lv_obj_set_style_text_font(waitCaption, &lv_font_montserrat_22, 0);
+  lv_obj_align(waitCaption, LV_ALIGN_CENTER, 0, 100);
+  lv_scr_load(screen_wait);
+  attachBatteryToCurrentScreen();
+  lv_refr_now(NULL);
+}
+
+// Delete only after the next screen is active and owns the battery widget.
+static void discardPayoutWaitScreen() {
+  if (screen_wait == nullptr) {
+    return;
+  }
+  attachBatteryToCurrentScreen();
+  if (lv_scr_act() != screen_wait) {
+    lv_obj_del(screen_wait);
+    screen_wait = nullptr;
+    waitCaption = nullptr;
+  }
+}
+
+// Builds the QR payload. The network call runs on a worker task while the
+// main loop keeps the spinner turning; the worker is the only user of the
+// HTTP clients meanwhile.
+struct PayoutJob {
+  volatile bool done;
+  bool blinkFlow;
+  const char *payload;
+};
+
+static void buildPayoutPayload(PayoutJob *job) {
+  job->blinkFlow = false;
+  job->payload = nullptr;
+  if (!wifiStatus()) {
+    job->payload = makeLNURL() ? qrData : nullptr;
+  } else if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
+    // Without an LNURL and callback a QR would trap the customer in a
+    // polling loop that can never succeed.
+    job->payload = createLNURLWithdraw() ? lnURLgen : nullptr;
+    job->blinkFlow = true;
+  } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+    if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
+      job->payload = getLNURL() ? lnURLgen : nullptr;
+    } else {
+      job->payload = makeLNURL() ? qrData : nullptr;
+    }
+  }
+}
+
+static void payoutWorkerTask(void *arg) {
+  PayoutJob *job = static_cast<PayoutJob *>(arg);
+  buildPayoutPayload(job);
+  // Bytes of this 12 KB stack that were never touched. A TLS handshake here
+  // overflowed 8 KB on the loop task, so keep an eye on the margin.
+  Serial.printf("payout task: %u stack bytes never used\n",
+                (unsigned)uxTaskGetStackHighWaterMark(NULL));
+  job->done = true;
+  vTaskDelete(NULL);
+}
+
+static void runPayoutRequest(PayoutJob *job) {
+  job->done = false;
+  if (xTaskCreate(payoutWorkerTask, "payout", 12288, job, 1, NULL) != pdPASS) {
+    Serial.println("payout worker not started; running inline");
+    buildPayoutPayload(job);
+    job->done = true;
+    return;
+  }
+  while (!job->done) {
+    lv_task_handler();
+    delay(5);
+  }
+}
+
+// Paying the customer's invoice takes seconds too. Same approach: worker
+// task for the request, spinner turning meanwhile.
+struct BlinkPayJob {
+  volatile bool done;
+  bool ok;
+};
+
+static void blinkPayWorkerTask(void *arg) {
+  BlinkPayJob *job = static_cast<BlinkPayJob *>(arg);
+  job->ok = getBlinkLnURL(sessionState.boltInvoice);
+  Serial.printf("blinkpay task: %u stack bytes never used\n",
+                (unsigned)uxTaskGetStackHighWaterMark(NULL));
+  job->done = true;
+  vTaskDelete(NULL);
+}
+
+static bool runBlinkPayment() {
+  BlinkPayJob job = {false, false};
+  if (xTaskCreate(blinkPayWorkerTask, "blinkpay", 12288, &job, 1, NULL) !=
+      pdPASS) {
+    Serial.println("pay worker not started; running inline");
+    return getBlinkLnURL(sessionState.boltInvoice);
+  }
+  while (!job.done) {
+    lv_task_handler();
+    delay(5);
+  }
+  return job.ok;
+}
+
+// The acceptor is already inhibited on every path that gets here.
+static void enterPaymentError() {
+  createPaymentErrorScreen();
+  lv_task_handler();
+  currentUiState = UI_PAYMENT_ERROR;
+  stateEnterTime = millis();
 }
 
 /**
@@ -2713,8 +4332,116 @@ void enableAcceptor() {
  * the global variable `isInsertingMoney` has been set to `true`.
  * @note This function prints the free heap size to the serial monitor.
  */
+static void insertFinishCb(lv_event_t *e) {
+  if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+    insertFinishTapped = true;
+  }
+}
+
+// Smallest configured note. The on-screen max is rounded down to it so the
+// number is a total the customer can actually reach.
+static int smallestConfiguredNote() {
+  int smallest = 0;
+  for (int amount : billAmountIntOne) {
+    if (amount > 0 && (smallest == 0 || amount < smallest)) {
+      smallest = amount;
+    }
+  }
+  return smallest;
+}
+
+// Transaction ceiling in whole currency units. The configured max wins when
+// the wallet can pay it. Otherwise the ceiling is what the wallet can pay
+// after the fee. Rounded down to the smallest note so the customer sees a
+// total they can actually make. The largest-note safety rule is not printed.
+static long insertSessionCap() {
+  double walletFiat = 0.0;
+  const bool haveWallet = displayedFiatBalance(&walletFiat);
+  const double net = (100.0 - (double)chargeSelected) / 100.0;
+  double cap = (haveWallet && net > 0.0) ? walletFiat / net : 0.0;
+  const bool fromWallet = haveWallet && cap > 0.0;
+  if (maxamountSelected > 0.0f && (!fromWallet || maxamountSelected < cap)) {
+    cap = maxamountSelected;
+  }
+  long shown = (long)floor(cap);
+  const int step = smallestConfiguredNote();
+  if (step > 0 && shown > 0) {
+    shown = (shown / step) * step;
+  }
+  return shown;
+}
+
+static void refreshInsertMaxLabel();
+
+static void refreshInsertSummary(int lastAmount) {
+  char buf[96];
+  if (labelLastInserted) {
+    if (lastAmount > 0) {
+      snprintf(buf, sizeof(buf), "Last bill: %d %s", lastAmount,
+               currencySelected);
+    } else {
+      snprintf(buf, sizeof(buf), "Insert notes");
+    }
+    lv_label_set_text(labelLastInserted, buf);
+  }
+  if (labelTotalAmount) {
+    snprintf(buf, sizeof(buf), "%ld %s", (long)total, currencySelected);
+    lv_label_set_text(labelTotalAmount, buf);
+  }
+  if (labelTotalSats) {
+    const Quote quote =
+        quoteSats(llround(total * 100.0), fiatValue, chargeSelected);
+    if (total > 0 && quote.ok) {
+      snprintf(buf, sizeof(buf), "%lld sats", (long long)quote.sats);
+      lv_label_set_text(labelTotalSats, buf);
+    } else {
+      lv_label_set_text(labelTotalSats, "");
+    }
+  }
+  refreshInsertMaxLabel();
+}
+
+// Room still payable, in whole currency units, rounded down to the smallest note.
+static long insertRoomLeft(long *capOut) {
+  const long cap = insertSessionCap();
+  if (capOut != nullptr) {
+    *capOut = cap;
+  }
+  long left = cap - (long)llround((double)total);
+  if (left < 0) {
+    left = 0;
+  }
+  const int step = smallestConfiguredNote();
+  if (step > 0 && left > 0) {
+    left = (left / step) * step;
+  }
+  return left;
+}
+
+// Customer line: how much of the offset balance is still left, in steps of
+// the smallest note. Larger notes are inhibited on their own channels, so
+// this reaches "max reached" only when the smallest note no longer fits.
+static void refreshInsertMaxLabel() {
+  if (labelMaxAmount == nullptr || mixedCurrenciesConfigured()) {
+    return;
+  }
+  long cap = 0;
+  const long left = insertRoomLeft(&cap);
+  const int step = smallestConfiguredNote();
+  char buf[96];
+  if (cap <= 0) {
+    snprintf(buf, sizeof(buf), "Max: —");
+  } else if (left <= 0 || (step > 0 && left < (long)step)) {
+    snprintf(buf, sizeof(buf), "Max reached — press FINISH");
+  } else {
+    snprintf(buf, sizeof(buf), "Max: %ld %s left", left, currencySelected);
+  }
+  setLabelTextIfChanged(labelMaxAmount, buf);
+}
+
 void createInsertMoneyScreen() {
   isInsertingMoney = true;
+  insertFinishTapped = false;
 
   Serial.println("Inside createInsertMoneyScreen()");
   Serial.print("Free heap (createInsertMoneyScreen): ");
@@ -2731,9 +4458,10 @@ void createInsertMoneyScreen() {
   // Create label for displaying the last inserted amount
   labelLastInserted = lv_label_create(screen_insert_money);
   if (labelLastInserted) {
-    lv_label_set_text(labelLastInserted, ""); // Initialize with empty text
-    lv_obj_align(labelLastInserted, LV_ALIGN_TOP_LEFT, 30, 50);
-    lv_obj_set_style_text_font(labelLastInserted, &lv_font_montserrat_24, 0);
+    lv_label_set_text(labelLastInserted, "");
+    lv_obj_align(labelLastInserted, LV_ALIGN_TOP_MID, 0, 36);
+    lv_obj_set_style_text_font(labelLastInserted, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(labelLastInserted, lv_color_hex(0xC8C8C8), 0);
   } else {
     Serial.println("Failed to create labelLastInserted!");
   }
@@ -2742,7 +4470,7 @@ void createInsertMoneyScreen() {
   labelTotalAmount = lv_label_create(screen_insert_money);
   if (labelTotalAmount) {
     lv_label_set_text(labelTotalAmount, "");
-    lv_obj_align(labelTotalAmount, LV_ALIGN_TOP_LEFT, 30, 100);
+    lv_obj_align(labelTotalAmount, LV_ALIGN_CENTER, 0, -40);
     lv_obj_set_style_text_font(labelTotalAmount, &lv_font_montserrat_48, 0);
   } else {
     Serial.println("Failed to create labelTotalAmount!");
@@ -2768,35 +4496,38 @@ void createInsertMoneyScreen() {
     lv_obj_set_style_text_font(labelTotalCurrency3, &lv_font_montserrat_24, 0);
   }
 
-  // Mixed-currency: total in sats
+  // Sats the current total will pay.
   labelTotalSats = lv_label_create(screen_insert_money);
   if (labelTotalSats) {
     lv_label_set_text(labelTotalSats, "");
-    lv_obj_align(labelTotalSats, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_text_font(labelTotalSats, &lv_font_montserrat_48, 0);
-  }
-
-  // Create prompt label
-  lv_obj_t *labelPrompt = lv_label_create(screen_insert_money);
-  if (labelPrompt) {
-    lv_label_set_text(labelPrompt, "TAP SCREEN WHEN FINISHED");
-    lv_obj_align(labelPrompt, LV_ALIGN_BOTTOM_MID, 0, -50);
-    lv_obj_set_style_text_font(labelPrompt, &lv_font_montserrat_16, 0);
-  } else {
-    Serial.println("Failed to create labelPrompt!");
+    lv_obj_align(labelTotalSats, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_set_style_text_font(labelTotalSats, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(labelTotalSats, lv_color_hex(0x90EE90), 0);
   }
 
   // Create label for displaying the maximum amount
   labelMaxAmount = lv_label_create(screen_insert_money);
   if (labelMaxAmount) {
-    lv_label_set_text(labelMaxAmount, ""); // Initialize with empty text
-    lv_obj_align(labelMaxAmount, LV_ALIGN_TOP_MID, 0, 330);
-    lv_obj_set_style_text_font(labelMaxAmount, &lv_font_montserrat_16, 0);
+    lv_label_set_text(labelMaxAmount, "");
+    lv_obj_align(labelMaxAmount, LV_ALIGN_CENTER, 0, 70);
+    lv_obj_set_style_text_font(labelMaxAmount, &lv_font_montserrat_20, 0);
   } else {
     Serial.println("Failed to create labelMaxAmount!");
   }
 
-  // Load the new screen
+  insertFinishBtn = lv_btn_create(screen_insert_money);
+  lv_obj_set_size(insertFinishBtn, 320, 72);
+  lv_obj_align(insertFinishBtn, LV_ALIGN_BOTTOM_MID, 0, -28);
+  lv_obj_add_event_cb(insertFinishBtn, insertFinishCb, LV_EVENT_CLICKED,
+                      nullptr);
+  lv_obj_t *finishLabel = lv_label_create(insertFinishBtn);
+  lv_label_set_text(finishLabel, "FINISH");
+  lv_obj_set_style_text_font(finishLabel, &lv_font_montserrat_22, 0);
+  lv_obj_center(finishLabel);
+  styleActionButton(insertFinishBtn);
+  refreshInsertSummary(0);
+
+  // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_insert_money);
   attachBatteryToCurrentScreen();
 }
@@ -2929,9 +4660,20 @@ void display_flush(lv_disp_drv_t *disp, const lv_area_t *area,
 
 /*** Touchpad callback to read the touchpad ***/
 void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
+  // The setup hotspot used to drop every tap, so RESTART on that screen could
+  // never fire. Sample the controller slowly instead: a press still becomes a
+  // click, and the portal is not doing an I2C read on every GUI tick.
+  static unsigned long lastPortalTouchMs = 0;
+  static lv_indev_state_t heldState = LV_INDEV_STATE_REL;
+  static lv_point_t heldPoint = {0, 0};
   if (suspendTouchPolling) {
-    data->state = LV_INDEV_STATE_REL;
-    return;
+    const unsigned long now = millis();
+    if (now - lastPortalTouchMs < 80) {
+      data->state = heldState;
+      data->point = heldPoint;
+      return;
+    }
+    lastPortalTouchMs = now;
   }
 
   uint16_t touchX, touchY;
@@ -2947,6 +4689,11 @@ void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
     data->point.y = touchY;
 
     // Serial.printf("Touch (x,y): (%03d,%03d)\n",touchX,touchY );
+  }
+
+  if (suspendTouchPolling) {
+    heldState = data->state;
+    heldPoint = data->point;
   }
 }
 
@@ -2967,7 +4714,7 @@ void touchpad_read(lv_indev_drv_t *indev_driver, lv_indev_data_t *data) {
  * @return true if invoice was successfully retrieved, false otherwise
  */
 bool checkBoltInvoice() {
-  return FundingService::pollBoltInvoice(http, sessionState);
+  return FundingService::pollBoltInvoice(sessionState);
 }
 
 /**
@@ -2979,9 +4726,20 @@ bool checkBoltInvoice() {
  * payload.
  */
 bool getBlinkLnURL(const char *invoice) {
-  // Snapshot the wallet id under the background task's mutex — the task
-  // rewrites deviceState.blinkwalletid during periodic balance fetches and
-  // holds the mutex across its HTTP calls, so allow a generous wait.
+  int64_t invoicedSats = 0;
+  if (!bolt11AmountSats(invoice, &invoicedSats) || invoicedSats != (int64_t)result) {
+    Serial.print("Payout aborted: invoice sats ");
+    Serial.print((long)invoicedSats);
+    Serial.print(" != quoted ");
+    Serial.println(result);
+    char msg[80];
+    snprintf(msg, sizeof(msg), "Invoice %ld sats, quote %ld",
+             (long)invoicedSats, (long)result);
+    FundingService::setPayoutFailure(msg);
+    return false;
+  }
+  // Snapshot the wallet id under the background task's mutex. The task
+  // publishes a new id when a balance fetch finishes.
   char walletId[128];
   const PriceBalanceWalletIdResult idResult =
       priceBalanceCopyWalletId(walletId, sizeof(walletId), 30000);
@@ -2992,9 +4750,16 @@ bool getBlinkLnURL(const char *invoice) {
     // Writer may be mid-update — paying with a possibly torn id risks a
     // payout from the wrong wallet. Fail; the UI shows the error screen.
     Serial.println("Payout aborted: wallet id snapshot timed out");
+    FundingService::setPayoutFailure("Blink wallet id was busy");
     return false;
   }
-  return FundingService::payInvoice(http, deviceState, invoice, walletId);
+  if (FundingService::payInvoice(deviceState, invoice, walletId)) {
+    return true;
+  }
+  if (FundingService::payoutFailureReason()[0] == '\0') {
+    FundingService::setPayoutFailure("Blink did not pay the invoice");
+  }
+  return false;
 }
 
 /**
@@ -3016,20 +4781,13 @@ bool getBlinkLnURL(const char *invoice) {
  */
 bool createLNURLWithdraw() {
   const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 | sessionState.totalCurrency3) != 0;
-  if (mixed) {
-    result = computeMixedTotalSats();
-    tempCharge = 0.0f;
-    Serial.print("Mixed-currency result (sats): ");
-    Serial.println(result);
-  } else {
-    float temp = ((total / 100.0) / fiatValue * 1e8);
-    result = (long)round(temp * (100.0f - chargeSelected) / 100.0f);
-    tempCharge = temp - (float)result;
+  if (!assignQuotedSats(mixed)) {
+    return false;
   }
   Serial.print("Result (after fee, satoshis): ");
   Serial.println(result);
 
-  return FundingService::requestLnurlWithdraw(http, sessionState, result);
+  return FundingService::requestLnurlWithdraw(sessionState, result);
 }
 
 /** Max insert limit for mixed mode, in EUR equivalent. */
@@ -3043,7 +4801,7 @@ static float getEurRateForLimit() {
     return sessionState.fiatValue2;
   if ((strcmp(currencyThree, "EUR") == 0 || strcmp(currencyThree, "eur") == 0) && sessionState.fiatValue3 > 0)
     return sessionState.fiatValue3;
-  return sessionState.fiatValue1 > 0 ? sessionState.fiatValue1 : 0.0f;
+  return 0.0f;
 }
 
 /** Max satoshis for mixed mode (100 EUR equivalent). */
@@ -3068,23 +4826,29 @@ static float computeMixedTotalValueEUR() {
 }
 
 /**
- * @brief Compute total satoshis from mixed-currency totals (fee and rate per currency).
+ * @brief Quote the payout for the current session into `result`.
+ * Mixed sessions quote every funded currency with its own rate and fee.
+ * Returns false (and zeroes `result`) when the quote is refused.
  */
-static long computeMixedTotalSats() {
-  long totalSats = 0;
-  if (sessionState.totalCurrency1 > 0 && sessionState.fiatValue1 > 0) {
-    float afterFee = (sessionState.totalCurrency1 / 100.0f) * (100.0f - charge1) / 100.0f;
-    totalSats += (long)round(afterFee / sessionState.fiatValue1 * 1e8);
+static bool assignQuotedSats(bool mixed) {
+  Quote quote;
+  if (mixed) {
+    const MixedLeg legs[] = {
+        {sessionState.totalCurrency1, sessionState.fiatValue1, charge1},
+        {sessionState.totalCurrency2, sessionState.fiatValue2, charge2},
+        {sessionState.totalCurrency3, sessionState.fiatValue3, charge3},
+    };
+    quote = quoteMixedSats(legs, 3);
+  } else {
+    quote = quoteSats(llround(total), fiatValue, chargeSelected);
   }
-  if (sessionState.totalCurrency2 > 0 && sessionState.fiatValue2 > 0) {
-    float afterFee = (sessionState.totalCurrency2 / 100.0f) * (100.0f - charge2) / 100.0f;
-    totalSats += (long)round(afterFee / sessionState.fiatValue2 * 1e8);
+  if (!quote.ok || quote.sats > LONG_MAX) {
+    result = 0;
+    Serial.println("Quote refused: missing price, bad fee, or non-positive sats");
+    return false;
   }
-  if (sessionState.totalCurrency3 > 0 && sessionState.fiatValue3 > 0) {
-    float afterFee = (sessionState.totalCurrency3 / 100.0f) * (100.0f - charge3) / 100.0f;
-    totalSats += (long)round(afterFee / sessionState.fiatValue3 * 1e8);
-  }
-  return totalSats;
+  result = (long)quote.sats;
+  return true;
 }
 
 /**
@@ -3098,39 +4862,17 @@ static long computeMixedTotalSats() {
  * @note This function assumes that the necessary variables (total, fiatValue,
  * chargeSelected, lnbitsURL, adminkey) have been properly initialized.
  */
-void getLNURL() {
+bool getLNURL() {
   const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 | sessionState.totalCurrency3) != 0;
-  float temp = 0.0f;
-  if (mixed) {
-    result = computeMixedTotalSats();
-    temp = (float)result;
-    tempCharge = 0.0f;
-    Serial.print("Mixed-currency result (sats): ");
-    Serial.println(result);
-  } else {
-    Serial.print("Total (cents): ");
-    Serial.println(total);
-    Serial.print("EUR Value (price of 1 Bitcoin in euros): ");
-    Serial.println(fiatValue);
-    Serial.print("Charge: ");
-    Serial.println(chargeSelected);
-    temp = ((total / 100.0) / fiatValue * 1e8);
-    result = (long)round(temp * (100.0f - chargeSelected) / 100.0f);
-    tempCharge = temp - (float)result;
+  if (!assignQuotedSats(mixed)) {
+    return false;
   }
-
-  Serial.print("Temp (satoshis): ");
-  Serial.println(temp);
-  Serial.print("Charge %: ");
-  Serial.println(chargeSelected);
   Serial.print("Result (after fee, satoshis): ");
   Serial.println(result);
 
-  String resultStr = String(result);
-
   if (lnbitsURL[0] == '\0') {
     Serial.println("Error: lnbitsURL is empty in getLNURL");
-    return;
+    return false;
   }
 
   http.end(); // Ensure previous connection is closed
@@ -3138,11 +4880,13 @@ void getLNURL() {
   char requestUrl[512];
   snprintf(requestUrl, sizeof(requestUrl), "%s/withdraw/api/v1/links",
            lnbitsURL);
-  http.begin(requestUrl); // Specify request destination
-  http.addHeader("Content-Type",
-                 "application/json");    // Specify content-type header
-  http.addHeader("X-Api-Key", adminkey); // Specify API key header
+  if (!beginNetwork(http, secureClient, requestUrl)) {
+    return false;
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Api-Key", adminkey);
 
+  const String resultStr = String(result);
   String httpRequestData = "{\"title\": \"Fiat Hell ";
   httpRequestData += "\", \"min_withdrawable\": ";
   httpRequestData += resultStr;
@@ -3150,38 +4894,31 @@ void getLNURL() {
   httpRequestData += resultStr;
   httpRequestData += ", \"uses\": 1, \"wait_time\": 1, \"is_unique\": 1, "
                      "\"webhook_url\": \"\"}";
-  int httpCode = http.POST(httpRequestData);
+  const int httpCode = http.POST(httpRequestData);
+  const String responsePayload = http.getString();
+  http.end();
 
-  // int httpCode = http.POST("{\"title\": \"Fiat Hell\", \"min_withdrawable\":
-  // \" + result + \", \"max_withdrawable\": \" + result + \" , \"uses\": \"1\",
-  // \"wait_time\": \"1\", \"is_unique\": \"true\", \"webhook_url\": \"\"}"); //
-  // Send the request
-  String responsePayload = http.getString(); // Get the response payload
+  if (httpCode != 200 && httpCode != 201) {
+    Serial.print("getLNURL HTTP ");
+    Serial.println(httpCode);
+    lnURLgen[0] = '\0';
+    return false;
+  }
 
-  // Serial.println(httpCode);   // Print HTTP return code
-  Serial.print("Temp: ");
-  Serial.println(temp); // Print request response payload
-  Serial.print("Result: ");
-  Serial.println(result);
-  Serial.print("ResultSTR: ");
-  Serial.println(resultStr);
-  Serial.print("Payload: ");
-  Serial.println(responsePayload); // Print request response payload
-
-  // Parse JSON
   DynamicJsonDocument doc(1024);
-  deserializeJson(doc, responsePayload);
-
-  // Get balance from parsed JSON
+  if (deserializeJson(doc, responsePayload)) {
+    Serial.println("getLNURL JSON parse error");
+    lnURLgen[0] = '\0';
+    return false;
+  }
   strlcpy(lnURLgen, doc["lnurl"] | "", sizeof(lnURLgen));
-
-  Serial.print("LNURL: ");
-  Serial.println(lnURLgen);
+  if (lnURLgen[0] == '\0') {
+    Serial.println("getLNURL response has no lnurl");
+    return false;
+  }
   strlcpy(sessionState.modifiedLnURLgen, lnURLgen,
           sizeof(sessionState.modifiedLnURLgen));
-
-  http.end(); // Close connection
-  // lv_task_handler();
+  return true;
 }
 
 /*LNbits offline*/
@@ -3203,46 +4940,64 @@ void getLNURL() {
  *       - total: The total amount for the transaction.
  *       - qrData: The variable to store the bech32-encoded LNURL.
  */
-void makeLNURL() {
+bool makeLNURL() {
+  const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 |
+                      sessionState.totalCurrency3) != 0;
+  const OfflinePayout payout = offlineLnurlPayout(
+      paymentService.isGaloy(deviceState.fundingSourceBuffer) ? FundingKind::Galoy
+                                                             : FundingKind::Lnbits,
+      mixed, llround(total), chargeSelected);
+  if (!payout.allowed) {
+    Serial.println("Offline LNURL refused");
+    qrData[0] = '\0';
+    return false;
+  }
+
   int randomPin = random(1000, 9999);
   byte nonce[8];
   for (int i = 0; i < 8; i++) {
     nonce[i] = random(256);
   }
 
-  // Mixed: encode total sats; single currency: encode amount after fee (cents)
-  uint64_t amountToEncode;
-  const bool mixed = (sessionState.totalCurrency1 | sessionState.totalCurrency2 | sessionState.totalCurrency3) != 0;
-  if (mixed) {
-    result = computeMixedTotalSats();
-    amountToEncode = (uint64_t)result;
-  } else {
-    float amountAfterFeeCents = total * (100.0f - chargeSelected) / 100.0f;
-    amountToEncode = (uint64_t)round(amountAfterFeeCents);
-  }
-
-  byte payload[51]; // 51 bytes is max one can get with xor-encryption
-
+  byte payload[51];
   size_t payload_len = xor_encrypt(
       payload, sizeof(payload), (uint8_t *)secretATM, strlen(secretATM), nonce,
-      sizeof(nonce), randomPin, amountToEncode);
+      sizeof(nonce), randomPin, payout.centsAfterFee);
+  if (payload_len == 0) {
+    Serial.println("Offline LNURL encrypt failed");
+    return false;
+  }
   String preparedURL = String(baseURLATM) + "?atm=1&p=";
   preparedURL +=
       toBase64(payload, payload_len, BASE64_URLSAFE | BASE64_NOPADDING);
-
   Serial.println(preparedURL);
-  char Buf[200];
-  preparedURL.toCharArray(Buf, 200);
-  char *url = Buf;
-  byte *data = (byte *)calloc(strlen(url) * 2, sizeof(byte));
+
+  // A truncated URL or LNURL still encodes as a QR the wallet cannot redeem.
+  const size_t urlLen = preparedURL.length();
+  // 8-bit to 5-bit regrouping needs ceil(urlLen * 8 / 5) values; bech32 adds
+  // the "lnurl" prefix, the '1' separator, a 6-char checksum and the NUL.
+  const size_t groups = (urlLen * 8 + 4) / 5;
+  byte *data = (byte *)calloc(groups, sizeof(byte));
+  char *charLnurl = (char *)calloc(groups + 5 + 1 + 6 + 1, sizeof(char));
   size_t len = 0;
-  int res = convert_bits(data, &len, 5, (byte *)url, strlen(url), 8, 1);
-  char *charLnurl = (char *)calloc(strlen(url) * 2, sizeof(byte));
-  bech32_encode(charLnurl, "lnurl", data, len);
-  to_upper(charLnurl);
-  strlcpy(qrData, charLnurl, sizeof(qrData));
-  Serial.print("Buf: ");
-  Serial.println(Buf);
+  const bool encoded =
+      data != nullptr && charLnurl != nullptr &&
+      convert_bits(data, &len, 5, (const byte *)preparedURL.c_str(), urlLen, 8,
+                   1) &&
+      bech32_encode(charLnurl, "lnurl", data, len);
+  bool fits = false;
+  if (encoded) {
+    to_upper(charLnurl);
+    fits = strlcpy(qrData, charLnurl, sizeof(qrData)) < sizeof(qrData);
+  }
+  free(data);
+  free(charLnurl);
+  if (!fits) {
+    Serial.println("Offline LNURL does not fit the QR buffer");
+    qrData[0] = '\0';
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -3344,7 +5099,8 @@ void showQRCodeLVGL(const char *data) {
     Serial.println("Failed to update QR code.");
     return;
   }
-  lv_obj_center(qr);
+  // Sit a little above center to leave room for the amounts below.
+  lv_obj_align(qr, LV_ALIGN_CENTER, 0, -30);
 
   // Add a border with bg_color
   lv_obj_set_style_border_color(qr, bg_color, 0);
@@ -3378,7 +5134,45 @@ void showQRCodeLVGL(const char *data) {
   lv_obj_set_style_text_color(label, lv_color_hex(0xFF9900), 0);
   lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 10);
 
-  // Load the screen
+  // What the customer gets and what they put in, under the code.
+  char amountLine[96];
+  if (result > 0) {
+    snprintf(amountLine, sizeof(amountLine), "%ld sats", (long)result);
+    lv_obj_t *satsLabel = lv_label_create(screen_qr);
+    lv_label_set_text(satsLabel, amountLine);
+    lv_obj_set_style_text_font(satsLabel, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(satsLabel, lv_color_hex(0x90EE90), 0);
+    lv_obj_align(satsLabel, LV_ALIGN_CENTER, 0, 130);
+  }
+  const bool mixedSale = (sessionState.totalCurrency1 | sessionState.totalCurrency2 |
+                          sessionState.totalCurrency3) != 0;
+  if (mixedSale) {
+    const long cents[3] = {(long)sessionState.totalCurrency1,
+                           (long)sessionState.totalCurrency2,
+                           (long)sessionState.totalCurrency3};
+    const char *names[3] = {currencyOne, currencyTwo, currencyThree};
+    amountLine[0] = '\0';
+    for (int i = 0; i < 3; i++) {
+      if (cents[i] <= 0) {
+        continue;
+      }
+      char part[40];
+      snprintf(part, sizeof(part), "%s%ld %s", amountLine[0] ? " + " : "",
+               cents[i] / 100, names[i]);
+      strlcat(amountLine, part, sizeof(amountLine));
+    }
+    strlcat(amountLine, " inserted", sizeof(amountLine));
+  } else {
+    snprintf(amountLine, sizeof(amountLine), "%ld %s inserted",
+             (long)llround((double)total / 100.0), currencySelected);
+  }
+  lv_obj_t *fiatLabel = lv_label_create(screen_qr);
+  lv_label_set_text(fiatLabel, amountLine);
+  lv_obj_set_style_text_font(fiatLabel, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_color(fiatLabel, lv_color_hex(0xC8C8C8), 0);
+  lv_obj_align(fiatLabel, LV_ALIGN_CENTER, 0, 172);
+
+  // QR and labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_qr);
   attachBatteryToCurrentScreen();
 
@@ -3408,6 +5202,32 @@ void printHeapStatus() {
   }
 }*/
 
+/**
+ * @brief Starts the configuration portal.
+ *
+ * This function is responsible for starting the configuration portal, which
+ * allows the user to configure the device settings. It assumes that the
+ * 'config' and 'portal' objects have been previously defined and configured
+ * appropriately.
+ *
+ * @note This function enters an infinite loop until the configuration process
+ * is completed.
+ */
+void startConfigPortal() {
+  Serial.println("Entered Config Portal");
+
+  // Assume config and portal are previously defined and configured
+  // appropriately
+  acConfig.immediateStart = true;
+  portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
+               savesecondAux, thirdAux, savethirdAux, guiAux, saveguiAux,
+               otaAux, otaDoAux});
+  portal.config(acConfig);
+  portal.begin();
+  Serial.println("Portal started. IP2: " + WiFi.localIP().toString());
+  // No infinite loop; portal.handleClient() is called in the main loop
+  // timer = 2000;
+}
 
 /* Back button */
 
@@ -3454,24 +5274,107 @@ volatile bool isLoopReading = false;
  * and user input. It replaces blocking while/delay loops with non-blocking
  * state checks.
  */
-// Kept for forward compatibility but no longer called from runtime.
-// Portal mode is now triggered exclusively at boot (logo-tap or auto-detect).
+// Armed by a 3-second BOOT press on the main screen. Closed again from loop().
 static unsigned long configModeActiveUntil = 0;
 
 void triggerRuntimeConfigMode() {
   if (configModeActiveUntil) return; // already active
   portalRequestedByUser = true;
-  WifiPortal::startAp("LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX),
-                      String(deviceState.password));
+  // Say something first: switching the radio to hotspot mode takes a second
+  // or two, and a press with no reaction looks ignored.
+  showPayoutWaitScreen("Starting setup hotspot...");
+  // No notes while the operator is in setup, and the price refresh must not
+  // reopen the acceptor behind this screen.
+  billAcceptorWrite(185);
+  acceptorArmed = false;
+  mainScreenShown = false;
+  // Hotspot alone, same as a boot-time setup session. AP+STA would publish
+  // two addresses for fiathell.local and the page would stall again.
+  settleSetupHotspot();
   configModeActiveUntil = millis() + 5UL * 60UL * 1000UL;
-  Serial.println("Config mode active: " + WifiPortal::apSsid() +
-                 " -> 192.168.4.1/setup  (5 min)");
+  Serial.println("Config mode active: " + acConfig.apid + " -> 192.168.4.1  (5 min)");
+  createPortalScreen();
+  discardPayoutWaitScreen();
+}
+
+// Setup session over: put the customer screen back, reopen the acceptor
+// through the normal price check, and drop the setup screen.
+static void closeRuntimeConfigScreen() {
+  if (screen_portal == nullptr) {
+    return;
+  }
+  if (lv_scr_act() == screen_portal) {
+    if (screen_main == nullptr) {
+      return;
+    }
+    mainScreenShown = true;
+    updateMainScreenLabel();
+    lv_scr_load(screen_main);
+    attachBatteryToCurrentScreen();
+  }
+  if (lv_scr_act() != screen_portal) {
+    lv_obj_del(screen_portal);
+    screen_portal = nullptr;
+  }
+}
+
+// Drop the finished sale and show the screen the next customer already
+// expects. Wi-Fi, prices, and the startup check stay up; a reboot here made
+// every payout wait through the whole boot again.
+static void returnToMainScreen() {
+  sessionState.resetTransaction();
+  sessionState.resetPaymentFlow();
+  qrDebounceDone = false;
+  mixedLimitExceededAutoProceed = false;
+  FundingService::clearPayoutFailure();
+  // The payout inhibited the acceptor while this flag still said it was open.
+  // Mark idle before the screen update so that update reopens the acceptor;
+  // any earlier state (QR, paying, thank-you, error) keeps it shut.
+  acceptorArmed = false;
+  billAcceptorWrite(185);
+  currentUiState = UI_IDLE;
+  if (screen_main == nullptr) {
+    createMainScreen();
+  } else {
+    // The balance dropped by the paid amount; show the cached value now and
+    // let the background task refresh it without blocking the next customer.
+    triggerPriceBalanceFetch(PBR_PERIODIC);
+    mainScreenShown = true;
+    updateMainScreenLabel();
+    lv_scr_load(screen_main);
+    attachBatteryToCurrentScreen();
+  }
+  uiController.deleteThankYouScreen();
+  uiController.deleteQRCodeScreen();
+  discardInsertMoneyScreen();
+  if (screen_payment_error != nullptr && lv_scr_act() != screen_payment_error) {
+    lv_obj_del(screen_payment_error);
+    screen_payment_error = nullptr;
+  }
+  stateEnterTime = millis();
+  Serial.println("Transaction cleared => main screen");
 }
 
 void handleUiStateMachine() {
   unsigned long currentTime = millis();
   BTNA.read();
 
+  // Long-press BOOT on the main screen opens the setup hotspot for a few
+  // minutes, so the operator does not have to reboot to change settings.
+  if (currentUiState == UI_IDLE && appStartupCompleted) {
+    static unsigned long bootPressStart = 0;
+    if (BTNA.isPressed()) {
+      if (bootPressStart == 0) {
+        bootPressStart = currentTime;
+      } else if (currentTime - bootPressStart >= 3000) {
+        bootPressStart = 0;
+        Serial.println("BOOT long-press => config hotspot");
+        triggerRuntimeConfigMode();
+      }
+    } else {
+      bootPressStart = 0;
+    }
+  }
 
   switch (currentUiState) {
   case UI_LOGO_WAIT: {
@@ -3498,6 +5401,7 @@ void handleUiStateMachine() {
 
     if (tapDetected) {
       triggerAp = true;
+      showLogoSettingsProgress();
       currentUiState = UI_IDLE;
     } else if (currentTime - stateEnterTime >= 2000) {
       currentUiState = UI_IDLE;
@@ -3543,25 +5447,48 @@ void handleUiStateMachine() {
       if (checkBoltInvoice()) {
         // Invoice received! Pay it and show the matching result screen
         Serial.println("Invoice received => processing payment");
-        bool paymentOk = getBlinkLnURL(sessionState.boltInvoice);
+        showPayoutWaitScreen();
+        bool paymentOk = runBlinkPayment();
         uiController.deleteQRCodeScreen();
         if (paymentOk) {
           createThankYouScreen();
           currentUiState = UI_THANK_YOU;
+          stateEnterTime = millis();
+          isBlinkFlow = false;
         } else {
           createPaymentErrorScreen();
           currentUiState = UI_PAYMENT_ERROR;
+          stateEnterTime = millis();
+          isBlinkFlow = false;
         }
         lv_task_handler();
-        stateEnterTime = millis();
+        discardPayoutWaitScreen();
+        // currentTime was taken before the payment request. The result screen
+        // stamps stateEnterTime with a later millis(), and the unsigned
+        // subtraction below would then look like the 5-minute timeout and
+        // replace a successful payout with PAYMENT FAILED.
+        break;
+      } else if (FundingService::payoutIsFatal()) {
+        Serial.println("Blink invoice unusable => payment error");
+        uiController.deleteQRCodeScreen();
+        enterPaymentError();
         isBlinkFlow = false;
+        break;
       }
       // If no invoice yet, continue polling (will check again in 2 seconds)
     }
-    // Optional: Add timeout (e.g., 5 minutes) to prevent infinite waiting
+    // Still waiting for an invoice. Once a result screen is up, this case
+    // has already returned.
     if (currentTime - stateEnterTime >= 300000) { // 5 minutes timeout
-      Serial.println("Blink invoice timeout => restarting");
-      ESP.restart();
+      char msg[160];
+      const char *note = FundingService::lastPollNote();
+      snprintf(msg, sizeof(msg), "No invoice from wallet (%.90s)",
+               (note && note[0]) ? note : "no reply");
+      FundingService::setPayoutFailure(msg);
+      Serial.println("Blink invoice timeout => payment error");
+      uiController.deleteQRCodeScreen();
+      enterPaymentError();
+      isBlinkFlow = false;
     }
     break;
 
@@ -3570,13 +5497,8 @@ void handleUiStateMachine() {
     uint16_t qrTouchX, qrTouchY;
     if (BTNA.wasPressed() || lcd.getTouch(&qrTouchX, &qrTouchY)) {
       // Reset for the next transaction
-      coins = 0;
-      bills = 0;
-      total = 0;
-      isInsertingMoney = false;
-      currentUiState = UI_IDLE;
-      Serial.println("Tap detected => resetting and restarting");
-      ESP.restart();
+      Serial.println("Tap detected => back to main screen");
+      returnToMainScreen();
     }
     break;
   }
@@ -3586,17 +5508,20 @@ void handleUiStateMachine() {
     uint16_t thxTouchX, thxTouchY;
     bool thxTap = lcd.getTouch(&thxTouchX, &thxTouchY) || BTNA.wasPressed();
     if (thxTap || (currentTime - stateEnterTime >= 5000)) {
-      Serial.println("Thank you => restarting");
-      ESP.restart();
+      Serial.println("Thank you => back to main screen");
+      returnToMainScreen();
     }
     break;
   }
 
   case UI_PAYMENT_ERROR:
-    // Keep the error visible long enough to be read/photographed, then restart
+    // Keep the error visible long enough to be read/photographed, then go
+    // back to the main screen. The reason stays in /payout-error.txt; a
+    // reboot here cost the next customer a full boot.
     if (currentTime - stateEnterTime >= 30000) {
-      Serial.println("Payment error timeout => restarting");
-      ESP.restart();
+      Serial.println("Payment error timeout => main screen");
+      isBlinkFlow = false;
+      returnToMainScreen();
     }
     break;
 
@@ -3616,6 +5541,12 @@ void handleUiStateMachine() {
  * includes a delay of 5 milliseconds at the end of each iteration.
  */
 void loop() {
+  if (pendingPreflight) {
+    pendingPreflight = false;
+    preflightGate();
+    finishStartupAfterPreflight();
+  }
+
   // Deferred restart (after /setup/save or /setup/ota response has been sent)
   if (pendingRestartAt && millis() > pendingRestartAt) {
     pendingRestartAt = 0;
@@ -3625,42 +5556,77 @@ void loop() {
   // Auto-close config mode AP after 5-minute timeout (defensive — only ever
   // triggered if triggerRuntimeConfigMode() was called by some future caller).
   if (configModeActiveUntil && millis() > configModeActiveUntil) {
-    configModeActiveUntil = 0;
-    portalRequestedByUser = false;
-    WifiPortal::stopAp();
+    configModeActiveUntil   = 0;
+    portalRequestedByUser   = false;
+    acConfig.preserveAPMode = false;
+    acConfig.autoReconnect  = true;
+    portal.config(acConfig);
+    stopApDns();
+    if (WiFi.getMode() & WIFI_AP) WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.setAutoReconnect(true);
+    if (wifiStatus()) startFiathellMdns();
     Serial.println("Config mode timed out — AP closed");
+    closeRuntimeConfigScreen();
   }
 
   lv_timer_handler();    // Let the GUI do its work
 
-  WifiPortal::loop();    // captive DNS (AP), STA watchdog
-  server.handleClient(); // non-blocking
+  // Own captive-portal DNS: claim port 53 before AutoConnect's handleClient so
+  // its callback keeps it from starting a second resolver. Keep it running
+  // while the AP is up (so the sign-in prompt appears on phones), stop it once
+  // the AP is gone.
+  if (WiFi.getMode() & WIFI_AP) {
+    ensureApDns();
+    if (apDnsRunning) processApDns();
+  } else {
+    stopApDns();
+  }
+
+  // Not truly non-blocking: a response write waits up to 10 s per chunk when
+  // the client stops ACKing (WiFiClient::write retries), freezing loop().
+  const unsigned long handleStart = millis();
+  portal.handleClient();
+  const unsigned long handleMs = millis() - handleStart;
+  if (handleMs > 500) {
+    Serial.printf("[HTTP] loop blocked %lu ms in handleClient (last uri %s)\n",
+                  handleMs, server.uri().c_str());
+  }
 
   if (pendingConfigReload) {
     reloadRuntimeConfigFromFlash();
   }
 
-  const bool portalActive = WifiPortal::apActive();
+  const bool portalActive = configPortalUp();
   suspendTouchPolling = portalActive;
+  if (portalActive) {
+    logPortalHeartbeat();
+  }
 
   if (pendingPortalCompletion && wifiStatus()) {
     if (portalRequestedByUser || portalRequiredForMissingConfig) {
       if (!portalNetworkStateLogged) {
+        if (!(WiFi.getMode() & WIFI_AP)) {
+          Serial.println("Re-enabling config AP alongside STA");
+          WiFi.mode(WIFI_AP_STA);
+          WiFi.softAP(acConfig.apid.c_str(), acConfig.psk.c_str());
+          ensureApDns();
+        }
+
         Serial.println("WiFi connected in config portal; staying in settings mode");
+        Serial.println("Portal available on home WiFi IP: " +
+                       WiFi.localIP().toString());
         Serial.println("Portal AP IP: " + WiFi.softAPIP().toString());
         portalNetworkStateLogged = true;
       }
     } else {
-      // Recovery: WiFi sa vrátilo -> zavrieť AP a dokončiť štart.
       Serial.println("WiFi connected from portal flow; completing startup");
-      WifiPortal::stopAp();
-      portalRequiredForWifiRecovery = false;
       completeStartupAfterPortal();
     }
   }
 
   // Keep the portal responsive and avoid unrelated app work while a client is
-  // still configuring the device through the AP.
+  // still configuring WiFi through AutoConnect.
   if (portalActive && !wifiStatus()) {
     delay(5);
     return;
@@ -3671,12 +5637,16 @@ void loop() {
   // Process background fetch results (periodic price/balance update)
   if (consumePriceBalanceDataReady()) {
     updateMainScreenLabel();
+    if (currentUiState == UI_INSERTING_MONEY) {
+      refreshInsertMaxLabel();
+    }
     lv_task_handler();
   }
 
   if (initialCheck) {
-    previousMillis =
-        millis() - interval; // So that it gets executed immediately after setup
+    // Start the refresh cadence from now instead of firing immediately - the
+    // startup check already fetched a fresh price and balance.
+    previousMillis = millis();
     initialCheck = false;
   }
 
@@ -3710,38 +5680,14 @@ void loop() {
 #endif
 
   if (x >= 1 && x <= (int)billAmountIntOne.size()) {
+    if (currentUiState != UI_IDLE && currentUiState != UI_INSERTING_MONEY) {
+      billAcceptorWrite(185);
+    } else {
     int channelIdx = x - 1;  // 0-based
     int amount = billAmountIntOne[channelIdx];
-    const bool mixed = (sessionState.allowedChannelCount == (int)billAmountIntOne.size());
-    bool creditBill = false;
+    const bool mixed = mixedCurrenciesConfigured();
 
-    if (mixed) {
-      // Mixed-currency: accept all, add to per-currency totals
-      creditBill = true;
-      if (channelIdx < (int)originalSizeOne) {
-        sessionState.totalCurrency1 += (long)amount * 100;
-        strlcpy(sessionState.lastBillCurrency, currencyOne, sizeof(sessionState.lastBillCurrency));
-      } else if (channelIdx < (int)(originalSizeOne + originalSizeTwo)) {
-        sessionState.totalCurrency2 += (long)amount * 100;
-        strlcpy(sessionState.lastBillCurrency, currencyTwo, sizeof(sessionState.lastBillCurrency));
-      } else {
-        sessionState.totalCurrency3 += (long)amount * 100;
-        strlcpy(sessionState.lastBillCurrency, currencyThree, sizeof(sessionState.lastBillCurrency));
-      }
-      sessionState.lastBillCents = (long)amount * 100;
-    } else {
-      // Single-currency (user tapped a button): only credit if channel matches
-      if (channelIdx >= sessionState.allowedChannelStart &&
-          channelIdx < sessionState.allowedChannelStart + sessionState.allowedChannelCount) {
-        creditBill = true;
-      }
-    }
-
-    if (creditBill) {
-      if (!mixed) {
-        bills = bills + amount;
-        total = (coins + bills);
-      }
+    if (creditBillTotals(channelIdx)) {
       if (!isInsertingMoney) {
         createInsertMoneyScreen();
         lv_task_handler();
@@ -3753,52 +5699,52 @@ void loop() {
         char buf[128];
         snprintf(buf, sizeof(buf), "Last bill: %d %s", amount, sessionState.lastBillCurrency);
         lv_label_set_text(labelLastInserted, buf);
-        long totalSats = 0;
-        if (labelTotalCurrency1 && sessionState.totalCurrency1 > 0) {
-          long sats1 = 0;
-          if (sessionState.fiatValue1 > 0) {
-            float afterFee = (sessionState.totalCurrency1 / 100.0f) * (100.0f - charge1) / 100.0f;
-            sats1 = (long)round(afterFee / sessionState.fiatValue1 * 1e8);
-            totalSats += sats1;
+        // Same quote functions as the payout, so the screen shows what is paid.
+        const MixedLeg legs[] = {
+            {sessionState.totalCurrency1, sessionState.fiatValue1, charge1},
+            {sessionState.totalCurrency2, sessionState.fiatValue2, charge2},
+            {sessionState.totalCurrency3, sessionState.fiatValue3, charge3},
+        };
+        lv_obj_t *const legLabels[] = {labelTotalCurrency1, labelTotalCurrency2,
+                                       labelTotalCurrency3};
+        const char *const legCurrencies[] = {currencyOne, currencyTwo, currencyThree};
+        for (int leg = 0; leg < 3; leg++) {
+          if (legLabels[leg] == nullptr) {
+            continue;
           }
-          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%ld sats)", currencyOne,
-                  sessionState.totalCurrency1 / 100.0f, currencyOne, sats1);
-          lv_label_set_text(labelTotalCurrency1, buf);
-        } else if (labelTotalCurrency1) {
-          lv_label_set_text(labelTotalCurrency1, "");
-        }
-        if (labelTotalCurrency2 && sessionState.totalCurrency2 > 0) {
-          long sats2 = 0;
-          if (sessionState.fiatValue2 > 0) {
-            float afterFee = (sessionState.totalCurrency2 / 100.0f) * (100.0f - charge2) / 100.0f;
-            sats2 = (long)round(afterFee / sessionState.fiatValue2 * 1e8);
-            totalSats += sats2;
+          if (legs[leg].cents <= 0) {
+            lv_label_set_text(legLabels[leg], "");
+            continue;
           }
-          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%ld sats)", currencyTwo,
-                  sessionState.totalCurrency2 / 100.0f, currencyTwo, sats2);
-          lv_label_set_text(labelTotalCurrency2, buf);
-        } else if (labelTotalCurrency2) {
-          lv_label_set_text(labelTotalCurrency2, "");
-        }
-        if (labelTotalCurrency3 && sessionState.totalCurrency3 > 0) {
-          long sats3 = 0;
-          if (sessionState.fiatValue3 > 0) {
-            float afterFee = (sessionState.totalCurrency3 / 100.0f) * (100.0f - charge3) / 100.0f;
-            sats3 = (long)round(afterFee / sessionState.fiatValue3 * 1e8);
-            totalSats += sats3;
-          }
-          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%ld sats)", currencyThree,
-                  sessionState.totalCurrency3 / 100.0f, currencyThree, sats3);
-          lv_label_set_text(labelTotalCurrency3, buf);
-        } else if (labelTotalCurrency3) {
-          lv_label_set_text(labelTotalCurrency3, "");
+          const Quote legQuote =
+              quoteSats(legs[leg].cents, legs[leg].btcPrice, legs[leg].feePercent);
+          snprintf(buf, sizeof(buf), "Total %s: %.2f %s (%lld sats)",
+                   legCurrencies[leg], legs[leg].cents / 100.0,
+                   legCurrencies[leg], legQuote.ok ? (long long)legQuote.sats : 0LL);
+          lv_label_set_text(legLabels[leg], buf);
         }
         if (labelTotalSats) {
-          snprintf(buf, sizeof(buf), "Total: %ld sats", totalSats);
+          const Quote totalQuote = quoteMixedSats(legs, 3);
+          snprintf(buf, sizeof(buf), "Total: %lld sats",
+                   totalQuote.ok ? (long long)totalQuote.sats : 0LL);
           lv_label_set_text(labelTotalSats, buf);
         }
         lv_label_set_text(labelTotalAmount, "");
-        if (labelMaxAmount) {
+        if (labelMaxAmount && getEurRateForLimit() <= 0.0f) {
+          // No EUR among the configured currencies, so the 100 EUR cap does
+          // not apply (it used to print "Max: 100 EUR (~999999999 sats)").
+          // What limits the sale is the wallet: show what it can still pay.
+          int64_t walletSats = 0;
+          const Quote soFar = quoteMixedSats(legs, 3);
+          if (currentWalletSats(&walletSats)) {
+            int64_t left = walletSats - (soFar.ok ? soFar.sats : 0);
+            if (left < 0) left = 0;
+            snprintf(buf, sizeof(buf), "Max: ~%lld sats left", (long long)left);
+          } else {
+            buf[0] = '\0';
+          }
+          setLabelTextIfChanged(labelMaxAmount, buf);
+        } else if (labelMaxAmount) {
           long maxSats = computeMixedMaxSats();
           float totalEUR = computeMixedTotalValueEUR();
           if (totalEUR >= MAX_MIXED_EUR) {
@@ -3813,30 +5759,56 @@ void loop() {
           lv_label_set_text(labelMaxAmount, buf);
         }
       } else {
-        String lastBillString = "Last bill: " + String(amount) + " " + currencySelected;
-        String totalString = "Total: " + String(total) + " " + currencySelected;
-        String maxString = "MAX: " + String(maxamountSelected) + " " +
-                           currencySelected + " from " +
-                           deviceState.fundingSourceBuffer;
-        lv_label_set_text(labelLastInserted, lastBillString.c_str());
-        lv_label_set_text(labelTotalAmount, totalString.c_str());
-        lv_label_set_text(labelMaxAmount, maxString.c_str());
+        refreshInsertSummary(amount);
         if (labelTotalCurrency1) lv_label_set_text(labelTotalCurrency1, "");
         if (labelTotalCurrency2) lv_label_set_text(labelTotalCurrency2, "");
         if (labelTotalCurrency3) lv_label_set_text(labelTotalCurrency3, "");
-        if (labelTotalSats) lv_label_set_text(labelTotalSats, "");
       }
+    }
     }
   }
   // Check button release, touchscreen tap, or total (only if in INSERTING_MONEY state)
   const bool hasMixed = (sessionState.totalCurrency1 || sessionState.totalCurrency2 || sessionState.totalCurrency3) != 0;
   const bool hasAmount = (total != 0) || hasMixed;
   if (currentUiState == UI_INSERTING_MONEY) {
-    uint16_t touchX, touchY;
-    bool screenTapped = hasAmount && lcd.getTouch(&touchX, &touchY);
-    if ((BTNA.wasPressed() && hasAmount) || screenTapped || mixedLimitExceededAutoProceed || (!hasMixed && total >= maxamountSelected)) {
+    // Keep each channel in step with the offset balance. A note larger than
+    // what is left is inhibited; smaller notes stay open until none fit.
+    if (!mixedCurrenciesConfigured()) {
+      refreshInsertMaxLabel();
+      long cap = 0;
+      const long left = insertRoomLeft(&cap);
+      applyFittingNotes(cap > 0 ? left : 0);
+    } else if (!offlineLnbitsMode()) {
+      // Several currencies: the wallet limit is counted in sats, including
+      // the cash already inserted.
+      int64_t walletSats = 0;
+      const uint16_t mask = currentWalletSats(&walletSats)
+                                ? mixedNoteMask(walletSats)
+                                : 0;
+      applyNoteMask(mask, (long)walletSats, "sats");
+      if (mask == 0 && labelMaxAmount != nullptr && !mixedLimitExceededAutoProceed) {
+        setLabelTextIfChanged(labelMaxAmount, "Max reached — press FINISH");
+      }
+    }
+
+    // maxamountSelected of 0 is an empty "max withdraw" field, not a limit of
+    // zero. The wallet gate above is what stops a note the balance cannot pay.
+    const bool hitConfiguredMax =
+        !hasMixed && maxamountSelected > 0.0f && total >= maxamountSelected;
+    const bool finishPressed = insertFinishTapped;
+    insertFinishTapped = false;
+    if ((BTNA.wasPressed() && hasAmount) || (finishPressed && hasAmount) ||
+        mixedLimitExceededAutoProceed || hitConfiguredMax) {
       mixedLimitExceededAutoProceed = false;
-      if (hasMixed) {
+      // Acknowledge FINISH at once: spinner up, insert screen gone. The
+      // settle wait and the payout request below both take seconds.
+      result = 0;
+      showPayoutWaitScreen();
+      discardInsertMoneyScreen();
+      inhibitAndCollectPendingBills();
+      const bool payMixed = (sessionState.totalCurrency1 || sessionState.totalCurrency2 ||
+                             sessionState.totalCurrency3) != 0;
+      if (payMixed) {
         // Mixed-currency: use first wallet for LNURL (undef macros to use struct members)
 #if defined(baseURLATM) && defined(secretATM) && defined(lnbitsURL)
 #undef baseURLATM
@@ -3873,96 +5845,25 @@ void loop() {
         Serial.println(total);
       }
 
-      if (!wifiStatus()) {
-        uiController.deleteInsertMoneyScreen();
-        Serial.println("deleteInsertMoneyScreen() - LNbits offline: ");
-        makeLNURL();
-        printHeapStatus();
-        Serial.println("makeLNURL() - LNbits offline: ");
-        showQRCodeLVGL(qrData);
-        Serial.print("showQRCodeLVGL() - LNbits offline: ");
-        Serial.println(qrData);
-        // Turn off machines
-        billAcceptorWrite(185);
-        if (INHIBITMECH >= 0) {
-          digitalWrite(INHIBITMECH, LOW);
+      PayoutJob job = {false, false, nullptr};
+      runPayoutRequest(&job);
+      const char *qrPayload = job.payload;
+      const bool blinkFlow = job.blinkFlow;
+      if (qrPayload == nullptr) {
+        if (FundingService::payoutFailureReason()[0] == '\0') {
+          FundingService::setPayoutFailure("Could not create the withdraw QR");
         }
-        Serial.print("Free heap (makeLNURL): ");
-        Serial.println(ESP.getFreeHeap());
+        Serial.println("Payout not created => payment error screen");
+        enterPaymentError();
+      } else {
+        showQRCodeLVGL(qrPayload);
         lv_task_handler();
-        Serial.println("lv_task_handler() - LNbits offline");
         currentUiState = UI_SHOWING_QR;
         stateEnterTime = millis();
         qrDebounceDone = false;
-      } else {
-        if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
-          uiController.deleteInsertMoneyScreen();
-          Serial.println("deleteInsertMoneyScreen() - Blink online");
-          const bool withdrawOk = createLNURLWithdraw();
-          Serial.println("createLNURLWithdraw() - Blink online");
-          // Turn off machines in both outcomes - cash is already inside
-          billAcceptorWrite(185);
-          if (INHIBITMECH >= 0) {
-            digitalWrite(INHIBITMECH, LOW);
-          }
-          if (withdrawOk) {
-            // Display the QR code for online
-            showQRCodeLVGL(lnURLgen);
-            Serial.println("showQRCodeLVGL() - Blink online");
-            lv_task_handler();
-            Serial.println("lv_task_handler() - Blink online");
-            currentUiState = UI_SHOWING_QR;
-            stateEnterTime = millis();
-            qrDebounceDone = false;
-            isBlinkFlow = true; // Mark that we're in Blink flow
-          } else {
-            // No LNURL/callback - showing a QR would trap the customer in a
-            // polling loop that can never succeed.
-            Serial.println("LNURL withdraw failed => payment error screen");
-            createPaymentErrorScreen();
-            lv_task_handler();
-            currentUiState = UI_PAYMENT_ERROR;
-            stateEnterTime = millis();
-          }
-        }
-        if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-          if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
-            uiController.deleteInsertMoneyScreen();
-            Serial.println("deleteInsertMoneyScreen() - LNbits online");
-            getLNURL();
-            Serial.println("getLNURL()");
-            // Display the QR code for online
-            showQRCodeLVGL(lnURLgen);
-            Serial.println("showQRCodeLVGL() - LNbits online");
-            lv_task_handler();
-            Serial.println("lv_task_handler() - LNbits online");
-            // Turn off machines
-            billAcceptorWrite(185);
-            if (INHIBITMECH >= 0) {
-              digitalWrite(INHIBITMECH, LOW);
-            }
-            currentUiState = UI_SHOWING_QR;
-            stateEnterTime = millis();
-            qrDebounceDone = false;
-          } else {
-            uiController.deleteInsertMoneyScreen();
-            Serial.println(
-                "deleteInsertMoneyScreen() - LNbits offline fallback");
-            makeLNURL();
-            showQRCodeLVGL(qrData);
-            lv_task_handler();
-            billAcceptorWrite(185);
-            if (INHIBITMECH >= 0) {
-              digitalWrite(INHIBITMECH, LOW);
-            }
-            currentUiState = UI_SHOWING_QR;
-            stateEnterTime = millis();
-            qrDebounceDone = false;
-          }
-        }
-        Serial.print("Free heap (showQRCodeLVGL): ");
-        Serial.println(ESP.getFreeHeap());
+        isBlinkFlow = blinkFlow;
       }
+      discardPayoutWaitScreen();
     }
 
     lv_task_handler(); // Call LVGL task handler
