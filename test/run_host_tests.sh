@@ -13,6 +13,7 @@ $CXX -std=c++17 -Wall -Wextra -Werror -Isrc -o "$BUILD/payout_test" \
   test/payout_test.cpp \
   src/payout/Quote.cpp \
   src/payout/Bolt11.cpp \
+  src/payout/NoteMask.cpp \
   src/payout/OfflineLnurl.cpp
 "$BUILD/payout_test"
 

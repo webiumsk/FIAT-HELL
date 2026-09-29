@@ -358,9 +358,18 @@ bool payInvoice(const DeviceState &ds, const char *invoice,
   }
 
   const char *status = respDoc["data"]["lnInvoicePaymentSend"]["status"] | "";
-  if (strcmp(status, "SUCCESS") == 0 || strcmp(status, "PENDING") == 0 ||
-      strcmp(status, "ALREADY_PAID") == 0) {
+  // PENDING is a payment Blink has accepted and is still routing. It is
+  // treated as paid because the ATM has no later status check.
+  if (strcmp(status, "SUCCESS") == 0 || strcmp(status, "PENDING") == 0) {
     return true;
+  }
+  // ALREADY_PAID means this invoice was settled by an earlier payment, so
+  // this sale sent the customer nothing. Showing the thank-you screen would
+  // hide that from both of them.
+  if (strcmp(status, "ALREADY_PAID") == 0) {
+    Serial.println("Payment refused: invoice was already paid");
+    setPayoutFailure("Invoice was already paid");
+    return false;
   }
 
   Serial.print("Payment failed, status: ");

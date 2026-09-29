@@ -75,7 +75,9 @@ webstránku ani tretiu stranu.
 
 - **AP portál:** podrž pri štarte `BOOT` (S3) alebo ťukni na logo, pripoj sa
   na WiFi **LN ATM-xxxx**, otvor `http://192.168.4.1`
-  (login `admin` + tvoje heslo portálu).
+  (login `admin` + tvoje heslo portálu). Heslo musí mať 8–63 znakov a nesmie
+  byť `changeme`. Kým je uložené heslo neplatné, AP aj login používajú náhodné
+  heslo, ktoré displej zobrazí na obrazovke portálu (pri každom štarte iné).
 - **Bez portálu:** vo flasheri zmeň hodnoty a klikni **⬆ Iba konfig**
   (netreba flashovať firmvér).
 - **Nový firmvér:** S3 vie OTA cez portál; WT32 sa aktualizuje flasherom

@@ -53,6 +53,7 @@ static const lv_color_t colors[] = {LV_COLOR_PURPLE, LV_COLOR_RED,   LV_COLOR_OR
 #include "ota/FirmwareVersion.h"
 #include "ota/OtaImage.h"
 #include "payout/Bolt11.h"
+#include "payout/NoteMask.h"
 #include "payout/OfflineLnurl.h"
 #include "payout/Quote.h"
 #include "portal/PortalPolicy.h"
@@ -611,16 +612,19 @@ static void billAcceptorBegin() {
   }
 }
 
-// 0xFFFF means the channel mask is unknown, so the next update sends it again.
+// The channel mask is unknown, so the next update sends it again. It is out
+// of the 16-bit range on purpose: 0xFFFF is a real mask (16 channels open),
+// and mistaking it for "unknown" would skip the command that reopens them.
 // A master inhibit from anywhere else (185) clears a note the mask still
 // thinks is open, so the mask is marked unknown unless this write is part of
 // applying the mask.
-static uint16_t enabledNoteMask = 0xFFFF;
+static const uint32_t kNoteMaskUnknown = 0x10000;
+static uint32_t enabledNoteMask = kNoteMaskUnknown;
 static bool noteMaskOwnsWrite = false;
 
 static size_t billAcceptorWrite(uint8_t value) {
   if (value == 185 && !noteMaskOwnsWrite) {
-    enabledNoteMask = 0xFFFF;
+    enabledNoteMask = kNoteMaskUnknown;
   }
   if (BILL_ACCEPTOR_ENABLED) {
     return SerialPort1.write(value);
@@ -732,6 +736,23 @@ static unsigned long pendingRestartAt = 0;
 // Random per-boot hotspot PSK, set only while the stored portal password
 // fails the policy. Shown on the portal screen so the operator can join.
 static String g_fallbackApPsk;
+
+// The hotspot passphrase and the web login ("admin") are one secret. A stored
+// password that fails the policy is replaced by a random per-boot one, and it
+// stays in force until a valid password is saved. Boot and every config
+// reload go through here, so a reload cannot put the rejected default back.
+static void applyPortalCredentials() {
+  if (portalPasswordAccepted(deviceState.password)) {
+    g_fallbackApPsk = "";
+    acConfig.psk = String(deviceState.password);
+  } else {
+    if (g_fallbackApPsk.length() == 0) {
+      g_fallbackApPsk = makeFallbackApPsk();
+    }
+    acConfig.psk = g_fallbackApPsk;
+  }
+  acConfig.password = acConfig.psk;
+}
 
 // AutoConnect::isPortalAvailable() only reports its own DNSServer, which is
 // suppressed here, so the config portal counts as up while the softAP serves
@@ -1523,8 +1544,7 @@ void reloadRuntimeConfigFromFlash() {
     strlcpy(lnbitsURL, baseURLATM1, sizeof(lnbitsURL));
   }
 
-  acConfig.psk = deviceState.password;
-  acConfig.password = deviceState.password;
+  applyPortalCredentials();
   portal.config(acConfig);
 
   if (appStartupCompleted) {
@@ -1903,13 +1923,13 @@ void setup() {
   // reveals a spending API key: hotspot-only via ApOnlyConfigHandler, plus the
   // portal's Basic credentials.
   server.on("/flashkey", HTTP_GET, []() {
-    if (!portalBasicAuth(server, deviceState.password)) {
+    if (!portalBasicAuth(server, acConfig.password.c_str())) {
       return;
     }
     server.send(200, "text/html", flashKeyPageHtml(wifiStatus()));
   });
   server.on("/flashkey/run", HTTP_POST, []() {
-    if (!portalBasicAuth(server, deviceState.password)) {
+    if (!portalBasicAuth(server, acConfig.password.c_str())) {
       return;
     }
     server.send(200, "text/html",
@@ -2296,15 +2316,11 @@ void setup() {
   acConfig.autoRise = false; // set dynamically during startup based on mode
   acConfig.apid = "LN ATM-" + String((uint32_t)ESP.getEfuseMac(), HEX);
   // A stored password that fails the policy must not leave the hotspot open
-  // or set to the known default. While it is invalid the AP uses a random
-  // per-boot PSK shown on the portal screen, so only someone standing at the
-  // machine can join.
+  // or set to the known default. While it is invalid the hotspot and the web
+  // login use a random per-boot secret shown on the portal screen, so only
+  // someone standing at the machine can join.
   const bool passwordRejected = !portalPasswordAccepted(deviceState.password);
-  if (passwordRejected) {
-    g_fallbackApPsk = makeFallbackApPsk();
-  }
-  acConfig.psk = passwordRejected ? g_fallbackApPsk
-                                  : String(deviceState.password); // Password for AP
+  applyPortalCredentials();
   // AutoConnect 1.4.2 defaults apip to 172.217.28.1 (Google IP, surprising).
   // Force the standard 192.168.4.0/24 so the apClient subnet check works
   // and so users see a familiar AP IP in the browser URL bar.
@@ -2322,7 +2338,6 @@ void setup() {
   acConfig.immediateStart =
       false; // If we don't have WiFi saved, it will start AP
   acConfig.username = "admin";
-  acConfig.password = deviceState.password;
   bootStage(40, "autoconnect config prepared");
 
   // Register all Aux pages to the portal
@@ -2983,7 +2998,7 @@ void createPortalScreen() {
   lv_obj_set_style_text_color(portaltextfour, LV_COLOR_WHITE, 0);
 
   if (g_fallbackApPsk.length() > 0) {
-    String pskLine = "Wi-Fi password: " + g_fallbackApPsk;
+    String pskLine = "Wi-Fi and admin password: " + g_fallbackApPsk;
     lv_obj_t *pskLabel = lv_label_create(screen_portal);
     lv_label_set_text(pskLabel, pskLine.c_str());
     lv_obj_align(pskLabel, LV_ALIGN_TOP_MID, 0, 302);
@@ -3640,20 +3655,14 @@ static void setLabelColorIfChanged(lv_obj_t *label, lv_color_t color) {
   }
 }
 
-// Enable only the notes that fit in `room`. A larger note is inhibited on its
-// own channel, so the NV10 returns it, and any smaller note still in range
-// stays open. The mask is sent only when it changes.
-static void applyFittingNotes(long room) {
-  uint16_t mask = 0;
+// Sends a channel mask to the NV10: one inhibit or uninhibit per channel, then
+// the master enable. An empty mask is a master inhibit. Bit i is channel i.
+// The mask is sent only when it changes. `limitValue` and `unit` are only for
+// the log line.
+static void applyNoteMask(uint16_t mask, long limitValue, const char *unit) {
   const int count = (int)billAmountIntOne.size();
   const int limit = count < 16 ? count : 16;
-  for (int i = 0; i < limit; i++) {
-    const int amount = billAmountIntOne[i];
-    if (amount > 0 && (long)amount <= room) {
-      mask |= (uint16_t)(1u << i);
-    }
-  }
-  if (mask == enabledNoteMask) {
+  if ((uint32_t)mask == enabledNoteMask) {
     return;
   }
   enabledNoteMask = mask;
@@ -3661,7 +3670,7 @@ static void applyFittingNotes(long room) {
   if (mask == 0) {
     billAcceptorWrite(185);
     noteMaskOwnsWrite = false;
-    Serial.printf("NV10: no note fits in %ld\n", room);
+    Serial.printf("NV10: no note fits in %ld %s\n", limitValue, unit);
     return;
   }
   for (int i = 0; i < limit; i++) {
@@ -3673,7 +3682,84 @@ static void applyFittingNotes(long room) {
   }
   billAcceptorWrite(184);
   noteMaskOwnsWrite = false;
-  Serial.printf("NV10: notes open for %ld (mask 0x%04x)\n", room, mask);
+  Serial.printf("NV10: notes open for %ld %s (mask 0x%04x)\n", limitValue, unit,
+                mask);
+}
+
+// Enable only the notes that fit in `room`. A larger note is inhibited on its
+// own channel, so the NV10 returns it, and any smaller note still in range
+// stays open.
+static void applyFittingNotes(long room) {
+  uint16_t mask = 0;
+  const int count = (int)billAmountIntOne.size();
+  const int limit = count < 16 ? count : 16;
+  for (int i = 0; i < limit; i++) {
+    const int amount = billAmountIntOne[i];
+    if (amount > 0 && (long)amount <= room) {
+      mask |= (uint16_t)(1u << i);
+    }
+  }
+  applyNoteMask(mask, room, currencySelected);
+}
+
+// Offline LNbits pays out through a stored link and cannot read the wallet, so
+// the wallet limit below does not apply there.
+static bool offlineLnbitsMode() {
+  return strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 &&
+         !wifiStatus();
+}
+
+// The funding wallet in whole sats. LNbits reports millisats, Stablesats and
+// Flash report dollar cents.
+static bool currentWalletSats(int64_t *out) {
+  BalanceUnit unit = BalanceUnit::Sats;
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+    unit = BalanceUnit::Msats;
+  } else if (fundingWalletIsUsd()) {
+    unit = BalanceUnit::UsdCents;
+  }
+  return walletBalanceSats(unit, (int64_t)balanceSats,
+                           (double)sessionState.btcUsdValue, out);
+}
+
+// Several currencies share one NV10 channel list: the first originalSizeOne
+// channels are currency one, the next originalSizeTwo currency two, the rest
+// currency three. A channel is open only when the cash already inserted plus
+// that note still quotes to sats the wallet holds.
+static uint16_t mixedNoteMask(int64_t walletSats) {
+  NoteChannel channels[16];
+  const int count = (int)billAmountIntOne.size() < 16
+                        ? (int)billAmountIntOne.size()
+                        : 16;
+  const int firstEnd = (int)originalSizeOne;
+  const int secondEnd = (int)(originalSizeOne + originalSizeTwo);
+  for (int i = 0; i < count; i++) {
+    channels[i].leg = i < firstEnd ? 0 : (i < secondEnd ? 1 : 2);
+    channels[i].amount = billAmountIntOne[i];
+  }
+  const MixedLeg legs[3] = {
+      {sessionState.totalCurrency1, sessionState.fiatValue1, charge1},
+      {sessionState.totalCurrency2, sessionState.fiatValue2, charge2},
+      {sessionState.totalCurrency3, sessionState.fiatValue3, charge3},
+  };
+  return fittingNoteMask(channels, count, legs, walletSats);
+}
+
+static void showMainHold(const char *text) {
+  if (mainScreenHoldLabel == nullptr) {
+    return;
+  }
+  setLabelTextIfChanged(mainScreenHoldLabel, text);
+  if (lv_obj_has_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN)) {
+    lv_obj_clear_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void hideMainHold() {
+  if (mainScreenHoldLabel != nullptr &&
+      !lv_obj_has_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN)) {
+    lv_obj_add_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
+  }
 }
 
 static void armAcceptorIfQuoted() {
@@ -3688,9 +3774,7 @@ static void armAcceptorIfQuoted() {
   }
   // A note that clears the sensor is stacked. Notes larger than the offset
   // balance are inhibited one channel at a time; smaller notes stay open.
-  const bool offlineLnbits =
-      strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 && !wifiStatus();
-  if (!offlineLnbits && !mixedCurrenciesConfigured()) {
+  if (!offlineLnbitsMode() && !mixedCurrenciesConfigured()) {
     if (paymentService.isGaloy(deviceState.fundingSourceBuffer) && !wifiStatus()) {
       applyFittingNotes(0);
       acceptorArmed = false;
@@ -3706,23 +3790,45 @@ static void armAcceptorIfQuoted() {
     if (!covers) {
       applyFittingNotes(0);
       acceptorArmed = false;
-      if (mainScreenHoldLabel != nullptr) {
-        setLabelTextIfChanged(mainScreenHoldLabel,
-                              known ? "Balance too low"
-                                    : "Waiting for price and balance");
-        if (lv_obj_has_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN)) {
-          lv_obj_clear_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
-        }
-      }
+      showMainHold(known ? "Balance too low" : "Waiting for price and balance");
       Serial.printf("NV10 stays off: balance %ld %s, smallest note %d\n",
                     room, currencySelected, smallestNote);
       return;
     }
-    if (mainScreenHoldLabel != nullptr &&
-        !lv_obj_has_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN)) {
-      lv_obj_add_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
-    }
+    hideMainHold();
     applyFittingNotes(room);
+    acceptorArmed = true;
+    return;
+  }
+  if (!offlineLnbitsMode()) {
+    // Several currencies. Same rule as above, counted in sats because the
+    // notes are priced in different currencies: a channel stays open only
+    // while the wallet can pay what is inserted plus that note.
+    if (paymentService.isGaloy(deviceState.fundingSourceBuffer) && !wifiStatus()) {
+      applyNoteMask(0, 0, "sats");
+      acceptorArmed = false;
+      return;
+    }
+    if (!allCreditableQuotesReady()) {
+      Serial.printf(
+          "NV10 stays off: sizes %d/%d/%d prices %.2f/%.2f/%.2f\n",
+          originalSizeOne, originalSizeTwo, originalSizeThree,
+          sessionState.fiatValue1, sessionState.fiatValue2,
+          sessionState.fiatValue3);
+      return;
+    }
+    int64_t walletSats = 0;
+    const bool known = currentWalletSats(&walletSats);
+    const uint16_t mask = known ? mixedNoteMask(walletSats) : 0;
+    if (mask == 0) {
+      applyNoteMask(0, (long)walletSats, "sats");
+      acceptorArmed = false;
+      showMainHold(known ? "Balance too low" : "Waiting for price and balance");
+      Serial.printf("NV10 stays off: wallet %lld sats\n", (long long)walletSats);
+      return;
+    }
+    hideMainHold();
+    applyNoteMask(mask, (long)walletSats, "sats");
     acceptorArmed = true;
     return;
   }
@@ -3730,21 +3836,8 @@ static void armAcceptorIfQuoted() {
     return;
   }
   // Offline LNbits pays out through the stored LNURL-device link, which
-  // encodes the fiat amount directly - no BTC price is needed, so the quote
-  // gate is skipped when the network is down.
-  if (!offlineLnbits && !allCreditableQuotesReady()) {
-    Serial.printf(
-        "NV10 stays off: sizes %d/%d/%d prices %.2f/%.2f/%.2f\n",
-        originalSizeOne, originalSizeTwo, originalSizeThree,
-        sessionState.fiatValue1, sessionState.fiatValue2,
-        sessionState.fiatValue3);
-    return;
-  }
-  // enableAcceptor() refuses Galoy without WiFi; check first so a refused
-  // attempt is not recorded as armed and is retried on the next price update.
-  if (paymentService.isGaloy(deviceState.fundingSourceBuffer) && !wifiStatus()) {
-    return;
-  }
+  // encodes the fiat amount directly - no BTC price is needed, and the wallet
+  // cannot be read, so the quote and wallet gates are skipped.
   uninhibitAllChannels();
   enableAcceptor();
   acceptorArmed = true;
@@ -4169,6 +4262,10 @@ static void buildPayoutPayload(PayoutJob *job) {
 static void payoutWorkerTask(void *arg) {
   PayoutJob *job = static_cast<PayoutJob *>(arg);
   buildPayoutPayload(job);
+  // Bytes of this 12 KB stack that were never touched. A TLS handshake here
+  // overflowed 8 KB on the loop task, so keep an eye on the margin.
+  Serial.printf("payout task: %u stack bytes never used\n",
+                (unsigned)uxTaskGetStackHighWaterMark(NULL));
   job->done = true;
   vTaskDelete(NULL);
 }
@@ -4197,6 +4294,8 @@ struct BlinkPayJob {
 static void blinkPayWorkerTask(void *arg) {
   BlinkPayJob *job = static_cast<BlinkPayJob *>(arg);
   job->ok = getBlinkLnURL(sessionState.boltInvoice);
+  Serial.printf("blinkpay task: %u stack bytes never used\n",
+                (unsigned)uxTaskGetStackHighWaterMark(NULL));
   job->done = true;
   vTaskDelete(NULL);
 }
@@ -5660,11 +5759,22 @@ void loop() {
   if (currentUiState == UI_INSERTING_MONEY) {
     // Keep each channel in step with the offset balance. A note larger than
     // what is left is inhibited; smaller notes stay open until none fit.
-    if (!hasMixed) {
+    if (!mixedCurrenciesConfigured()) {
       refreshInsertMaxLabel();
       long cap = 0;
       const long left = insertRoomLeft(&cap);
       applyFittingNotes(cap > 0 ? left : 0);
+    } else if (!offlineLnbitsMode()) {
+      // Several currencies: the wallet limit is counted in sats, including
+      // the cash already inserted.
+      int64_t walletSats = 0;
+      const uint16_t mask = currentWalletSats(&walletSats)
+                                ? mixedNoteMask(walletSats)
+                                : 0;
+      applyNoteMask(mask, (long)walletSats, "sats");
+      if (mask == 0 && labelMaxAmount != nullptr && !mixedLimitExceededAutoProceed) {
+        setLabelTextIfChanged(labelMaxAmount, "Max reached — press FINISH");
+      }
     }
 
     // maxamountSelected of 0 is an empty "max withdraw" field, not a limit of

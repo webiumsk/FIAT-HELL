@@ -496,13 +496,13 @@ void setup() {
   // reveals a spending API key: hotspot-only via ApOnlyConfigHandler, plus the
   // portal's Basic credentials.
   server.on("/flashkey", HTTP_GET, []() {
-    if (!portalBasicAuth(server, deviceState.password)) {
+    if (!portalBasicAuth(server, config.password.c_str())) {
       return;
     }
     server.send(200, "text/html", flashKeyPageHtml(wifiStatus()));
   });
   server.on("/flashkey/run", HTTP_POST, []() {
-    if (!portalBasicAuth(server, deviceState.password)) {
+    if (!portalBasicAuth(server, config.password.c_str())) {
       return;
     }
     server.send(200, "text/html",
@@ -835,9 +835,11 @@ void setup() {
   config.reconnectInterval = 1;
   config.immediateStart =
       false; // If we don't have WiFi saved, it will start AP
-  // Basic auth for the portal pages: admin / device password.
+  // Basic auth for the portal pages: admin, with the same secret as the
+  // hotspot. While the stored password is rejected that is the random
+  // per-boot passphrase, not the default.
   config.username = "admin";
-  config.password = deviceState.password;
+  config.password = config.psk;
 
   // Register all Aux pages to the portal
   portal.join({elementsAux, saveAux, firstAux, savefirstAux, secondAux,
@@ -2561,7 +2563,7 @@ bool checkBoltInvoice() {
  * the payment.
  *
  * @param invoice The Bolt invoice to be sent as part of the request payload.
- * @return true if the payment was accepted (SUCCESS/PENDING/ALREADY_PAID),
+ * @return true if the payment was accepted (SUCCESS/PENDING),
  *         false on HTTP failure, GraphQL errors or FAILURE status.
  */
 bool getBlinkLnURL(const char *invoice) {

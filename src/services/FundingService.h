@@ -61,8 +61,9 @@ bool checkLNbitsWallet(const DeviceState &ds, long *balanceSatsOut);
 
 /**
  * Pay a BOLT11 invoice via lnInvoicePaymentSend from the configured wallet.
- * Returns true only when the backend reports SUCCESS, PENDING (payment in
- * flight) or ALREADY_PAID — callers must treat false as a failed payout.
+ * Returns true only when the backend reports SUCCESS or PENDING (payment in
+ * flight, not re-checked later). ALREADY_PAID is a failure: the invoice was
+ * settled by an earlier payment. Callers must treat false as a failed payout.
  * walletIdOverride, when non-empty, is used instead of ds.blinkwalletid —
  * for callers that snapshot the id under a lock (S3 background task).
  */

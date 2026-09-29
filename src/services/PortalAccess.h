@@ -26,9 +26,12 @@ inline bool portalBasicAuth(WebServer &srv, const char *password) {
 
 // Per-boot hotspot passphrase used while the stored password fails the
 // policy: 16 hex digits (64 bits). esp_random() is only a true RNG while the
-// radio runs, so the radio is started first.
+// radio runs, so the radio is started first. A radio that is already up (the
+// setup hotspot) is left alone: switching modes would drop its clients.
 inline String makeFallbackApPsk() {
-  WiFi.mode(WIFI_STA);
+  if (WiFi.getMode() == WIFI_OFF) {
+    WiFi.mode(WIFI_STA);
+  }
   char psk[17];
   snprintf(psk, sizeof(psk), "%08lx%08lx", (unsigned long)esp_random(),
            (unsigned long)esp_random());

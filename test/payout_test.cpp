@@ -1,5 +1,6 @@
 #include "ota/FirmwareVersion.h"
 #include "payout/Bolt11.h"
+#include "payout/NoteMask.h"
 #include "payout/OfflineLnurl.h"
 #include "payout/Quote.h"
 #include "portal/PortalPolicy.h"
@@ -212,6 +213,73 @@ int main() {
   uint8_t tail[] = {'F', 'H', 'F', 'W', ':', '1', '.', '3', '.', '3'};
   expect(!firmwareImageDowngrade(tail, sizeof(tail), "1.3.3"),
          "marker at the very end of the image");
+
+  // Wallet balance in sats for each funding unit.
+  int64_t walletSats = 0;
+  expect(walletBalanceSats(BalanceUnit::Sats, 5000, 0.0, &walletSats) &&
+             walletSats == 5000,
+         "sats balance is used as is");
+  expect(walletBalanceSats(BalanceUnit::Msats, 5999, 0.0, &walletSats) &&
+             walletSats == 5,
+         "msats round down");
+  expect(!walletBalanceSats(BalanceUnit::Msats, 999, 0.0, &walletSats),
+         "under one sat is not a balance");
+  expect(walletBalanceSats(BalanceUnit::UsdCents, 5000, 50000.0, &walletSats) &&
+             walletSats == 100000,
+         "50 USD at 50000 USD/BTC is 100000 sats");
+  expect(!walletBalanceSats(BalanceUnit::UsdCents, 5000, 0.0, &walletSats),
+         "USD balance without a USD price");
+  expect(!walletBalanceSats(BalanceUnit::UsdCents, 5000, NAN, &walletSats),
+         "USD balance with a NaN price");
+  expect(!walletBalanceSats(BalanceUnit::Sats, 0, 0.0, &walletSats),
+         "empty balance");
+  expect(!walletBalanceSats(BalanceUnit::Sats, -5, 0.0, &walletSats),
+         "negative balance");
+  expect(!walletBalanceSats(BalanceUnit::Sats, 5, 0.0, nullptr),
+         "null output");
+
+  // Which channels stay open. Leg 0 is 50000 per BTC: 5 EUR = 10000 sats,
+  // 10 EUR = 20000, 50 EUR = 100000. Leg 1 is 2000000 per BTC: 1000 units =
+  // 50000 sats.
+  const NoteChannel channels[] = {{0, 5}, {0, 10}, {0, 50}, {1, 1000}};
+  const MixedLeg empty[3] = {
+      {0, 50000.0, 0.0}, {0, 2000000.0, 0.0}, {0, 0.0, 0.0}};
+  expect(fittingNoteMask(channels, 4, empty, 20000) == 0x0003,
+         "20000 sats covers the 5 and 10 EUR notes only");
+  expect(fittingNoteMask(channels, 4, empty, 4000) == 0x0000,
+         "4000 sats covers no channel");
+  expect(fittingNoteMask(channels, 4, empty, 100000) == 0x000F,
+         "100000 sats covers every channel");
+  expect(fittingNoteMask(channels, 4, empty, 50000) == 0x000B,
+         "50000 sats covers everything except the 50 EUR note");
+
+  // 5 EUR already inserted (500 cents = 10000 sats).
+  const MixedLeg partial[3] = {
+      {500, 50000.0, 0.0}, {0, 2000000.0, 0.0}, {0, 0.0, 0.0}};
+  expect(fittingNoteMask(channels, 4, partial, 20000) == 0x0001,
+         "inserted cash counts against the wallet");
+  expect(fittingNoteMask(channels, 4, partial, 10000) == 0x0000,
+         "wallet already used up by the inserted cash");
+
+  const NoteChannel noPriceChannel[] = {{2, 5}};
+  expect(fittingNoteMask(noPriceChannel, 1, empty, 1000000) == 0,
+         "a currency without a price stays closed");
+  const MixedLeg badFeeLegs[3] = {
+      {0, 50000.0, 150.0}, {0, 2000000.0, 0.0}, {0, 0.0, 0.0}};
+  expect(fittingNoteMask(channels, 4, badFeeLegs, 1000000) == 0x0008,
+         "a leg with a bad fee stays closed, other legs stay open");
+  const NoteChannel badLeg[] = {{3, 5}, {-1, 5}, {0, 0}, {0, -5}};
+  expect(fittingNoteMask(badLeg, 4, empty, 1000000) == 0,
+         "bad leg index or amount stays closed");
+  expect(fittingNoteMask(channels, 4, empty, 0) == 0, "no wallet, no notes");
+  expect(fittingNoteMask(nullptr, 4, empty, 1000) == 0, "null channels");
+  expect(fittingNoteMask(channels, 4, nullptr, 1000) == 0, "null legs");
+  NoteChannel many[20];
+  for (int i = 0; i < 20; i++) {
+    many[i] = {0, 5};
+  }
+  expect(fittingNoteMask(many, 20, empty, 1000000) == 0xFFFF,
+         "only the first 16 channels are considered");
 
   if (g_failed != 0) {
     fprintf(stderr, "%d assertion(s) failed\n", g_failed);
