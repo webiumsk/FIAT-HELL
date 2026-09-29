@@ -820,6 +820,44 @@ static volatile bool preflightSetupTapped = false;
 static void preflightRetryCb(lv_event_t *) { preflightRetryTapped = true; }
 static void preflightSetupCb(lv_event_t *) { preflightSetupTapped = true; }
 
+// Same orange as the FINISH button on the bill insert screen.
+static const uint32_t kActionColor = 0xF5A623;
+static const uint32_t kActionTextColor = 0x1A1A1A;
+
+static void styleActionButton(lv_obj_t *btn) {
+  const lv_color_t bg = lv_color_hex(kActionColor);
+  const lv_color_t text = lv_color_hex(kActionTextColor);
+  lv_obj_set_style_bg_color(btn, bg, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0xC4841C),
+                            LV_PART_MAIN | LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_text_color(btn, text, LV_PART_MAIN);
+  lv_obj_set_style_text_color(btn, text, LV_PART_MAIN | LV_STATE_PRESSED);
+  const uint32_t n = lv_obj_get_child_cnt(btn);
+  for (uint32_t i = 0; i < n; i++) {
+    lv_obj_set_style_text_color(lv_obj_get_child(btn, i), text, 0);
+  }
+}
+
+static void styleWaitSpinner(lv_obj_t *spinner) {
+  const lv_color_t accent = lv_color_hex(kActionColor);
+  lv_obj_set_style_arc_color(spinner, lv_color_hex(0x3D2A10), LV_PART_MAIN);
+  lv_obj_set_style_arc_color(spinner, accent, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(spinner, 10, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(spinner, 10, LV_PART_MAIN);
+}
+
+static void styleBootBar(lv_obj_t *bar) {
+  const lv_color_t accent = lv_color_hex(kActionColor);
+  lv_obj_set_style_bg_color(bar, lv_color_hex(0x3D2A10), LV_PART_MAIN);
+  lv_obj_set_style_bg_color(bar, accent, LV_PART_INDICATOR);
+  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+  lv_obj_set_style_radius(bar, 6, LV_PART_MAIN);
+  lv_obj_set_style_radius(bar, 6, LV_PART_INDICATOR);
+  lv_obj_set_style_pad_all(bar, 3, LV_PART_MAIN);
+}
+
 static void preflightSetRow(PreflightRow row, const char *status,
                             lv_color_t color) {
   if (preflightRowLabel[row] == nullptr) {
@@ -847,7 +885,7 @@ static void setBootStatus(const char *text) {
     logoStatusLabel = lv_label_create(screen_logo);
     logoStatusScreen = screen_logo;
     lv_obj_set_style_text_font(logoStatusLabel, &lv_font_montserrat_22, 0);
-    lv_obj_set_style_text_color(logoStatusLabel, lv_color_hex(0xF5A623), 0);
+    lv_obj_set_style_text_color(logoStatusLabel, lv_color_hex(kActionColor), 0);
     lv_obj_align(logoStatusLabel, LV_ALIGN_BOTTOM_MID, 0, -40);
   }
   lv_label_set_text(logoStatusLabel, text);
@@ -905,6 +943,7 @@ static void createPreflightScreen() {
   lv_label_set_text(retryLabel, "RETRY");
   lv_obj_set_style_text_font(retryLabel, &lv_font_montserrat_20, 0);
   lv_obj_center(retryLabel);
+  styleActionButton(preflightRetryBtn);
 
   preflightSetupBtn = lv_btn_create(screen);
   lv_obj_set_size(preflightSetupBtn, 220, 64);
@@ -915,6 +954,7 @@ static void createPreflightScreen() {
   lv_label_set_text(setupLabel, "SETUP");
   lv_obj_set_style_text_font(setupLabel, &lv_font_montserrat_20, 0);
   lv_obj_center(setupLabel);
+  styleActionButton(preflightSetupBtn);
 
   lv_obj_add_flag(preflightRetryBtn, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(preflightSetupBtn, LV_OBJ_FLAG_HIDDEN);
@@ -2753,8 +2793,42 @@ static void inhibitAndCollectPendingBills() {
  * @param obj Pointer to the LVGL arc object.
  * @param v The angle value to set.
  */
+static lv_obj_t *logoArc = nullptr;
+static lv_obj_t *logoBtcImg = nullptr;
+static lv_obj_t *logoBootBar = nullptr;
+
 static void set_angle(void *obj, int32_t v) {
   lv_arc_set_value((lv_obj_t *)obj, v);
+}
+
+static void set_boot_bar(void *obj, int32_t v) {
+  lv_bar_set_value((lv_obj_t *)obj, v, LV_ANIM_OFF);
+}
+
+// Tap on the boot ring asks for settings. Drop the circle and the Bitcoin
+// icon and show a horizontal bar while setup comes up.
+static void showLogoSettingsProgress() {
+  if (logoBtcImg != nullptr) {
+    lv_obj_add_flag(logoBtcImg, LV_OBJ_FLAG_HIDDEN);
+  }
+  if (logoArc != nullptr) {
+    lv_anim_del(logoArc, set_angle);
+    lv_obj_add_flag(logoArc, LV_OBJ_FLAG_HIDDEN);
+  }
+  if (logoBootBar != nullptr) {
+    lv_obj_clear_flag(logoBootBar, LV_OBJ_FLAG_HIDDEN);
+    lv_anim_del(logoBootBar, set_boot_bar);
+    lv_bar_set_value(logoBootBar, 0, LV_ANIM_OFF);
+    lv_anim_t barAnim;
+    lv_anim_init(&barAnim);
+    lv_anim_set_var(&barAnim, logoBootBar);
+    lv_anim_set_exec_cb(&barAnim, set_boot_bar);
+    lv_anim_set_time(&barAnim, 1600);
+    lv_anim_set_repeat_count(&barAnim, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_set_values(&barAnim, 0, 100);
+    lv_anim_start(&barAnim);
+  }
+  lv_refr_now(NULL);
 }
 
 /**
@@ -2786,18 +2860,19 @@ void createLogoScreen() {
   lv_obj_set_style_text_color(atmurl, LV_COLOR_PURPLE, 0);
 
   /*Create an Arc*/
-  lv_obj_t *arc = lv_arc_create(screen_logo); // Create the arc on screen_logo
-  lv_arc_set_rotation(arc, 270);
-  lv_arc_set_bg_angles(arc, 0, 360);
-  lv_obj_remove_style(arc, NULL,
+  logoArc = lv_arc_create(screen_logo); // Create the arc on screen_logo
+  lv_arc_set_rotation(logoArc, 270);
+  lv_arc_set_bg_angles(logoArc, 0, 360);
+  lv_obj_remove_style(logoArc, NULL,
                       LV_PART_KNOB); /*Be sure the knob is not displayed*/
-  lv_obj_clear_flag(arc,
+  lv_obj_clear_flag(logoArc,
                     LV_OBJ_FLAG_CLICKABLE); /*To not allow adjusting by click*/
-  lv_obj_center(arc);
+  styleWaitSpinner(logoArc);
+  lv_obj_center(logoArc);
 
   lv_anim_t a;
   lv_anim_init(&a);
-  lv_anim_set_var(&a, arc);
+  lv_anim_set_var(&a, logoArc);
   lv_anim_set_exec_cb(&a, set_angle);
   lv_anim_set_time(&a, 2000);
   lv_anim_set_repeat_count(&a, 1); /*Just for the demo*/
@@ -2805,11 +2880,19 @@ void createLogoScreen() {
   lv_anim_set_values(&a, 0, 100);
   lv_anim_start(&a);
 
-  lv_obj_t *img1 = lv_img_create(screen_logo); // Create an image object
+  logoBootBar = lv_bar_create(screen_logo);
+  lv_obj_set_size(logoBootBar, 460, 22);
+  lv_obj_center(logoBootBar);
+  lv_bar_set_range(logoBootBar, 0, 100);
+  lv_bar_set_value(logoBootBar, 0, LV_ANIM_OFF);
+  styleBootBar(logoBootBar);
+  lv_obj_add_flag(logoBootBar, LV_OBJ_FLAG_HIDDEN);
+
+  logoBtcImg = lv_img_create(screen_logo); // Create an image object
   lv_img_set_src(
-      img1,
+      logoBtcImg,
       &btcSmallImg); // Set the image source to your converted image (my_image)
-  lv_obj_align(img1, LV_ALIGN_CENTER, 0,
+  lv_obj_align(logoBtcImg, LV_ALIGN_CENTER, 0,
                0); // Align the image to the center of the screen
 
   // The arc animation starts before the screen is shown; load it once.
@@ -2946,6 +3029,7 @@ void createPortalScreen() {
   lv_label_set_text(restartLabel, "RESTART");
   lv_obj_set_style_text_font(restartLabel, &lv_font_montserrat_20, 0);
   lv_obj_center(restartLabel);
+  styleActionButton(restartBtn);
 
   // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_portal);
@@ -4053,9 +4137,7 @@ static void showPayoutWaitScreen(const char *caption = nullptr) {
   lv_obj_t *spinner = lv_spinner_create(screen_wait, 1000, 70);
   lv_obj_set_size(spinner, 110, 110);
   lv_obj_center(spinner);
-  lv_obj_set_style_arc_color(spinner, lv_color_hex(0xF5A623), LV_PART_INDICATOR);
-  lv_obj_set_style_arc_width(spinner, 10, LV_PART_INDICATOR);
-  lv_obj_set_style_arc_width(spinner, 10, LV_PART_MAIN);
+  styleWaitSpinner(spinner);
   waitCaption = lv_label_create(screen_wait);
   lv_label_set_text(waitCaption, caption != nullptr ? caption : "");
   lv_obj_set_style_text_font(waitCaption, &lv_font_montserrat_22, 0);
@@ -4359,14 +4441,13 @@ void createInsertMoneyScreen() {
   insertFinishBtn = lv_btn_create(screen_insert_money);
   lv_obj_set_size(insertFinishBtn, 320, 72);
   lv_obj_align(insertFinishBtn, LV_ALIGN_BOTTOM_MID, 0, -28);
-  lv_obj_set_style_bg_color(insertFinishBtn, lv_color_hex(0xF5A623), 0);
   lv_obj_add_event_cb(insertFinishBtn, insertFinishCb, LV_EVENT_CLICKED,
                       nullptr);
   lv_obj_t *finishLabel = lv_label_create(insertFinishBtn);
   lv_label_set_text(finishLabel, "FINISH");
   lv_obj_set_style_text_font(finishLabel, &lv_font_montserrat_22, 0);
-  lv_obj_set_style_text_color(finishLabel, lv_color_hex(0x1A1A1A), 0);
   lv_obj_center(finishLabel);
+  styleActionButton(insertFinishBtn);
   refreshInsertSummary(0);
 
   // Labels are set above; load the screen once so the panel draws once.
@@ -5241,6 +5322,7 @@ void handleUiStateMachine() {
 
     if (tapDetected) {
       triggerAp = true;
+      showLogoSettingsProgress();
       currentUiState = UI_IDLE;
     } else if (currentTime - stateEnterTime >= 2000) {
       currentUiState = UI_IDLE;
