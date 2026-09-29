@@ -48,6 +48,9 @@ struct DeviceState {
   char fundingSourceBuffer[100] = {0};
   char rateSourceBuffer[100] = {0};
   char enableAnimBuffer[100] = {0};
+  // Which Blink wallet pays out: "Bitcoin" (BTC) or "Stablesats" (USD).
+  // Empty means Bitcoin. Only consulted when fundingSourceBuffer is "Blink".
+  char blinkWalletBuffer[32] = {0};
 
   // LNbits base URLs and secrets (3 currencies)
   char baseURLATM1[256] = {0};
@@ -99,6 +102,7 @@ struct DeviceState {
     memset(fundingSourceBuffer, 0, sizeof(fundingSourceBuffer));
     memset(rateSourceBuffer, 0, sizeof(rateSourceBuffer));
     memset(enableAnimBuffer, 0, sizeof(enableAnimBuffer));
+    memset(blinkWalletBuffer, 0, sizeof(blinkWalletBuffer));
     memset(baseURLATM1, 0, sizeof(baseURLATM1));
     memset(baseURLATM2, 0, sizeof(baseURLATM2));
     memset(baseURLATM3, 0, sizeof(baseURLATM3));

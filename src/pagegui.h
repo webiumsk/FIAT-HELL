@@ -51,6 +51,22 @@ static const char PAGE_GUI[] PROGMEM = R"(
       "label": "Enable animated main title",
       "arrange": "horizontal",
       "checked": 2
+    },
+    {
+      "name": "newline2",
+      "type": "ACElement",
+      "value": "<hr>"
+    },
+    {
+      "name": "blinkwallet",
+      "type": "ACRadio",
+      "value": [
+        "Bitcoin",
+        "Stablesats"
+      ],
+      "label": "Blink wallet to pay from - Blink funding only",
+      "arrange": "horizontal",
+      "checked": 1
     },  
     {
       "name": "load",

@@ -256,9 +256,10 @@ static void taskFetchBalance(HTTPClient &http, DeviceState &ds,
     }
     http.end();
   } else if (FundingService::isGaloy(fundingSource)) {
-    // Blink pays from the BTC wallet; Flash from the custodial USD wallet
-    // (its BTC wallet is external/non-custodial - server can't spend it).
-    const char *walletCur = FundingService::galoyWalletCurrency(fundingSource);
+    // Blink pays from the operator-chosen wallet (BTC or Stablesats/USD);
+    // Flash from the custodial USD wallet (its BTC wallet is external).
+    const char *walletCur = FundingService::galoyWalletCurrency(
+        fundingSource, ds.blinkWalletBuffer);
     if (FundingService::fetchGaloyBalance(ds, ss, walletCur)) {
       if (strcmp(walletCur, "USD") == 0) {
         // Balance is in USD cents; convert to the operator's fiat via the
@@ -304,11 +305,12 @@ static void priceBalanceTaskFunc(void *param) {
       taskFetchPrice(g_taskHttp, g_taskTls, g_deviceState->currencyThree,
                     g_deviceState->rateSourceBuffer, &fv3);
 
-    // Flash pays from the USD wallet - fetch the BTC/USD cross rate for
-    // converting its cent balance into the operator's fiat.
+    // A USD funding wallet (Flash cash, or Blink Stablesats) needs the
+    // BTC/USD cross rate to convert its cent balance into the operator's fiat.
     float fvUsd = 0.0f;
     if (strcmp(FundingService::galoyWalletCurrency(
-                   g_deviceState->fundingSourceBuffer),
+                   g_deviceState->fundingSourceBuffer,
+                   g_deviceState->blinkWalletBuffer),
                "USD") == 0 &&
         FundingService::isGaloy(g_deviceState->fundingSourceBuffer)) {
       taskFetchPrice(g_taskHttp, g_taskTls, "USD", g_deviceState->rateSourceBuffer,

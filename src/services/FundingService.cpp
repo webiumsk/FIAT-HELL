@@ -65,6 +65,19 @@ const char *galoyWalletCurrency(const char *fundingSource) {
   return (fundingSource && strcmp(fundingSource, "Flash") == 0) ? "USD" : "BTC";
 }
 
+const char *galoyWalletCurrency(const char *fundingSource,
+                                const char *blinkWallet) {
+  if (fundingSource && strcmp(fundingSource, "Flash") == 0) {
+    return "USD"; // Flash always pays from the custodial cash wallet
+  }
+  // Blink: operator-chosen wallet. Stablesats is the USD wallet; anything
+  // else (including an empty setting) is the Bitcoin wallet.
+  if (blinkWallet && strcmp(blinkWallet, "Stablesats") == 0) {
+    return "USD";
+  }
+  return "BTC";
+}
+
 // Flash is migrating Cash wallets from IBEX-USD to USDT ("cash wallet
 // cutover"). Without this capability header the API presents the legacy USD
 // wallet id whose IBEX account is empty - payments from it fail with

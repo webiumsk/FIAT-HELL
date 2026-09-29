@@ -40,6 +40,14 @@ bool ConfigService::loadGuiConfig(fs::FS &fs, const char *path,
     fillFromArray(docGui2, "animated", out.animated, sizeof(out.animated));
   }
 
+  // Positional entry 3; files written before this setting existed simply
+  // lack it, leaving blinkWallet empty (= Bitcoin).
+  const JsonObject docGui3 = docGui[3];
+  if (!docGui3.isNull()) {
+    fillFromArray(docGui3, "blinkwallet", out.blinkWallet,
+                  sizeof(out.blinkWallet));
+  }
+
   out.valid = (out.fundingSource[0] != '\0') || (out.rateSource[0] != '\0') ||
               (out.animated[0] != '\0');
   return out.valid;
@@ -84,6 +92,14 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   valuesEnableAnim.add("No");
   valuesEnableAnim.add("Yes");
   docGui2["checked"] = (strcmp(in.animated, "No") == 0) ? 1 : 2;
+
+  JsonObject docGui3 = docGui.createNestedObject();
+  docGui3["name"] = "blinkwallet";
+  JsonArray valuesBlinkWallet = docGui3.createNestedArray("value");
+  valuesBlinkWallet.add("Bitcoin");
+  valuesBlinkWallet.add("Stablesats");
+  docGui3["checked"] =
+      (in.blinkWallet && strcmp(in.blinkWallet, "Stablesats") == 0) ? 2 : 1;
 
   File guiFile = fs.open(path, "w");
   if (!guiFile) {
