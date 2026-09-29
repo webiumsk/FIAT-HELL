@@ -28,9 +28,12 @@ const char *galoyEndpoint(const char *fundingSource);
  * external (non-custodial Breez, isExternal=true) — the server has no keys,
  * returns balance=null and cannot pay from it — so Flash uses the custodial
  * USD "Cash" wallet (balance in cents, USD→sats conversion happens at payout).
- * Blink keeps the BTC wallet.
+ * Blink defaults to the BTC wallet, but the operator can pick the Stablesats
+ * (USD) wallet instead via blinkWallet ("Bitcoin"/"Stablesats", empty = BTC).
  */
 const char *galoyWalletCurrency(const char *fundingSource);
+const char *galoyWalletCurrency(const char *fundingSource,
+                                const char *blinkWallet);
 
 /**
  * Fetch wallets via `query me` and pick the one matching walletCurrency

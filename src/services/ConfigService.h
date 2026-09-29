@@ -12,6 +12,7 @@ struct GuiConfig {
   char fundingSource[100]{0};
   char rateSource[100]{0};
   char animated[100]{0};
+  char blinkWallet[32]{0}; // "Bitcoin" or "Stablesats"; empty = Bitcoin
   bool valid{false};
 };
 

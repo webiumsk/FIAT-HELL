@@ -299,6 +299,8 @@ lv_obj_t *labelTotalCurrency2 = nullptr;
 lv_obj_t *labelTotalCurrency3 = nullptr;
 lv_obj_t *labelTotalSats = nullptr;
 lv_obj_t *labelMaxAmount = nullptr;
+lv_obj_t *insertFinishBtn = nullptr;
+static volatile bool insertFinishTapped = false;
 
 lv_obj_t *loadingLabel;
 
@@ -549,6 +551,10 @@ void createLogoScreen();
 void createPortalScreen();
 void createAPIScreen();
 void createPaymentErrorScreen();
+bool createLNURLWithdraw();
+bool getLNURL();
+bool makeLNURL();
+bool getBlinkLnURL(const char *invoice);
 void createMainScreen();
 void createInsertMoneyScreen();
 void createSwitch(lv_obj_t *parent);
@@ -605,7 +611,17 @@ static void billAcceptorBegin() {
   }
 }
 
+// 0xFFFF means the channel mask is unknown, so the next update sends it again.
+// A master inhibit from anywhere else (185) clears a note the mask still
+// thinks is open, so the mask is marked unknown unless this write is part of
+// applying the mask.
+static uint16_t enabledNoteMask = 0xFFFF;
+static bool noteMaskOwnsWrite = false;
+
 static size_t billAcceptorWrite(uint8_t value) {
+  if (value == 185 && !noteMaskOwnsWrite) {
+    enabledNoteMask = 0xFFFF;
+  }
   if (BILL_ACCEPTOR_ENABLED) {
     return SerialPort1.write(value);
   }
@@ -817,6 +833,28 @@ static void preflightSetRow(PreflightRow row, const char *status,
   lv_task_handler();
 }
 
+// One line under the logo while boot blocks (loading settings, joining
+// Wi-Fi). The join can take many seconds with no LVGL tick, so the text is
+// the only sign of life; it is drawn once before the block starts.
+static lv_obj_t *logoStatusLabel = nullptr;
+static lv_obj_t *logoStatusScreen = nullptr;
+
+static void setBootStatus(const char *text) {
+  if (screen_logo == nullptr || lv_scr_act() != screen_logo) {
+    return;
+  }
+  if (logoStatusLabel == nullptr || logoStatusScreen != screen_logo) {
+    logoStatusLabel = lv_label_create(screen_logo);
+    logoStatusScreen = screen_logo;
+    lv_obj_set_style_text_font(logoStatusLabel, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(logoStatusLabel, lv_color_hex(0xF5A623), 0);
+    lv_obj_align(logoStatusLabel, LV_ALIGN_BOTTOM_MID, 0, -40);
+  }
+  lv_label_set_text(logoStatusLabel, text);
+  lv_obj_align(logoStatusLabel, LV_ALIGN_BOTTOM_MID, 0, -40);
+  lv_refr_now(NULL);
+}
+
 static void createPreflightScreen() {
   lv_obj_t *screen = lv_obj_create(NULL);
 
@@ -901,6 +939,40 @@ static bool probeBillAcceptor() {
     delay(5);
   }
   return false;
+}
+
+static int smallestConfiguredNote();
+static long insertSessionCap();
+
+// Stablesats and Flash cash balances are dollar cents. The BTC formula
+// (cents / 1e8 * price) paints a fake PYG number until the BTC/USD rate
+// arrives, which is what the main screen used to show for the first 30 s.
+static bool fundingWalletIsUsd() {
+  const char *walletCur = FundingService::galoyWalletCurrency(
+      deviceState.fundingSourceBuffer, deviceState.blinkWalletBuffer);
+  return FundingService::isGaloy(deviceState.fundingSourceBuffer) &&
+         strcmp(walletCur, "USD") == 0;
+}
+
+static bool displayedFiatBalance(double *out) {
+  const float price =
+      fiatValue > 0.0f ? fiatValue : sessionState.fiatValue1;
+  if (out == nullptr || balanceSats <= 0 || price <= 0.0f) {
+    return false;
+  }
+  if (fundingWalletIsUsd()) {
+    if (sessionState.btcUsdValue <= 0.0f) {
+      return false;
+    }
+    *out = ((double)balanceSats / 100.0) * (price / sessionState.btcUsdValue);
+    return true;
+  }
+  if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+    *out = ((double)balanceSats * price) / 100000000000.0;
+    return true;
+  }
+  *out = ((double)balanceSats / 100000000.0) * price;
+  return true;
 }
 
 // One pass over all checks. Every check runs even after a failure so the
@@ -994,6 +1066,15 @@ static bool runPreflightOnce(char *firstFailure, size_t firstFailureLen,
                  currencyThree);
       }
     }
+    if (priceProblem[0] == '\0' && fundingWalletIsUsd()) {
+      float usd = 0.0f;
+      if (priceBalanceFetchPriceNow("USD", deviceState.rateSourceBuffer,
+                                    &usd)) {
+        sessionState.btcUsdValue = usd;
+      } else {
+        snprintf(priceProblem, sizeof(priceProblem), "no BTC/USD rate");
+      }
+    }
     if (priceProblem[0] != '\0') {
       preflightSetRow(PF_PRICE, priceProblem, LV_COLOR_RED);
       if (firstFailure[0] == '\0') {
@@ -1021,7 +1102,8 @@ static bool runPreflightOnce(char *firstFailure, size_t firstFailureLen,
     char fundProblem[120] = "";
     if (!FundingService::fetchGaloyBalance(
             deviceState, sessionState,
-            FundingService::galoyWalletCurrency(funding))) {
+            FundingService::galoyWalletCurrency(
+                funding, deviceState.blinkWalletBuffer))) {
       strlcpy(fundProblem, "unreachable or API key rejected",
               sizeof(fundProblem));
     } else if (balanceSats <= 0) {
@@ -1038,6 +1120,22 @@ static bool runPreflightOnce(char *firstFailure, size_t firstFailureLen,
                  scopes[0] ? scopes : "none");
       }
     }
+    if (fundProblem[0] == '\0') {
+      double shown = 0.0;
+      chargeSelected = charge1;
+      maxamountSelected = maxamount;
+      const long usable = insertSessionCap();
+      const int smallestNote = smallestConfiguredNote();
+      if (!displayedFiatBalance(&shown)) {
+        strlcpy(fundProblem, "balance could not be priced",
+                sizeof(fundProblem));
+      } else if (smallestNote > 0 && usable < (long)smallestNote) {
+        snprintf(fundProblem, sizeof(fundProblem),
+                 "balance %ld %s, need %d", usable, currencyOne, smallestNote);
+      } else {
+        fiatBalance = shown;
+      }
+    }
     if (fundProblem[0] != '\0') {
       preflightSetRow(PF_FUNDING, fundProblem, LV_COLOR_RED);
       if (firstFailure[0] == '\0') {
@@ -1051,7 +1149,27 @@ static bool runPreflightOnce(char *firstFailure, size_t firstFailureLen,
     long lnbitsBalance = 0;
     if (FundingService::checkLNbitsWallet(deviceState, &lnbitsBalance)) {
       balanceSats = lnbitsBalance;
-      preflightSetRow(PF_FUNDING, "OK", LV_COLOR_GREEN);
+      double shown = 0.0;
+      chargeSelected = charge1;
+      maxamountSelected = maxamount;
+      const long usable = insertSessionCap();
+      const int smallestNote = smallestConfiguredNote();
+      if (wifi && displayedFiatBalance(&shown) && smallestNote > 0 &&
+          usable < (long)smallestNote) {
+        char low[120];
+        snprintf(low, sizeof(low), "balance %ld %s, need %d", usable,
+                 currencyOne, smallestNote);
+        preflightSetRow(PF_FUNDING, low, LV_COLOR_RED);
+        if (firstFailure[0] == '\0') {
+          strlcpy(firstFailure, low, firstFailureLen);
+        }
+        pass = false;
+      } else {
+        if (shown > 0.0) {
+          fiatBalance = shown;
+        }
+        preflightSetRow(PF_FUNDING, "OK", LV_COLOR_GREEN);
+      }
     } else {
       preflightSetRow(PF_FUNDING, "wallet unreachable or read key rejected",
                       LV_COLOR_RED);
@@ -1189,19 +1307,9 @@ static void applyDisplayedQuotes() {
     chargeSelected = charge1;
     maxamountSelected = maxamount;
   }
-  if (balanceSats <= 0 || fiatValue <= 0.0f) {
-    return;
-  }
-  const char *walletCur =
-      FundingService::galoyWalletCurrency(deviceState.fundingSourceBuffer);
-  if (FundingService::isGaloy(deviceState.fundingSourceBuffer) &&
-      strcmp(walletCur, "USD") == 0 && sessionState.btcUsdValue > 0.0f) {
-    fiatBalance =
-        ((double)balanceSats / 100.0) * (fiatValue / sessionState.btcUsdValue);
-  } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-    fiatBalance = ((double)balanceSats * fiatValue) / 100000000000.0;
-  } else {
-    fiatBalance = ((double)balanceSats / 100000000.0) * fiatValue;
+  double shown = 0.0;
+  if (displayedFiatBalance(&shown)) {
+    fiatBalance = shown;
   }
 }
 
@@ -1361,6 +1469,11 @@ void reloadRuntimeConfigFromFlash() {
               sizeof(deviceState.enableAnimBuffer));
       animated = deviceState.enableAnimBuffer;
     }
+
+    if (guiConfig.blinkWallet[0] != '\0') {
+      strlcpy(deviceState.blinkWalletBuffer, guiConfig.blinkWallet,
+              sizeof(deviceState.blinkWalletBuffer));
+    }
   }
 
   int thirdSlash = 0;
@@ -1386,11 +1499,13 @@ void reloadRuntimeConfigFromFlash() {
   portal.config(acConfig);
 
   if (appStartupCompleted) {
+    // Settings that change what the ATM can pay (funding source, Blink
+    // wallet, price source, keys) must be validated before the main screen
+    // comes back - landing there with the old wallet's balance is confusing.
+    // Re-run the startup check so the new balance/price are confirmed first.
     uiController.deleteMainScreen();
-    createMainScreen();
-    triggerPriceBalanceFetch(PBR_PERIODIC);
-    updateMainScreenLabel();
-    lv_task_handler();
+    preflightGate();
+    finishStartupAfterPreflight();
   }
 
   pendingConfigReload = false;
@@ -1628,6 +1743,7 @@ void setup() {
     yield(); // Allow other tasks to run
   }
   bootStage(17, "logo wait finished");
+  setBootStatus("Loading settings...");
 
   /******************************************/
   /*** Read params from SPIFFS  ***/
@@ -1930,6 +2046,13 @@ void setup() {
       Serial.print("animated: ");
       Serial.println(animated);
     }
+
+    if (guiConfig.blinkWallet[0] != '\0') {
+      strlcpy(deviceState.blinkWalletBuffer, guiConfig.blinkWallet,
+              sizeof(deviceState.blinkWalletBuffer));
+      Serial.print("blinkwallet: ");
+      Serial.println(deviceState.blinkWalletBuffer);
+    }
     //} else {
     // triggerAp = true;
   }
@@ -1943,6 +2066,7 @@ void setup() {
   static const char *const kRateSources[] = {"CoinGecko", "ExchangeApi",
                                              "CoinYEP", "Kraken", "Yadio"};
   static const char *const kAnimatedOptions[] = {"No", "Yes"};
+  static const char *const kBlinkWallets[] = {"Bitcoin", "Stablesats"};
   auto ensureRadioOptions = [](AutoConnectAux &aux, const char *name,
                                const char *const *options, size_t count) {
     AutoConnectElement *elm = aux.getElement(name);
@@ -1975,14 +2099,16 @@ void setup() {
   guiAux.on([ensureRadioOptions](AutoConnectAux &aux, PageArgument &arg) {
     File paramGui = FlashFS.open(GUI_FILE, "r");
     if (paramGui) {
-      aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
+      aux.loadElement(paramGui,
+                      {"fundingsource", "ratesource", "animated", "blinkwallet"});
       paramGui.close();
     }
 
     if (portal.where() == "/gui") {
       File paramGui = FlashFS.open(GUI_FILE, "r");
       if (paramGui) {
-        aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated"});
+        aux.loadElement(paramGui, {"fundingsource", "ratesource", "animated",
+                                   "blinkwallet"});
         paramGui.close();
       }
     }
@@ -1992,6 +2118,8 @@ void setup() {
                        sizeof(kRateSources) / sizeof(kRateSources[0]));
     ensureRadioOptions(aux, "animated", kAnimatedOptions,
                        sizeof(kAnimatedOptions) / sizeof(kAnimatedOptions[0]));
+    ensureRadioOptions(aux, "blinkwallet", kBlinkWallets,
+                       sizeof(kBlinkWallets) / sizeof(kBlinkWallets[0]));
     return String();
   });
   bootStage(32, "gui aux configured");
@@ -2089,7 +2217,8 @@ void setup() {
     aux["caption"].value = GUI_FILE;
     String echo;
     if (configService.saveAuxConfig(FlashFS, GUI_FILE, guiAux,
-                                    {"fundingsource", "ratesource", "animated"},
+                                    {"fundingsource", "ratesource", "animated",
+                                     "blinkwallet"},
                                     echo)) {
       aux["echo"].value = echo;
       pendingConfigReload = true;
@@ -2489,6 +2618,7 @@ void setup() {
   portal.config(acConfig);
   bootStage(46, "portal config re-applied");
   Serial.println("Attempting to connect via AutoConnect...");
+  setBootStatus("Connecting to Wi-Fi...");
   (void)portal.begin(); // may connect STA or start AP depending on config
   bootStage(47, "portal begin returned");
 
@@ -2554,13 +2684,19 @@ int nonBlockingRead() {
   return billAcceptorRead();
 }
 
+// More than one currency is configured. Opening every channel of a single
+// currency is not mixed mode — that path was treating a PYG note as euros
+// and ending the sale at the 100 EUR cap after the first bill.
+static bool mixedCurrenciesConfigured() {
+  return originalSizeTwo > 0 || originalSizeThree > 0;
+}
+
 // Credit a validated channel byte to the running totals. Returns false when
 // the channel is outside the single-currency filter. Screen and label
 // updates stay with the caller.
 static bool creditBillTotals(int channelIdx) {
   const int amount = billAmountIntOne[channelIdx];
-  const bool mixed =
-      (sessionState.allowedChannelCount == (int)billAmountIntOne.size());
+  const bool mixed = mixedCurrenciesConfigured();
   if (mixed) {
     if (channelIdx < (int)originalSizeOne) {
       sessionState.totalCurrency1 += (long)amount * 100;
@@ -2975,6 +3111,10 @@ void createThankYouScreen() {
  * Shown when the funding source rejected the payout after cash was already
  * inserted, so the customer must not walk away thinking they were paid.
  */
+// Kept so returnToMainScreen() can delete it; a local pointer leaked one
+// screen per failed payout once the error stopped ending in a reboot.
+static lv_obj_t *screen_payment_error = nullptr;
+
 void createPaymentErrorScreen() {
   const char *reason = FundingService::payoutFailureReason();
   if (reason == nullptr || reason[0] == '\0') {
@@ -2988,7 +3128,11 @@ void createPaymentErrorScreen() {
     errFile.close();
   }
 
-  lv_obj_t *screen_err = lv_obj_create(NULL); // Create a new screen
+  if (screen_payment_error != nullptr && lv_scr_act() != screen_payment_error) {
+    lv_obj_del(screen_payment_error);
+  }
+  screen_payment_error = lv_obj_create(NULL); // Create a new screen
+  lv_obj_t *screen_err = screen_payment_error;
 
   lv_obj_t *errTitle = lv_label_create(screen_err);
   lv_label_set_text(errTitle, "PAYMENT FAILED!");
@@ -3440,56 +3584,85 @@ static void setLabelColorIfChanged(lv_obj_t *label, lv_color_t color) {
   }
 }
 
-// Largest configured note, in the same whole-currency units the screen shows
-// ("5000" for a 5000 PYG note).
-static int largestConfiguredNote() {
-  int largestNote = 0;
-  for (int amount : billAmountIntOne) {
-    if (amount > largestNote) largestNote = amount;
+// Enable only the notes that fit in `room`. A larger note is inhibited on its
+// own channel, so the NV10 returns it, and any smaller note still in range
+// stays open. The mask is sent only when it changes.
+static void applyFittingNotes(long room) {
+  uint16_t mask = 0;
+  const int count = (int)billAmountIntOne.size();
+  const int limit = count < 16 ? count : 16;
+  for (int i = 0; i < limit; i++) {
+    const int amount = billAmountIntOne[i];
+    if (amount > 0 && (long)amount <= room) {
+      mask |= (uint16_t)(1u << i);
+    }
   }
-  return largestNote;
+  if (mask == enabledNoteMask) {
+    return;
+  }
+  enabledNoteMask = mask;
+  noteMaskOwnsWrite = true;
+  if (mask == 0) {
+    billAcceptorWrite(185);
+    noteMaskOwnsWrite = false;
+    Serial.printf("NV10: no note fits in %ld\n", room);
+    return;
+  }
+  for (int i = 0; i < limit; i++) {
+    const uint8_t cmd = (mask & (uint16_t)(1u << i))
+                            ? (uint8_t)(UNINHIBIT_START + i)
+                            : (uint8_t)(INHIBIT_START + i);
+    billAcceptorWrite(cmd);
+    delay(25);
+  }
+  billAcceptorWrite(184);
+  noteMaskOwnsWrite = false;
+  Serial.printf("NV10: notes open for %ld (mask 0x%04x)\n", room, mask);
 }
 
 static void armAcceptorIfQuoted() {
   if (!mainScreenShown) {
     return;
   }
-  // A note that clears the sensor is always stacked and credited - the NV10
-  // in this mode cannot hand a valid note back. Open the acceptor only when
-  // the balance shown on screen covers the largest configured note, and close
-  // it again as soon as a refresh says it does not.
+  // A note that clears the sensor is stacked. Notes larger than the offset
+  // balance are inhibited one channel at a time; smaller notes stay open.
   const bool offlineLnbits =
       strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0 && !wifiStatus();
-  if (!offlineLnbits) {
-    const int largestNote = largestConfiguredNote();
-    const bool known = balanceSats > 0 && fiatBalance > 0.0f && largestNote > 0;
-    const bool covers = known && fiatBalance >= (double)largestNote;
+  if (!offlineLnbits && !mixedCurrenciesConfigured()) {
+    if (paymentService.isGaloy(deviceState.fundingSourceBuffer) && !wifiStatus()) {
+      applyFittingNotes(0);
+      acceptorArmed = false;
+      return;
+    }
+    if (!allCreditableQuotesReady()) {
+      return;
+    }
+    const long room = insertSessionCap();
+    const int smallestNote = smallestConfiguredNote();
+    const bool known = balanceSats > 0 && fiatBalance > 0.0f && smallestNote > 0;
+    const bool covers = known && room >= (long)smallestNote;
     if (!covers) {
-      if (acceptorArmed) {
-        billAcceptorWrite(185);
-        acceptorArmed = false;
-      }
+      applyFittingNotes(0);
+      acceptorArmed = false;
       if (mainScreenHoldLabel != nullptr) {
-        char hold[96];
-        if (known) {
-          snprintf(hold, sizeof(hold), "Balance too low for a %d %s note",
-                   largestNote, currencySelected);
-        } else {
-          snprintf(hold, sizeof(hold), "Waiting for price and balance");
-        }
-        setLabelTextIfChanged(mainScreenHoldLabel, hold);
+        setLabelTextIfChanged(mainScreenHoldLabel,
+                              known ? "Balance too low"
+                                    : "Waiting for price and balance");
         if (lv_obj_has_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN)) {
           lv_obj_clear_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
         }
       }
-      Serial.printf("NV10 stays off: balance %.0f %s, largest note %d\n",
-                    (double)fiatBalance, currencySelected, largestNote);
+      Serial.printf("NV10 stays off: balance %ld %s, smallest note %d\n",
+                    room, currencySelected, smallestNote);
       return;
     }
     if (mainScreenHoldLabel != nullptr &&
         !lv_obj_has_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN)) {
       lv_obj_add_flag(mainScreenHoldLabel, LV_OBJ_FLAG_HIDDEN);
     }
+    applyFittingNotes(room);
+    acceptorArmed = true;
+    return;
   }
   if (acceptorArmed) {
     return;
@@ -3523,12 +3696,13 @@ void updateMainScreenLabel() {
       setLabelTextIfChanged(balanceValueLabel, "OFFLINE");
     } else {
       char buffer[32];
-      snprintf(buffer, sizeof(buffer), "%.2f %s", fiatBalance,
-               currencySelected);
+      // Customer balance is the insertable amount: wallet after the fee,
+      // rounded down to the smallest note. The raw wallet stays in fiatBalance.
+      const long usable = insertSessionCap();
+      snprintf(buffer, sizeof(buffer), "%ld %s", usable, currencySelected);
       setLabelTextIfChanged(balanceValueLabel, buffer);
       setLabelColorIfChanged(balanceValueLabel,
-                             fiatBalance < maxamountSelected ? LV_COLOR_RED
-                                                             : LV_COLOR_WHITE);
+                             usable > 0 ? LV_COLOR_WHITE : LV_COLOR_RED);
     }
   }
   if (fiatValueLabel) { // Check if it has been initialized
@@ -3748,8 +3922,8 @@ void createMainScreen() {
 
   char buffer[32];
   snprintf(
-      buffer, sizeof(buffer), "%.2f %s", fiatBalance,
-      currencySelected); // Limiting to 2 decimal places and append the currency
+      buffer, sizeof(buffer), "%ld %s", insertSessionCap(),
+      currencySelected);
   balanceValueLabel = lv_label_create(screen_main); // full screen as the parent
   lv_label_set_text(
       balanceValueLabel,
@@ -3857,6 +4031,128 @@ static void discardInsertMoneyScreen() {
   labelTotalCurrency3 = nullptr;
   labelTotalSats = nullptr;
   labelMaxAmount = nullptr;
+  insertFinishBtn = nullptr;
+}
+
+// Blank screen with a spinner, shown from FINISH until the QR (or an error)
+// is ready. The payout request takes seconds, and a screen that does not
+// change looks like the press was ignored.
+static lv_obj_t *screen_wait = nullptr;
+static lv_obj_t *waitCaption = nullptr;
+
+// `caption` is optional text under the spinner; payouts pass none.
+static void showPayoutWaitScreen(const char *caption = nullptr) {
+  if (screen_wait != nullptr) {
+    lv_label_set_text(waitCaption, caption != nullptr ? caption : "");
+    lv_scr_load(screen_wait);
+    attachBatteryToCurrentScreen();
+    lv_refr_now(NULL);
+    return;
+  }
+  screen_wait = lv_obj_create(NULL);
+  lv_obj_t *spinner = lv_spinner_create(screen_wait, 1000, 70);
+  lv_obj_set_size(spinner, 110, 110);
+  lv_obj_center(spinner);
+  lv_obj_set_style_arc_color(spinner, lv_color_hex(0xF5A623), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(spinner, 10, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(spinner, 10, LV_PART_MAIN);
+  waitCaption = lv_label_create(screen_wait);
+  lv_label_set_text(waitCaption, caption != nullptr ? caption : "");
+  lv_obj_set_style_text_font(waitCaption, &lv_font_montserrat_22, 0);
+  lv_obj_align(waitCaption, LV_ALIGN_CENTER, 0, 100);
+  lv_scr_load(screen_wait);
+  attachBatteryToCurrentScreen();
+  lv_refr_now(NULL);
+}
+
+// Delete only after the next screen is active and owns the battery widget.
+static void discardPayoutWaitScreen() {
+  if (screen_wait == nullptr) {
+    return;
+  }
+  attachBatteryToCurrentScreen();
+  if (lv_scr_act() != screen_wait) {
+    lv_obj_del(screen_wait);
+    screen_wait = nullptr;
+    waitCaption = nullptr;
+  }
+}
+
+// Builds the QR payload. The network call runs on a worker task while the
+// main loop keeps the spinner turning; the worker is the only user of the
+// HTTP clients meanwhile.
+struct PayoutJob {
+  volatile bool done;
+  bool blinkFlow;
+  const char *payload;
+};
+
+static void buildPayoutPayload(PayoutJob *job) {
+  job->blinkFlow = false;
+  job->payload = nullptr;
+  if (!wifiStatus()) {
+    job->payload = makeLNURL() ? qrData : nullptr;
+  } else if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
+    // Without an LNURL and callback a QR would trap the customer in a
+    // polling loop that can never succeed.
+    job->payload = createLNURLWithdraw() ? lnURLgen : nullptr;
+    job->blinkFlow = true;
+  } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
+    if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
+      job->payload = getLNURL() ? lnURLgen : nullptr;
+    } else {
+      job->payload = makeLNURL() ? qrData : nullptr;
+    }
+  }
+}
+
+static void payoutWorkerTask(void *arg) {
+  PayoutJob *job = static_cast<PayoutJob *>(arg);
+  buildPayoutPayload(job);
+  job->done = true;
+  vTaskDelete(NULL);
+}
+
+static void runPayoutRequest(PayoutJob *job) {
+  job->done = false;
+  if (xTaskCreate(payoutWorkerTask, "payout", 12288, job, 1, NULL) != pdPASS) {
+    Serial.println("payout worker not started; running inline");
+    buildPayoutPayload(job);
+    job->done = true;
+    return;
+  }
+  while (!job->done) {
+    lv_task_handler();
+    delay(5);
+  }
+}
+
+// Paying the customer's invoice takes seconds too. Same approach: worker
+// task for the request, spinner turning meanwhile.
+struct BlinkPayJob {
+  volatile bool done;
+  bool ok;
+};
+
+static void blinkPayWorkerTask(void *arg) {
+  BlinkPayJob *job = static_cast<BlinkPayJob *>(arg);
+  job->ok = getBlinkLnURL(sessionState.boltInvoice);
+  job->done = true;
+  vTaskDelete(NULL);
+}
+
+static bool runBlinkPayment() {
+  BlinkPayJob job = {false, false};
+  if (xTaskCreate(blinkPayWorkerTask, "blinkpay", 12288, &job, 1, NULL) !=
+      pdPASS) {
+    Serial.println("pay worker not started; running inline");
+    return getBlinkLnURL(sessionState.boltInvoice);
+  }
+  while (!job.done) {
+    lv_task_handler();
+    delay(5);
+  }
+  return job.ok;
 }
 
 // The acceptor is already inhibited on every path that gets here.
@@ -3877,8 +4173,116 @@ static void enterPaymentError() {
  * the global variable `isInsertingMoney` has been set to `true`.
  * @note This function prints the free heap size to the serial monitor.
  */
+static void insertFinishCb(lv_event_t *e) {
+  if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+    insertFinishTapped = true;
+  }
+}
+
+// Smallest configured note. The on-screen max is rounded down to it so the
+// number is a total the customer can actually reach.
+static int smallestConfiguredNote() {
+  int smallest = 0;
+  for (int amount : billAmountIntOne) {
+    if (amount > 0 && (smallest == 0 || amount < smallest)) {
+      smallest = amount;
+    }
+  }
+  return smallest;
+}
+
+// Transaction ceiling in whole currency units. The configured max wins when
+// the wallet can pay it. Otherwise the ceiling is what the wallet can pay
+// after the fee. Rounded down to the smallest note so the customer sees a
+// total they can actually make. The largest-note safety rule is not printed.
+static long insertSessionCap() {
+  double walletFiat = 0.0;
+  const bool haveWallet = displayedFiatBalance(&walletFiat);
+  const double net = (100.0 - (double)chargeSelected) / 100.0;
+  double cap = (haveWallet && net > 0.0) ? walletFiat / net : 0.0;
+  const bool fromWallet = haveWallet && cap > 0.0;
+  if (maxamountSelected > 0.0f && (!fromWallet || maxamountSelected < cap)) {
+    cap = maxamountSelected;
+  }
+  long shown = (long)floor(cap);
+  const int step = smallestConfiguredNote();
+  if (step > 0 && shown > 0) {
+    shown = (shown / step) * step;
+  }
+  return shown;
+}
+
+static void refreshInsertMaxLabel();
+
+static void refreshInsertSummary(int lastAmount) {
+  char buf[96];
+  if (labelLastInserted) {
+    if (lastAmount > 0) {
+      snprintf(buf, sizeof(buf), "Last bill: %d %s", lastAmount,
+               currencySelected);
+    } else {
+      snprintf(buf, sizeof(buf), "Insert notes");
+    }
+    lv_label_set_text(labelLastInserted, buf);
+  }
+  if (labelTotalAmount) {
+    snprintf(buf, sizeof(buf), "%ld %s", (long)total, currencySelected);
+    lv_label_set_text(labelTotalAmount, buf);
+  }
+  if (labelTotalSats) {
+    const Quote quote =
+        quoteSats(llround(total * 100.0), fiatValue, chargeSelected);
+    if (total > 0 && quote.ok) {
+      snprintf(buf, sizeof(buf), "%lld sats", (long long)quote.sats);
+      lv_label_set_text(labelTotalSats, buf);
+    } else {
+      lv_label_set_text(labelTotalSats, "");
+    }
+  }
+  refreshInsertMaxLabel();
+}
+
+// Room still payable, in whole currency units, rounded down to the smallest note.
+static long insertRoomLeft(long *capOut) {
+  const long cap = insertSessionCap();
+  if (capOut != nullptr) {
+    *capOut = cap;
+  }
+  long left = cap - (long)llround((double)total);
+  if (left < 0) {
+    left = 0;
+  }
+  const int step = smallestConfiguredNote();
+  if (step > 0 && left > 0) {
+    left = (left / step) * step;
+  }
+  return left;
+}
+
+// Customer line: how much of the offset balance is still left, in steps of
+// the smallest note. Larger notes are inhibited on their own channels, so
+// this reaches "max reached" only when the smallest note no longer fits.
+static void refreshInsertMaxLabel() {
+  if (labelMaxAmount == nullptr || mixedCurrenciesConfigured()) {
+    return;
+  }
+  long cap = 0;
+  const long left = insertRoomLeft(&cap);
+  const int step = smallestConfiguredNote();
+  char buf[96];
+  if (cap <= 0) {
+    snprintf(buf, sizeof(buf), "Max: —");
+  } else if (left <= 0 || (step > 0 && left < (long)step)) {
+    snprintf(buf, sizeof(buf), "Max reached — press FINISH");
+  } else {
+    snprintf(buf, sizeof(buf), "Max: %ld %s left", left, currencySelected);
+  }
+  setLabelTextIfChanged(labelMaxAmount, buf);
+}
+
 void createInsertMoneyScreen() {
   isInsertingMoney = true;
+  insertFinishTapped = false;
 
   Serial.println("Inside createInsertMoneyScreen()");
   Serial.print("Free heap (createInsertMoneyScreen): ");
@@ -3895,9 +4299,10 @@ void createInsertMoneyScreen() {
   // Create label for displaying the last inserted amount
   labelLastInserted = lv_label_create(screen_insert_money);
   if (labelLastInserted) {
-    lv_label_set_text(labelLastInserted, ""); // Initialize with empty text
-    lv_obj_align(labelLastInserted, LV_ALIGN_TOP_LEFT, 30, 50);
-    lv_obj_set_style_text_font(labelLastInserted, &lv_font_montserrat_24, 0);
+    lv_label_set_text(labelLastInserted, "");
+    lv_obj_align(labelLastInserted, LV_ALIGN_TOP_MID, 0, 36);
+    lv_obj_set_style_text_font(labelLastInserted, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(labelLastInserted, lv_color_hex(0xC8C8C8), 0);
   } else {
     Serial.println("Failed to create labelLastInserted!");
   }
@@ -3906,7 +4311,7 @@ void createInsertMoneyScreen() {
   labelTotalAmount = lv_label_create(screen_insert_money);
   if (labelTotalAmount) {
     lv_label_set_text(labelTotalAmount, "");
-    lv_obj_align(labelTotalAmount, LV_ALIGN_TOP_LEFT, 30, 100);
+    lv_obj_align(labelTotalAmount, LV_ALIGN_CENTER, 0, -40);
     lv_obj_set_style_text_font(labelTotalAmount, &lv_font_montserrat_48, 0);
   } else {
     Serial.println("Failed to create labelTotalAmount!");
@@ -3932,33 +4337,37 @@ void createInsertMoneyScreen() {
     lv_obj_set_style_text_font(labelTotalCurrency3, &lv_font_montserrat_24, 0);
   }
 
-  // Mixed-currency: total in sats
+  // Sats the current total will pay.
   labelTotalSats = lv_label_create(screen_insert_money);
   if (labelTotalSats) {
     lv_label_set_text(labelTotalSats, "");
-    lv_obj_align(labelTotalSats, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_text_font(labelTotalSats, &lv_font_montserrat_48, 0);
-  }
-
-  // Create prompt label
-  lv_obj_t *labelPrompt = lv_label_create(screen_insert_money);
-  if (labelPrompt) {
-    lv_label_set_text(labelPrompt, "TAP SCREEN WHEN FINISHED");
-    lv_obj_align(labelPrompt, LV_ALIGN_BOTTOM_MID, 0, -50);
-    lv_obj_set_style_text_font(labelPrompt, &lv_font_montserrat_16, 0);
-  } else {
-    Serial.println("Failed to create labelPrompt!");
+    lv_obj_align(labelTotalSats, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_set_style_text_font(labelTotalSats, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(labelTotalSats, lv_color_hex(0x90EE90), 0);
   }
 
   // Create label for displaying the maximum amount
   labelMaxAmount = lv_label_create(screen_insert_money);
   if (labelMaxAmount) {
-    lv_label_set_text(labelMaxAmount, ""); // Initialize with empty text
-    lv_obj_align(labelMaxAmount, LV_ALIGN_TOP_MID, 0, 330);
-    lv_obj_set_style_text_font(labelMaxAmount, &lv_font_montserrat_16, 0);
+    lv_label_set_text(labelMaxAmount, "");
+    lv_obj_align(labelMaxAmount, LV_ALIGN_CENTER, 0, 70);
+    lv_obj_set_style_text_font(labelMaxAmount, &lv_font_montserrat_20, 0);
   } else {
     Serial.println("Failed to create labelMaxAmount!");
   }
+
+  insertFinishBtn = lv_btn_create(screen_insert_money);
+  lv_obj_set_size(insertFinishBtn, 320, 72);
+  lv_obj_align(insertFinishBtn, LV_ALIGN_BOTTOM_MID, 0, -28);
+  lv_obj_set_style_bg_color(insertFinishBtn, lv_color_hex(0xF5A623), 0);
+  lv_obj_add_event_cb(insertFinishBtn, insertFinishCb, LV_EVENT_CLICKED,
+                      nullptr);
+  lv_obj_t *finishLabel = lv_label_create(insertFinishBtn);
+  lv_label_set_text(finishLabel, "FINISH");
+  lv_obj_set_style_text_font(finishLabel, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_color(finishLabel, lv_color_hex(0x1A1A1A), 0);
+  lv_obj_center(finishLabel);
+  refreshInsertSummary(0);
 
   // Labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_insert_money);
@@ -4234,7 +4643,7 @@ static float getEurRateForLimit() {
     return sessionState.fiatValue2;
   if ((strcmp(currencyThree, "EUR") == 0 || strcmp(currencyThree, "eur") == 0) && sessionState.fiatValue3 > 0)
     return sessionState.fiatValue3;
-  return sessionState.fiatValue1 > 0 ? sessionState.fiatValue1 : 0.0f;
+  return 0.0f;
 }
 
 /** Max satoshis for mixed mode (100 EUR equivalent). */
@@ -4532,7 +4941,8 @@ void showQRCodeLVGL(const char *data) {
     Serial.println("Failed to update QR code.");
     return;
   }
-  lv_obj_center(qr);
+  // Sit a little above center to leave room for the amounts below.
+  lv_obj_align(qr, LV_ALIGN_CENTER, 0, -30);
 
   // Add a border with bg_color
   lv_obj_set_style_border_color(qr, bg_color, 0);
@@ -4565,6 +4975,44 @@ void showQRCodeLVGL(const char *data) {
   lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
   lv_obj_set_style_text_color(label, lv_color_hex(0xFF9900), 0);
   lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 10);
+
+  // What the customer gets and what they put in, under the code.
+  char amountLine[96];
+  if (result > 0) {
+    snprintf(amountLine, sizeof(amountLine), "%ld sats", (long)result);
+    lv_obj_t *satsLabel = lv_label_create(screen_qr);
+    lv_label_set_text(satsLabel, amountLine);
+    lv_obj_set_style_text_font(satsLabel, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(satsLabel, lv_color_hex(0x90EE90), 0);
+    lv_obj_align(satsLabel, LV_ALIGN_CENTER, 0, 130);
+  }
+  const bool mixedSale = (sessionState.totalCurrency1 | sessionState.totalCurrency2 |
+                          sessionState.totalCurrency3) != 0;
+  if (mixedSale) {
+    const long cents[3] = {(long)sessionState.totalCurrency1,
+                           (long)sessionState.totalCurrency2,
+                           (long)sessionState.totalCurrency3};
+    const char *names[3] = {currencyOne, currencyTwo, currencyThree};
+    amountLine[0] = '\0';
+    for (int i = 0; i < 3; i++) {
+      if (cents[i] <= 0) {
+        continue;
+      }
+      char part[40];
+      snprintf(part, sizeof(part), "%s%ld %s", amountLine[0] ? " + " : "",
+               cents[i] / 100, names[i]);
+      strlcat(amountLine, part, sizeof(amountLine));
+    }
+    strlcat(amountLine, " inserted", sizeof(amountLine));
+  } else {
+    snprintf(amountLine, sizeof(amountLine), "%ld %s inserted",
+             (long)llround((double)total / 100.0), currencySelected);
+  }
+  lv_obj_t *fiatLabel = lv_label_create(screen_qr);
+  lv_label_set_text(fiatLabel, amountLine);
+  lv_obj_set_style_text_font(fiatLabel, &lv_font_montserrat_22, 0);
+  lv_obj_set_style_text_color(fiatLabel, lv_color_hex(0xC8C8C8), 0);
+  lv_obj_align(fiatLabel, LV_ALIGN_CENTER, 0, 172);
 
   // QR and labels are set above; load the screen once so the panel draws once.
   lv_scr_load(screen_qr);
@@ -4674,11 +5122,42 @@ static unsigned long configModeActiveUntil = 0;
 void triggerRuntimeConfigMode() {
   if (configModeActiveUntil) return; // already active
   portalRequestedByUser = true;
+  // Say something first: switching the radio to hotspot mode takes a second
+  // or two, and a press with no reaction looks ignored.
+  showPayoutWaitScreen("Starting setup hotspot...");
+  // No notes while the operator is in setup, and the price refresh must not
+  // reopen the acceptor behind this screen.
+  billAcceptorWrite(185);
+  acceptorArmed = false;
+  mainScreenShown = false;
   // Hotspot alone, same as a boot-time setup session. AP+STA would publish
   // two addresses for fiathell.local and the page would stall again.
   settleSetupHotspot();
   configModeActiveUntil = millis() + 5UL * 60UL * 1000UL;
   Serial.println("Config mode active: " + acConfig.apid + " -> 192.168.4.1  (5 min)");
+  createPortalScreen();
+  discardPayoutWaitScreen();
+}
+
+// Setup session over: put the customer screen back, reopen the acceptor
+// through the normal price check, and drop the setup screen.
+static void closeRuntimeConfigScreen() {
+  if (screen_portal == nullptr) {
+    return;
+  }
+  if (lv_scr_act() == screen_portal) {
+    if (screen_main == nullptr) {
+      return;
+    }
+    mainScreenShown = true;
+    updateMainScreenLabel();
+    lv_scr_load(screen_main);
+    attachBatteryToCurrentScreen();
+  }
+  if (lv_scr_act() != screen_portal) {
+    lv_obj_del(screen_portal);
+    screen_portal = nullptr;
+  }
 }
 
 // Drop the finished sale and show the screen the next customer already
@@ -4707,6 +5186,10 @@ static void returnToMainScreen() {
   uiController.deleteThankYouScreen();
   uiController.deleteQRCodeScreen();
   discardInsertMoneyScreen();
+  if (screen_payment_error != nullptr && lv_scr_act() != screen_payment_error) {
+    lv_obj_del(screen_payment_error);
+    screen_payment_error = nullptr;
+  }
   currentUiState = UI_IDLE;
   stateEnterTime = millis();
   Serial.println("Transaction cleared => main screen");
@@ -4803,7 +5286,8 @@ void handleUiStateMachine() {
       if (checkBoltInvoice()) {
         // Invoice received! Pay it and show the matching result screen
         Serial.println("Invoice received => processing payment");
-        bool paymentOk = getBlinkLnURL(sessionState.boltInvoice);
+        showPayoutWaitScreen();
+        bool paymentOk = runBlinkPayment();
         uiController.deleteQRCodeScreen();
         if (paymentOk) {
           createThankYouScreen();
@@ -4817,6 +5301,7 @@ void handleUiStateMachine() {
           isBlinkFlow = false;
         }
         lv_task_handler();
+        discardPayoutWaitScreen();
         // currentTime was taken before the payment request. The result screen
         // stamps stateEnterTime with a later millis(), and the unsigned
         // subtraction below would then look like the 5-minute timeout and
@@ -4869,10 +5354,13 @@ void handleUiStateMachine() {
   }
 
   case UI_PAYMENT_ERROR:
-    // Keep the error visible long enough to be read/photographed, then restart
+    // Keep the error visible long enough to be read/photographed, then go
+    // back to the main screen. The reason stays in /payout-error.txt; a
+    // reboot here cost the next customer a full boot.
     if (currentTime - stateEnterTime >= 30000) {
-      Serial.println("Payment error timeout => restarting");
-      ESP.restart();
+      Serial.println("Payment error timeout => main screen");
+      isBlinkFlow = false;
+      returnToMainScreen();
     }
     break;
 
@@ -4918,6 +5406,7 @@ void loop() {
     WiFi.setAutoReconnect(true);
     if (wifiStatus()) startFiathellMdns();
     Serial.println("Config mode timed out — AP closed");
+    closeRuntimeConfigScreen();
   }
 
   lv_timer_handler();    // Let the GUI do its work
@@ -4987,6 +5476,9 @@ void loop() {
   // Process background fetch results (periodic price/balance update)
   if (consumePriceBalanceDataReady()) {
     updateMainScreenLabel();
+    if (currentUiState == UI_INSERTING_MONEY) {
+      refreshInsertMaxLabel();
+    }
     lv_task_handler();
   }
 
@@ -5032,7 +5524,7 @@ void loop() {
     } else {
     int channelIdx = x - 1;  // 0-based
     int amount = billAmountIntOne[channelIdx];
-    const bool mixed = (sessionState.allowedChannelCount == (int)billAmountIntOne.size());
+    const bool mixed = mixedCurrenciesConfigured();
 
     if (creditBillTotals(channelIdx)) {
       if (!isInsertingMoney) {
@@ -5092,18 +5584,10 @@ void loop() {
           lv_label_set_text(labelMaxAmount, buf);
         }
       } else {
-        String lastBillString = "Last bill: " + String(amount) + " " + currencySelected;
-        String totalString = "Total: " + String(total) + " " + currencySelected;
-        String maxString = "MAX: " + String(maxamountSelected) + " " +
-                           currencySelected + " from " +
-                           deviceState.fundingSourceBuffer;
-        lv_label_set_text(labelLastInserted, lastBillString.c_str());
-        lv_label_set_text(labelTotalAmount, totalString.c_str());
-        lv_label_set_text(labelMaxAmount, maxString.c_str());
+        refreshInsertSummary(amount);
         if (labelTotalCurrency1) lv_label_set_text(labelTotalCurrency1, "");
         if (labelTotalCurrency2) lv_label_set_text(labelTotalCurrency2, "");
         if (labelTotalCurrency3) lv_label_set_text(labelTotalCurrency3, "");
-        if (labelTotalSats) lv_label_set_text(labelTotalSats, "");
       }
     }
     }
@@ -5112,31 +5596,29 @@ void loop() {
   const bool hasMixed = (sessionState.totalCurrency1 || sessionState.totalCurrency2 || sessionState.totalCurrency3) != 0;
   const bool hasAmount = (total != 0) || hasMixed;
   if (currentUiState == UI_INSERTING_MONEY) {
-    // The sale is settled when the customer taps, so the balance check must
-    // not end it. A note that pushes the quote past the spendable balance is
-    // refused instead, so cash is never stacked without the sats to pay it.
-    if (hasAmount && balanceSats > 0) {
-      const MixedLeg balanceLegs[] = {
-          {sessionState.totalCurrency1, sessionState.fiatValue1, charge1},
-          {sessionState.totalCurrency2, sessionState.fiatValue2, charge2},
-          {sessionState.totalCurrency3, sessionState.fiatValue3, charge3},
-      };
-      const Quote balanceQuote = hasMixed
-          ? quoteMixedSats(balanceLegs, 3)
-          : quoteSats(llround(total * 100.0), fiatValue, chargeSelected);
-      if (balanceQuote.ok && balanceQuote.sats > balanceSats) {
-        Serial.println("Quote exceeds balance => refuse further notes");
-        billAcceptorWrite(185);
-        if (labelMaxAmount) {
-          lv_label_set_text(labelMaxAmount, "Balance limit reached - tap to finish");
-        }
-      }
+    // Keep each channel in step with the offset balance. A note larger than
+    // what is left is inhibited; smaller notes stay open until none fit.
+    if (!hasMixed) {
+      refreshInsertMaxLabel();
+      long cap = 0;
+      const long left = insertRoomLeft(&cap);
+      applyFittingNotes(cap > 0 ? left : 0);
     }
 
-    uint16_t touchX, touchY;
-    bool screenTapped = hasAmount && lcd.getTouch(&touchX, &touchY);
-    if ((BTNA.wasPressed() && hasAmount) || screenTapped || mixedLimitExceededAutoProceed || (!hasMixed && total >= maxamountSelected)) {
+    // maxamountSelected of 0 is an empty "max withdraw" field, not a limit of
+    // zero. The wallet gate above is what stops a note the balance cannot pay.
+    const bool hitConfiguredMax =
+        !hasMixed && maxamountSelected > 0.0f && total >= maxamountSelected;
+    const bool finishPressed = insertFinishTapped;
+    insertFinishTapped = false;
+    if ((BTNA.wasPressed() && hasAmount) || (finishPressed && hasAmount) ||
+        mixedLimitExceededAutoProceed || hitConfiguredMax) {
       mixedLimitExceededAutoProceed = false;
+      // Acknowledge FINISH at once: spinner up, insert screen gone. The
+      // settle wait and the payout request below both take seconds.
+      result = 0;
+      showPayoutWaitScreen();
+      discardInsertMoneyScreen();
       inhibitAndCollectPendingBills();
       const bool payMixed = (sessionState.totalCurrency1 || sessionState.totalCurrency2 ||
                              sessionState.totalCurrency3) != 0;
@@ -5177,23 +5659,10 @@ void loop() {
         Serial.println(total);
       }
 
-      discardInsertMoneyScreen();
-      const char *qrPayload = nullptr;
-      bool blinkFlow = false;
-      if (!wifiStatus()) {
-        qrPayload = makeLNURL() ? qrData : nullptr;
-      } else if (paymentService.isGaloy(deviceState.fundingSourceBuffer)) {
-        // Without an LNURL and callback a QR would trap the customer in a
-        // polling loop that can never succeed.
-        qrPayload = createLNURLWithdraw() ? lnURLgen : nullptr;
-        blinkFlow = true;
-      } else if (strcmp(deviceState.fundingSourceBuffer, "LNbits") == 0) {
-        if (paymentService.hasLNbitsConfig(lnbitsURL, adminkey, readkey)) {
-          qrPayload = getLNURL() ? lnURLgen : nullptr;
-        } else {
-          qrPayload = makeLNURL() ? qrData : nullptr;
-        }
-      }
+      PayoutJob job = {false, false, nullptr};
+      runPayoutRequest(&job);
+      const char *qrPayload = job.payload;
+      const bool blinkFlow = job.blinkFlow;
       if (qrPayload == nullptr) {
         if (FundingService::payoutFailureReason()[0] == '\0') {
           FundingService::setPayoutFailure("Could not create the withdraw QR");
@@ -5208,6 +5677,7 @@ void loop() {
         qrDebounceDone = false;
         isBlinkFlow = blinkFlow;
       }
+      discardPayoutWaitScreen();
     }
 
     lv_task_handler(); // Call LVGL task handler
