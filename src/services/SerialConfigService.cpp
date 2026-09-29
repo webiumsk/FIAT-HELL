@@ -231,7 +231,7 @@ static String mergeKeepMarkers(fs::FS &fs, const String &path,
 }
 
 // The boot screen is still up during this window. A tight yield() loop
-// would freeze the progress bar the operator just asked for.
+// would freeze the circular progress the operator just asked for.
 static void pumpUi() {
   static unsigned long lastMs = 0;
   const unsigned long now = millis();
