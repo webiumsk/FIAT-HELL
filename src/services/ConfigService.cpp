@@ -92,7 +92,6 @@ bool ConfigService::saveGuiConfig(fs::FS &fs, const char *path,
   return true;
 }
 
-#if FIAT_HAS_AUTOCONNECT
 bool ConfigService::loadAuxConfig(fs::FS &fs, const char *path,
                                   AutoConnectAux &aux,
                                   std::initializer_list<const char *> keys) {
@@ -135,7 +134,6 @@ bool ConfigService::saveAuxConfig(fs::FS &fs, const char *path,
   }
   return true;
 }
-#endif // FIAT_HAS_AUTOCONNECT
 
 static String csvField(const String &csv, int index) {
   int startPos = 0;

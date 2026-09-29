@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is FIAT-HELL
 
-Firmware for a Bitcoin/Lightning ATM (fiat → BTC via Lightning Network). Runs on **ESP32-S3** (Sunton ESP32-8048S050C board), built with **PlatformIO + Arduino framework**. Accepts banknotes via NV10USB+, renders UI with **LVGL 8.1** on an RGB display with TAMC_GT911 touch controller. Integrates with **LNbits** (offline-capable) or **Blink** (online) as funding sources. Configuration is stored in SPIFFS (JSON files). On S3 the WiFi/config AP is handled by the in-tree `WifiPortal` module (no AutoConnect); the WT32 board still uses AutoConnect.
+Firmware for a Bitcoin/Lightning ATM (fiat → BTC via Lightning Network). Runs on **ESP32-S3** (Sunton ESP32-8048S050C board), built with **PlatformIO + Arduino framework**. Accepts banknotes via NV10USB+, renders UI with **LVGL 8.1** on an RGB display with TAMC_GT911 touch controller. Integrates with **LNbits** (offline-capable) or **Blink** (online) as funding sources. Configuration is stored in SPIFFS (JSON files), WiFi AP managed via AutoConnect.
 
 ## Build & Upload Commands
 
@@ -51,12 +51,7 @@ Header-only LVGL screen definitions included directly in `main.cpp`:
 - `pagefirst.h` / `pageone.h` — logo/loading and main currency selection screen
 - `pagesecond.h` — money insertion screen
 - `pagethird.h` — QR code / payment screen
-- `pagesetup.h` — S3 config portal page served at `/setup` (plain HTML form, no AutoConnect)
-- `pagegui.h` / `pageota.h` / `pagefirst.h` / `pageone.h` / `pagesecond.h` / `pagethird.h` — AutoConnect page definitions, WT32 only
-
-### WiFi / config portal on S3 (`src/boards/s3/WifiPortal.*`)
-
-Single owner of WiFi state. Rules that keep the config AP stable: one blocking STA attempt (12 s) always runs *before* the AP starts; while the AP is up the STA never retries on its own (retries cause scans, scans hop the AP channel and drop phones), except an explicit slow retry in recovery mode; modem sleep is off while the AP runs. Credentials live in `/wifi.json` (written by the web flasher or `/setup/save`); on first boot without that file the module migrates the last entry from AutoConnect's NVS store. Captive-portal probes (`/generate_204`, `/hotspot-detect.html`, `/connecttest.txt`, ...) and `onNotFound` reply with an absolute 302 to `http://192.168.4.1/setup`, which is what makes phones auto-open the page. Portal routes (`/setup`, `/setup/save`, `/setup/wifi-scan`, `/setup/ota`, `/setup/ota-catalog`, `/setup/ota-run`) are only served to clients on the 192.168.4.x subnet.
+- `pagegui.h` / `pageota.h` — AutoConnect web portal pages for settings and OTA
 
 ### Background Task
 

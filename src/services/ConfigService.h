@@ -1,9 +1,7 @@
 #pragma once
 
 #include <ArduinoJson.h>
-#if FIAT_HAS_AUTOCONNECT
 #include <AutoConnect.h>
-#endif
 #include <FS.h>
 #include <WString.h>
 #include <cstring>
@@ -59,14 +57,11 @@ public:
   bool loadGuiConfig(fs::FS &fs, const char *path, GuiConfig &out);
   bool saveGuiConfig(fs::FS &fs, const char *path, const GuiConfig &in);
 
-#if FIAT_HAS_AUTOCONNECT
-  // AutoConnect portal helpers - WT32 only. S3 serves its own /setup page.
   bool loadAuxConfig(fs::FS &fs, const char *path, AutoConnectAux &aux,
                      std::initializer_list<const char *> keys);
 
   bool saveAuxConfig(fs::FS &fs, const char *path, AutoConnectAux &aux,
                      std::initializer_list<const char *> keys, String &echoOut);
-#endif
 
   bool loadFirst(fs::FS &fs, const char *path, FirstConfig &out);
 
